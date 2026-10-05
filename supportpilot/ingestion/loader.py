@@ -25,14 +25,24 @@ def _validation_rejection(
     line_number: int,
     error: ValidationError,
 ) -> dict[str, Any]:
-    """Convert Pydantic errors into sanitized rejection information."""
+    """Convert Pydantic errors into stable application-level errors."""
     errors = error.errors()
 
     first_error = errors[0] if errors else {}
     location = first_error.get("loc", ())
     field = str(location[0]) if location else None
+    pydantic_type = first_error.get("type", "")
 
-    error_type = first_error.get("type", "validation_error")
+    if field == "created_at":
+        error_type = "invalid_timestamp"
+    elif field == "channel":
+        error_type = "invalid_channel"
+    elif field == "body" and pydantic_type == "value_error":
+        error_type = "empty_body"
+    elif pydantic_type == "missing":
+        error_type = "missing_field"
+    else:
+        error_type = "validation_error"
 
     return _reject(
         line_number=line_number,
