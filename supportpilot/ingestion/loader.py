@@ -115,7 +115,7 @@ def validate_lines(
 def process_file(
     input_path: Path,
     output_dir: Path,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """
     Process a JSONL ticket file using streaming input/output.
 
@@ -130,6 +130,7 @@ def process_file(
     valid_records = 0
     invalid_records = 0
     blank_lines_skipped = 0
+    rejection_reasons: dict[str, int] = {}
 
     with (
         input_path.open("r", encoding="utf-8") as input_file,
@@ -149,6 +150,11 @@ def process_file(
                 data = json.loads(raw_line)
             except json.JSONDecodeError:
                 invalid_records += 1
+
+                rejection_reasons["invalid_json"] = (
+                    rejection_reasons.get("invalid_json", 0) + 1
+                )
+
                 rejects_file.write(
                     json.dumps(
                         _reject(line_number, "invalid_json"),
@@ -160,9 +166,17 @@ def process_file(
 
             if not isinstance(data, dict):
                 invalid_records += 1
+
+                rejection_reasons["invalid_record_type"] = (
+                    rejection_reasons.get("invalid_record_type", 0) + 1
+                )
+
                 rejects_file.write(
                     json.dumps(
-                        _reject(line_number, "invalid_record_type"),
+                        _reject(
+                            line_number,
+                            "invalid_record_type",
+                        ),
                         ensure_ascii=False,
                     )
                     + "\n"
@@ -173,9 +187,23 @@ def process_file(
                 ticket = Ticket.model_validate(data)
             except ValidationError as error:
                 invalid_records += 1
+
+                reject = _validation_rejection(
+                    line_number,
+                    error,
+                )
+
+                rejection_reasons[reject["error_type"]] = (
+                    rejection_reasons.get(
+                        reject["error_type"],
+                        0,
+                    )
+                    + 1
+                )
+
                 rejects_file.write(
                     json.dumps(
-                        _validation_rejection(line_number, error),
+                        reject,
                         ensure_ascii=False,
                     )
                     + "\n"
@@ -184,6 +212,15 @@ def process_file(
 
             if ticket.ticket_id in seen_ticket_ids:
                 invalid_records += 1
+
+                rejection_reasons["duplicate_ticket_id"] = (
+                    rejection_reasons.get(
+                        "duplicate_ticket_id",
+                        0,
+                    )
+                    + 1
+                )
+
                 rejects_file.write(
                     json.dumps(
                         _reject(
@@ -200,6 +237,7 @@ def process_file(
             seen_ticket_ids.add(ticket.ticket_id)
 
             valid_records += 1
+
             valid_file.write(
                 json.dumps(
                     ticket.model_dump(mode="json"),
@@ -209,16 +247,24 @@ def process_file(
             )
 
     report = {
+        "blank_lines_skipped": blank_lines_skipped,
+        "invalid_records": invalid_records,
+        "rejection_reasons": dict(sorted(rejection_reasons.items())),
         "total_records": total_records,
         "valid_records": valid_records,
-        "invalid_records": invalid_records,
-        "blank_lines_skipped": blank_lines_skipped,
     }
 
     with (output_dir / "report.json").open(
         "w",
         encoding="utf-8",
     ) as report_file:
-        json.dump(report, report_file, indent=2)
+        json.dump(
+            report,
+            report_file,
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        report_file.write("\n")
 
     return report
