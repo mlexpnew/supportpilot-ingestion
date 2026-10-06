@@ -24,6 +24,12 @@ def main() -> int:
         help="Directory where output files will be written.",
     )
 
+    parser.add_argument(
+        "--fail-on-rejects",
+        action="store_true",
+        help="Exit with non-zero status (code 2) if any invalid records are encountered.",
+    )
+
     args = parser.parse_args()
 
     if not args.input.exists():
@@ -36,6 +42,9 @@ def main() -> int:
 
     try:
         report = process_file(args.input, args.output_dir)
+    except ValueError as exc:
+        print(f"Path conflict: {exc}", file=sys.stderr)
+        return 1
     except OSError as exc:
         print(f"Error processing files: {exc}", file=sys.stderr)
         return 1
@@ -46,6 +55,9 @@ def main() -> int:
     print(f"Invalid records: {report['invalid_records']}")
     print(f"Blank lines skipped: {report['blank_lines_skipped']}")
     print(f"Output directory: {args.output_dir}")
+
+    if args.fail_on_rejects and report["invalid_records"] > 0:
+        return 2
 
     return 0
 
