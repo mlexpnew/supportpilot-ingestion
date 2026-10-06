@@ -76,9 +76,9 @@ Blank lines and lines containing only whitespace are skipped during processing:
 - **Workbook Projection (2 GB limit)**:
   - For a ~2 GB memory boundary, the in-memory set can accommodate approximately **14.4 million records** (~1.46 GB resident memory for the ID set, plus runtime and OS headroom).
 - **Empirical Measurements (`/usr/bin/time -l`)**:
-  - Baseline (1 record): **32.88 MB** RSS.
-  - 1,000,000 records (139 MB file): **134.14 MB** RSS, processed in **8.45 s** (~118,000 records/s).
-  - Net memory delta for 1M IDs: `134.14 MB - 32.88 MB` = **101.26 MB** (~`101.25 bytes/ID`).
+  - Baseline (1 record): **31.77 MB** RSS (`31,768,576 bytes`).
+  - 1,000,000 records (139 MB file): **135.87 MB** RSS (`135,872,512 bytes`), processed in **8.97 s** (~111,500 records/s).
+  - Net memory delta for 1M IDs: `135.87 MB - 31.77 MB` = **104.10 MB** (~`104.10 bytes/ID`).
 - **Alternative for Greater Scale**: For datasets exceeding 10–14 million records or in severely memory-constrained environments (<512 MB RAM), replace the in-memory set with:
   - An external key-value store (e.g. Redis `SET` / `SETNX` commands).
   - An embedded disk-backed index (such as SQLite with an indexed ID table or RocksDB / LMDB).
