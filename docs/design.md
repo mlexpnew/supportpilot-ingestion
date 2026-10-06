@@ -74,31 +74,46 @@ SupportPilot ticket text must be sanitized before transmission to downstream LLM
 
 ### 1. 16-Digit Number Failing Luhn: Redact or Leave?
 - **Decision**: Fail closed for card-shaped and context-accompanied numbers.
-- **Rationale & Accepted Risk**:
+- **Immediate Context Window Specification**:
+  - **Window Size**: Up to 25 characters immediately preceding the candidate number and up to 25 characters immediately following the candidate number.
+  - **Direction**: Both preceding and following context within the same sentence/clause.
+  - **Clause Boundary Isolation**: The window strictly terminates at sentence punctuation (`.`, `\n`, `;`, `!`, `?`) and does not cross existing redaction placeholder tokens (`[CARD]`, `[EMAIL]`, `[PHONE]`).
+  - **Case Sensitivity & Token Safety**: Matching is case-insensitive for `card`, `visa`, `mastercard`, `amex` (`(?i)`). Keyword matching uses negative lookarounds `(?<!\[)\b(?:card|visa|mastercard|amex)\b(?!\])` to ensure that previous redaction tokens like `[CARD]` never trigger subsequent context matches, preserving strict idempotence across multi-pass processing.
+- **Rationale & Accepted Risks**:
   - For fintech clients whose enterprise contracts prohibit customer payment card data from ever reaching external LLM APIs, a false negative is a contractual and regulatory breach, while a false positive merely costs minor LLM contextual visibility.
   - Mistyped cards (such as `4111 1111 1111 1112` in sample S-4 where a single digit is transposed or mistyped) fail the Luhn checksum but are unmistakably card-formatted.
   - To prevent leaks of customer card numbers due to typos, SupportPilot adopts a hybrid fail-closed strategy:
     1. Numbers formatted in card-like groups (e.g. 4-4-4-4 such as `4111 1111 1111 1112` or Amex 4-6-5) are redacted as `[CARD]` even if they fail Luhn.
-    2. Numbers accompanied by card keywords (`card`, `visa`, `mastercard`, `amex`) in the immediate context window are redacted as `[CARD]` even if they fail Luhn.
+    2. Numbers accompanied by card keywords (`card`, `visa`, `mastercard`, `amex`) in the immediate 25-character context window are redacted as `[CARD]` even if they fail Luhn.
     3. Ungrouped solid runs of 13–19 digits without card keywords (such as courier tracking numbers like `1234567890123`) must pass the Luhn checksum to be redacted; if they fail Luhn, they remain unredacted.
-  - **Risk Accepted**: A tracking number or serial number formatted in 4-4-4-4 or immediately following the word "card" will be redacted as `[CARD]`. We accept this minor false-positive risk because preventing card data exfiltration is non-negotiable for fintech compliance. Flagged as a compliance decision for Neha.
+  - **Accepted False-Positive Risk**: A tracking number or serial number formatted in 4-4-4-4 or immediately adjacent to the word "card" will be redacted as `[CARD]`. We accept this minor false-positive risk because preventing card data exfiltration is non-negotiable for fintech compliance.
+  - **Known Gap (Residual Leak)**: A customer who writes an ungrouped, mistyped 16-digit card that fails Luhn without any nearby card keywords (e.g. `"my number is 4111111111111112"`) will survive redaction unredacted. This false-negative risk was explicitly evaluated and **accepted by Neha (Product & Compliance)** because indiscriminately redacting all ungrouped 13–19 digit strings would destroy 100% of order numbers, shipment barcodes, and courier tracking numbers across all non-card tickets.
 
 ### 2. Order Numbers, Ticket IDs, and Tracking Numbers
-- **Decision**: Preserved intact without redaction.
-- **Rationale**:
-  - Order numbers (e.g. `#55231`) and ticket IDs (e.g. `T-1001`) contain fewer than 13 digits and have non-digit prefixes (`#`, `T-`).
-  - Tracking numbers (e.g. 13-digit `1234567890123` in sample S-4) are ungrouped and fail the Luhn checksum, and thus remain intact without requiring fragile keyword allowlists.
+- **Decision**: Preserved intact without requiring manual keyword allowlists, with an acknowledged statistical false-positive rate.
+- **Rationale & Statistical Trade-off**:
+  - Order numbers (e.g. `#55231`) and ticket IDs (e.g. `T-1001`) contain fewer than 13 digits and have non-digit prefixes (`#`, `T-`), safely bypassing card extraction.
+  - Courier tracking numbers (e.g. 13-digit `1234567890123` in sample S-4) are ungrouped and preserved when they fail the Luhn checksum.
+  - **Statistical False-Positive Rate (~10%)**: Luhn validation is a mod-10 checksum algorithm; approximately 1 in 10 random digit sequences (~10%) will pass Luhn purely by chance. Consequently, roughly 10% of long numeric tracking numbers will be redacted as `[CARD]`. This ~10% false-positive rate is explicitly accepted as an operational compromise to guarantee that all actual Luhn-valid cards are redacted without maintaining brittle merchant-specific tracking format allowlists.
 
 ### 3. Bank Account Numbers and National IDs
 - **Decision**: Out of scope for SP-102; flagged for Neha.
 - **Rationale**: Bank account numbers (9–18 digits depending on country) and national identifiers (such as US SSN, Indian PAN / Aadhaar) do not have a uniform global checksum and risk massive false positives if matched naively. This has been explicitly flagged as an open product question for Neha prior to expanding the PII taxonomy.
 
-### 4. Non-String Values and `null` Fields
-- **Decision**: `null` values (such as `subject: null` or `body: null`) are preserved as `null` with 0 redactions. Non-string, non-null values raise a `TypeError` in `redact_field`, aligning with the SP-101 schema boundary where ticket bodies and subjects must be valid strings or null.
+### 4. Non-String Values, Malformed Fields, and CLI Error Handling
+- **Decision**: `null` values (such as `subject: null` or `body: null`) are preserved as `null` with 0 redactions. Non-string, non-null values raise a `TypeError` in `redact_field`.
+- **CLI Clean Exit & PII Leak Prevention**:
+  - In the CLI, encountering a non-string or malformed field triggers a clean exit (`exit 1`) with a sanitized message (`Error: PII-redactable fields must be strings or null`) printed to `stderr`.
+  - Raw Python tracebacks are suppressed, and the offending field value / record content is strictly excluded from output streams, stderr, and logs to prevent accidental PII leakage during ingestion failures.
+  - Any partially written temporary files (`.redacted.jsonl.tmp`, `.redaction_report.json.tmp`) are cleaned up immediately via `unlink`.
 
-### 5. Idempotence
-- **Decision**: The redaction process is strictly idempotent.
-- **Rationale**: Existing placeholders `[EMAIL]`, `[PHONE]`, and `[CARD]` are enclosed in square brackets and do not match the email, phone, or card regexes. Running redaction multiple times over already-redacted text yields identical text and zero additional redactions.
+### 5. Idempotence & Data Structure Invariants
+- **Decision**: The redaction process is strictly idempotent across multiple passes.
+- **Rationale**:
+  - Existing placeholders `[EMAIL]`, `[PHONE]`, and `[CARD]` are enclosed in square brackets and do not match the email, phone, or card regexes.
+  - Redaction tokens are explicitly bounded so they are not recognized as card context keywords in subsequent passes.
+  - `RedactionResult` is implemented as a `NamedTuple`, ensuring backward-compatible indexing (`result[0]`), attribute access (`result.text`), and tuple unpacking (`text, counts = redact_text(...)`).
+  - Running redaction multiple times over already-redacted text yields identical text and zero additional redactions.
 
 ## Reporting & Privacy Invariants
 
