@@ -74,7 +74,14 @@ def _is_card_shaped(candidate: str) -> bool:
     return False
 
 
-CARD_KEYWORD_PATTERN = re.compile(r"(?i)(?<!\[)\b(?:card|visa|mastercard|amex)\b(?!\])")
+DEV_LETTERS = r"A-Za-z\u0900-\u0963\u0970-\u097F"
+CARD_KEYWORDS = r"card|visa|mastercard|amex|कार्ड|क्रेडिट|डेबिट"
+
+CARD_KEYWORD_PATTERN = re.compile(
+    rf"(?i)(?<!\[)(?<![{DEV_LETTERS}])(?:{CARD_KEYWORDS})(?![{DEV_LETTERS}])(?!\])"
+)
+
+CLAUSE_DELIMITERS = r"[\.\n;!?।॥]|\[(?:CARD|EMAIL|PHONE)\]"
 
 
 def _has_card_context(text: str, start: int, end: int) -> bool:
@@ -83,22 +90,18 @@ def _has_card_context(text: str, start: int, end: int) -> bool:
 
     The window is up to 25 characters immediately preceding the candidate (or
     up to 25 characters immediately following), within the same clause.
-    Does not cross clause terminators ('.', '\n', ';', '!', '?') or existing
+    Does not cross clause terminators ('.', '\n', ';', '!', '?', '।', '॥') or existing
     placeholder tokens ('[CARD]', '[EMAIL]', '[PHONE]'). Matching is case-insensitive.
     """
     # Preceding context within 25 characters in the same clause
     prefix = text[max(0, start - 25) : start]
-    prec_clause = re.split(
-        r"[\.\n;!?]|\[(?:CARD|EMAIL|PHONE)\]", prefix, flags=re.IGNORECASE
-    )[-1]
+    prec_clause = re.split(CLAUSE_DELIMITERS, prefix, flags=re.IGNORECASE)[-1]
     if CARD_KEYWORD_PATTERN.search(prec_clause):
         return True
 
     # Following context within 25 characters in the same clause
     suffix = text[end : end + 25]
-    succ_clause = re.split(
-        r"[\.\n;!?]|\[(?:CARD|EMAIL|PHONE)\]", suffix, flags=re.IGNORECASE
-    )[0]
+    succ_clause = re.split(CLAUSE_DELIMITERS, suffix, flags=re.IGNORECASE)[0]
     if CARD_KEYWORD_PATTERN.search(succ_clause):
         return True
 
