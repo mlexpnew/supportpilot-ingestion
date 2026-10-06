@@ -5,5 +5,5 @@ venv/
 .pytest_cache/
 .ruff_cache/
 output/out/
-out/
+out*/
 output/
