@@ -42,7 +42,10 @@ def main() -> int:
 
     try:
         report = process_file(args.input, args.output_dir)
-    except (OSError, ValueError) as exc:
+    except ValueError as exc:
+        print(f"Path conflict: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
         print(f"Error processing files: {exc}", file=sys.stderr)
         return 1
 
