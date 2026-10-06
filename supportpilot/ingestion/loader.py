@@ -7,6 +7,8 @@ from pydantic import ValidationError
 
 from .models import Ticket
 
+MAX_LINE_BYTES = 1_048_576  # 1 MB line length limit to prevent unbounded memory usage
+
 
 def _reject(
     line_number: int,
@@ -56,18 +58,13 @@ def _validation_rejection(
         error_type = "invalid_timestamp"
     elif field == "channel":
         error_type = "invalid_channel"
+    elif field == "status":
+        error_type = "invalid_status"
     elif field == "body" and pydantic_type in ("value_error", "string_too_short"):
         error_type = "empty_body"
     elif pydantic_type in ("value_error", "string_too_short"):
         error_type = "empty_field"
-    elif pydantic_type in (
-        "string_type",
-        "int_type",
-        "bool_type",
-        "float_type",
-        "dict_type",
-        "list_type",
-    ) or pydantic_type.endswith("_type"):
+    elif pydantic_type.endswith("_type"):
         error_type = "invalid_type"
     else:
         error_type = "validation_error"
@@ -93,7 +90,27 @@ def validate_lines(
     seen_ticket_ids: set[str] = set()
 
     with input_path.open("rb") as file:
-        for line_number, raw_bytes in enumerate(file, start=1):
+        line_number = 1
+        while True:
+            raw_bytes = file.readline(MAX_LINE_BYTES + 1)
+            if not raw_bytes:
+                break
+
+            # Prevent unbounded memory buffering on oversized lines
+            if len(raw_bytes) > MAX_LINE_BYTES and not raw_bytes.endswith(b"\n"):
+                while not raw_bytes.endswith(b"\n"):
+                    discard = file.readline(MAX_LINE_BYTES + 1)
+                    if not discard:
+                        break
+                    raw_bytes = discard
+                yield (
+                    line_number,
+                    None,
+                    _reject(line_number, "line_too_long"),
+                )
+                line_number += 1
+                continue
+
             if line_number == 1 and raw_bytes.startswith(b"\xef\xbb\xbf"):
                 raw_bytes = raw_bytes[3:]
 
@@ -105,20 +122,23 @@ def validate_lines(
                     None,
                     _reject(line_number, "invalid_encoding"),
                 )
+                line_number += 1
                 continue
 
             if not raw_line.strip():
                 yield (line_number, None, None)
+                line_number += 1
                 continue
 
             try:
                 data = json.loads(raw_line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 yield (
                     line_number,
                     None,
                     _reject(line_number, "invalid_json"),
                 )
+                line_number += 1
                 continue
 
             if not isinstance(data, dict):
@@ -127,6 +147,7 @@ def validate_lines(
                     None,
                     _reject(line_number, "invalid_record_type"),
                 )
+                line_number += 1
                 continue
 
             candidate_ticket_id = _extract_ticket_id(data)
@@ -143,6 +164,7 @@ def validate_lines(
                         ticket_id=candidate_ticket_id,
                     ),
                 )
+                line_number += 1
                 continue
 
             if ticket.ticket_id in seen_ticket_ids:
@@ -156,11 +178,13 @@ def validate_lines(
                         ticket_id=candidate_ticket_id or ticket.ticket_id,
                     ),
                 )
+                line_number += 1
                 continue
 
             seen_ticket_ids.add(ticket.ticket_id)
 
             yield (line_number, ticket, None)
+            line_number += 1
 
 
 def process_file(
@@ -186,8 +210,16 @@ def process_file(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Remove any existing report to ensure failed runs don't leave stale reports
+    report_path = output_dir / "report.json"
+    report_path.unlink(missing_ok=True)
+
     valid_path = output_dir / "valid.jsonl"
     rejects_path = output_dir / "rejects.jsonl"
+
+    tmp_valid_path = output_dir / ".valid.jsonl.tmp"
+    tmp_rejects_path = output_dir / ".rejects.jsonl.tmp"
+    tmp_report_path = output_dir / ".report.json.tmp"
 
     total_records = 0
     valid_records = 0
@@ -196,10 +228,10 @@ def process_file(
     rejection_reasons: dict[str, int] = {}
 
     with (
-        valid_path.open("w", encoding="utf-8") as valid_file,
-        rejects_path.open("w", encoding="utf-8") as rejects_file,
+        tmp_valid_path.open("w", encoding="utf-8") as valid_file,
+        tmp_rejects_path.open("w", encoding="utf-8") as rejects_file,
     ):
-        for line_number, ticket, reject in validate_lines(input_path):
+        for _, ticket, reject in validate_lines(input_path):
             if ticket is None and reject is None:
                 blank_lines_skipped += 1
                 continue
@@ -229,10 +261,7 @@ def process_file(
         "valid_records": valid_records,
     }
 
-    with (output_dir / "report.json").open(
-        "w",
-        encoding="utf-8",
-    ) as report_file:
+    with tmp_report_path.open("w", encoding="utf-8") as report_file:
         json.dump(
             report,
             report_file,
@@ -241,5 +270,10 @@ def process_file(
             sort_keys=True,
         )
         report_file.write("\n")
+
+    # Atomically promote temporary output files upon complete run
+    tmp_valid_path.replace(valid_path)
+    tmp_rejects_path.replace(rejects_path)
+    tmp_report_path.replace(report_path)
 
     return report

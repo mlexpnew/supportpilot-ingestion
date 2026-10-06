@@ -474,3 +474,64 @@ def test_validation_errors_hide_input():
     except ValidationError as exc:
         assert "secret_bad_date" not in str(exc)
         assert "input_value" not in str(exc)
+
+
+def test_invalid_status_is_rejected(tmp_path):
+    input_file = tmp_path / "input.jsonl"
+    output_dir = tmp_path / "output"
+
+    ticket = valid_ticket()
+    ticket["status"] = "closed"
+    write_jsonl(input_file, [ticket])
+
+    report = process_file(input_file, output_dir)
+
+    assert report["invalid_records"] == 1
+    rejects = (output_dir / "rejects.jsonl").read_text(encoding="utf-8")
+    reject = json.loads(rejects.strip())
+    assert reject["field"] == "status"
+    assert reject["error_type"] == "invalid_status"
+
+
+def test_line_too_long_is_rejected(tmp_path, monkeypatch):
+    import supportpilot.ingestion.loader as loader_mod
+
+    input_file = tmp_path / "input.jsonl"
+    output_dir = tmp_path / "output"
+
+    monkeypatch.setattr(loader_mod, "MAX_LINE_BYTES", 200)
+
+    long_line = json.dumps(valid_ticket("T-1")) + " " * 500 + "\n"
+    normal_line = json.dumps(valid_ticket("T-2")) + "\n"
+
+    input_file.write_bytes(long_line.encode("utf-8") + normal_line.encode("utf-8"))
+
+    report = process_file(input_file, output_dir)
+
+    assert report["total_records"] == 2
+    assert report["valid_records"] == 1
+    assert report["invalid_records"] == 1
+    assert report["rejection_reasons"]["line_too_long"] == 1
+
+
+def test_deeply_nested_json_recursion_error_is_rejected_as_invalid_json(
+    tmp_path, monkeypatch
+):
+    import supportpilot.ingestion.loader as loader_mod
+
+    input_file = tmp_path / "input.jsonl"
+    output_dir = tmp_path / "output"
+
+    def mock_loads(s):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(loader_mod.json, "loads", mock_loads)
+    input_file.write_text('{"a": 1}\n', encoding="utf-8")
+
+    report = process_file(input_file, output_dir)
+    monkeypatch.undo()
+
+    assert report["invalid_records"] == 1
+    rejects = (output_dir / "rejects.jsonl").read_text(encoding="utf-8")
+    reject = json.loads(rejects.strip())
+    assert reject["error_type"] == "invalid_json"
