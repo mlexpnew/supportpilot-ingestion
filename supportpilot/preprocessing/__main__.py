@@ -51,9 +51,9 @@ def main() -> int:
     print("PII redaction completed successfully.")
     print(f"Total records: {report['total_records']}")
     print(f"Total redactions: {report['total_redactions']}")
-    print(f"Card redactions: {report['card']}")
-    print(f"Email redactions: {report['email']}")
-    print(f"Phone redactions: {report['phone']}")
+    print(f"Card redactions: {report['counts']['card']}")
+    print(f"Email redactions: {report['counts']['email']}")
+    print(f"Phone redactions: {report['counts']['phone']}")
     print(f"Output directory: {args.output_dir}")
 
     return 0

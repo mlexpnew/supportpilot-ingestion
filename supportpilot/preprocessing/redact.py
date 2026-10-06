@@ -69,8 +69,26 @@ def _luhn_valid(value: str) -> bool:
     return total % 10 == 0
 
 
+def _is_card_shaped(candidate: str) -> bool:
+    """Check if candidate digits have standard payment card grouping."""
+    parts = re.split(r"[ -]+", candidate)
+    if len(parts) == 4 and all(len(p) == 4 for p in parts):
+        return True  # 4-4-4-4 (Visa, Mastercard, Discover, etc.)
+    if len(parts) == 3 and [len(p) for p in parts] == [4, 6, 5]:
+        return True  # 4-6-5 (Amex)
+    if len(parts) == 4 and [len(p) for p in parts] == [4, 4, 4, 3]:
+        return True  # 15-digit 4-4-4-3
+    return False
+
+
+def _has_card_context(text: str, start: int) -> bool:
+    """Check if text immediately preceding candidate mentions card keywords."""
+    window = text[max(0, start - 30) : start]
+    return bool(re.search(r"(?i)\b(?:card|visa|mastercard|amex)\b", window))
+
+
 def _redact_cards(text: str) -> tuple[str, int]:
-    """Redact valid payment-card candidates from text."""
+    """Redact payment-card candidates from text, failing closed on card-shaped numbers."""
     count = 0
     pieces: list[str] = []
     last_end = 0
@@ -79,7 +97,16 @@ def _redact_cards(text: str) -> tuple[str, int]:
         candidate = match.group(0)
         digits = candidate.replace(" ", "").replace("-", "")
 
-        if 13 <= len(digits) <= 19 and _luhn_valid(digits):
+        if not (13 <= len(digits) <= 19):
+            continue
+
+        is_luhn = _luhn_valid(digits)
+        is_grouped = _is_card_shaped(candidate)
+        has_context = _has_card_context(text, match.start())
+
+        # Fail closed: redact if valid Luhn, or formatted in standard card groups,
+        # or explicitly preceded by card keywords (e.g. customer typo).
+        if is_luhn or is_grouped or has_context:
             pieces.append(text[last_end : match.start()])
             pieces.append("[CARD]")
             last_end = match.end()
@@ -200,10 +227,7 @@ def process_file(
 
     total_redactions = sum(total_counts.values())
     report: dict[str, Any] = {
-        "card": total_counts["card"],
         "counts": dict(sorted(total_counts.items())),
-        "email": total_counts["email"],
-        "phone": total_counts["phone"],
         "total_records": total_records,
         "total_redactions": total_redactions,
     }
