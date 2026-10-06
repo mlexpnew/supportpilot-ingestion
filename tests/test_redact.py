@@ -52,12 +52,11 @@ def test_samples_produce_expected_results():
     assert results["S-3"][0] == "My card [CARD] was charged twice for order #55231."
     assert results["S-3"][1]["card"] == 1
 
-    # S-4: Trap line - invalid Luhn card and 13-digit tracking number are NOT redacted
+    # S-4: Card-shaped mistyped card is redacted (fail-closed), while 13-digit tracking number survives
     assert (
-        results["S-4"][0]
-        == "Card 4111 1111 1111 1112 never arrived. Tracking number 1234567890123."
+        results["S-4"][0] == "Card [CARD] never arrived. Tracking number 1234567890123."
     )
-    assert results["S-4"][1]["card"] == 0
+    assert results["S-4"][1]["card"] == 1
 
     # S-5: Ticket ID and currency amounts remain untouched
     assert (
@@ -80,23 +79,64 @@ def test_samples_produce_expected_results():
     assert sum(results["S-8"][1].values()) == 0
 
 
-def test_idempotence_on_redacted_text():
-    """Redacting already redacted text must produce identical text and zero counts."""
-    original = "Contact priya@example.com or +91 98765 43210 regarding card 4111 1111 1111 1111."
-    first_pass, counts1 = redact_text(original)
+def test_idempotence_on_all_sample_lines():
+    """Redacting already redacted text must produce identical text and zero counts across all samples."""
+    samples_path = Path("data/pii_samples.jsonl")
+    with samples_path.open("r", encoding="utf-8") as file:
+        for line in file:
+            item = json.loads(line)
+            body = item["body"]
+            first_pass, counts1 = redact_field(body)
+            second_pass, counts2 = redact_field(first_pass)
+            assert second_pass == first_pass
+            assert counts2 == {"card": 0, "email": 0, "phone": 0}
 
-    assert "[EMAIL]" in first_pass
-    assert "[PHONE]" in first_pass
-    assert "[CARD]" in first_pass
-    assert counts1["email"] == 1
-    assert counts1["phone"] == 1
-    assert counts1["card"] == 1
 
-    second_pass, counts2 = redact_text(first_pass)
-    assert second_pass == first_pass
-    assert counts2["email"] == 0
-    assert counts2["phone"] == 0
-    assert counts2["card"] == 0
+def test_card_fail_closed_and_tracking_numbers():
+    """Verify card detection fails closed on card-shaped numbers while preserving tracking numbers."""
+    # 1. Grouped Luhn-fail number (spaces) -> redacted
+    res1 = redact_text("My card 4111 1111 1111 1112 expired.")
+    assert res1.text == "My card [CARD] expired."
+    assert res1.counts["card"] == 1
+
+    # 2. Grouped Luhn-fail number (dashes, no keyword) -> redacted
+    res2 = redact_text("Account code 4111-1111-1111-1112.")
+    assert res2.text == "Account code [CARD]."
+    assert res2.counts["card"] == 1
+
+    # 3. Ungrouped Luhn-fail number (e.g. tracking number) -> preserved intact
+    res3 = redact_text("Package tracking number 1234567890123.")
+    assert res3.text == "Package tracking number 1234567890123."
+    assert res3.counts["card"] == 0
+
+    # 4. Ungrouped Luhn-pass number -> redacted
+    res4 = redact_text("Payment reference 4111111111111111 received.")
+    assert res4.text == "Payment reference [CARD] received."
+    assert res4.counts["card"] == 1
+
+
+def test_safe_strings_must_not_change():
+    """Dates, IP addresses, and monetary totals must survive unredacted."""
+    safe_strings = [
+        "Date 2025-01-14 10:30",
+        "IP 192.168.1.1",
+        "Total 1,234,567.89",
+    ]
+    for text in safe_strings:
+        result = redact_text(text)
+        assert result.text == text
+        assert result.counts == {"card": 0, "email": 0, "phone": 0}
+
+
+def test_unicode_phone_numbers():
+    """Verify Devanagari and full-width phone numbers are matched and redacted."""
+    res_hindi = redact_text("फोन ९८७६५४३२१०")
+    assert res_hindi.text == "फोन [PHONE]"
+    assert res_hindi.counts["phone"] == 1
+
+    res_fullwidth = redact_text("ph １２３４５６７８９０")
+    assert res_fullwidth.text == "ph [PHONE]"
+    assert res_fullwidth.counts["phone"] == 1
 
 
 def test_hostile_input_redos_safety():
@@ -110,18 +150,8 @@ def test_hostile_input_redos_safety():
     elapsed = time.perf_counter() - start_time
 
     assert elapsed < 1.0, f"Hostile input took {elapsed:.2f}s, exceeding 1.0s limit"
-    # Invalid-Luhn repetitive sequences remain unredacted
-    assert result.counts["card"] == 0
-
-    # Test with valid cards to also verify redaction speed
-    valid_hostile = "4111-1111-1111-1111 " * 55_000
-    start_time = time.perf_counter()
-    result_valid = redact_text(valid_hostile)
-    elapsed_valid = time.perf_counter() - start_time
-    assert (
-        elapsed_valid < 1.0
-    ), f"Valid hostile input took {elapsed_valid:.2f}s, exceeding 1.0s limit"
-    assert result_valid.counts["card"] == 55_000
+    # Grouped card blocks fail closed and are redacted
+    assert result.counts["card"] == 55_000
 
 
 def test_email_edge_cases():
@@ -165,9 +195,9 @@ def test_subject_and_body_both_redacted(tmp_path):
     report = process_file(input_file, output_dir)
     assert report["total_records"] == 1
     assert report["total_redactions"] == 3
-    assert report["email"] == 1
-    assert report["phone"] == 1
-    assert report["card"] == 1
+    assert report["counts"]["email"] == 1
+    assert report["counts"]["phone"] == 1
+    assert report["counts"]["card"] == 1
 
     redacted_records = [
         json.loads(line)
@@ -223,10 +253,11 @@ def test_redaction_report_structure_and_sorted_keys(tmp_path):
 
     report_data = json.loads(raw_report)
     keys = list(report_data.keys())
-    assert keys == sorted(keys), "Keys in redaction_report.json must be sorted"
+    assert keys == ["counts", "total_records", "total_redactions"]
+    assert list(report_data["counts"].keys()) == ["card", "email", "phone"]
     assert report_data["total_records"] == 1
     assert report_data["total_redactions"] == 1
-    assert report_data["email"] == 1
+    assert report_data["counts"]["email"] == 1
 
 
 def test_cli_deterministic_and_byte_identical(tmp_path):
