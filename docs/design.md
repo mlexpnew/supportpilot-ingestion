@@ -89,12 +89,21 @@ SupportPilot ticket text must be sanitized before transmission to downstream LLM
   - **Accepted False-Positive Risk**: A tracking number or serial number formatted in 4-4-4-4 or immediately adjacent to the word "card" will be redacted as `[CARD]`. We accept this minor false-positive risk because preventing card data exfiltration is non-negotiable for fintech compliance.
   - **Known Gap (Residual Leak)**: A customer who writes an ungrouped, mistyped 16-digit card that fails Luhn without any nearby card keywords (e.g. `"my number is 4111111111111112"`) will survive redaction unredacted. This false-negative gap is **flagged for Neha (Product & Compliance) and pending her decision**. Until formal product/compliance sign-off, accountability is held by engineering (the author and PR reviewers: Arjun, Sana). This trade-off is proposed because indiscriminately redacting all ungrouped 13–19 digit strings would destroy 100% of order numbers, shipment barcodes, and courier tracking numbers across all non-card tickets.
 
-### 2. Order Numbers, Ticket IDs, and Tracking Numbers
-- **Decision**: Preserved intact without requiring manual keyword allowlists, with an acknowledged statistical false-positive rate.
-- **Rationale & Statistical Trade-off**:
-  - Order numbers (e.g. `#55231`) and ticket IDs (e.g. `T-1001`) contain fewer than 13 digits and have non-digit prefixes (`#`, `T-`), safely bypassing card extraction.
-  - Courier tracking numbers (e.g. 13-digit `1234567890123` in sample S-4) are ungrouped and preserved when they fail the Luhn checksum.
-  - **Statistical False-Positive Rate (~10%)**: Luhn validation is a mod-10 checksum algorithm; approximately 1 in 10 random digit sequences (~10%) will pass Luhn purely by chance. Consequently, roughly 10% of long numeric tracking numbers will be redacted as `[CARD]`. This ~10% false-positive rate is explicitly accepted as an operational compromise to guarantee that all actual Luhn-valid cards are redacted without maintaining brittle merchant-specific tracking format allowlists.
+### 2. Order Numbers, Ticket IDs, Tracking Numbers, and Numeric References
+- **Rules Governing Numeric Identifiers**:
+  - **Prefix-Protected Identifiers**: Order numbers and ticket IDs carrying a non-digit prefix (e.g. `#55231`, `T-1001`) survive intact because they do not match digit-only extraction patterns.
+  - **Digit-Length Rules**:
+    - **Fewer than 10 digits**: Survive intact (below phone and card length thresholds).
+    - **Bare 10-digit runs**: Redacted as `[PHONE]` (e.g. `Order 1234567890 shipped` $\to$ `Order [PHONE] shipped`). Standalone 10-digit runs are indistinguishable from standard US / Indian phone numbers, and fail closed under phone sanitization.
+    - **11 to 12 digits**: Ungrouped runs without phone formatting bypass phone matching and fall below the 13-digit card minimum, surviving intact.
+    - **13 to 19 digits**: Preserved only if they are ungrouped, lack card context keywords, and fail the Luhn checksum (e.g. 13-digit tracking number `1234567890123`, 14-digit timestamp `Ref 20250114103000`, 14-digit amount `Amount 12345678901234 INR`).
+- **Accepted False-Positive Risks & Statistical Trade-Offs**:
+  1. **Bare 10-Digit Order Numbers Redacted as `[PHONE]`**:
+     - *Risk*: Clients whose systems generate bare 10-digit order IDs will have them redacted as `[PHONE]`.
+     - *Flagged for Neha*: This false-positive risk is explicitly **flagged for Neha**. If enterprise clients utilize bare 10-digit numeric order IDs, a merchant-specific allowlist or structural prefix rule will be required in a future iteration.
+  2. **~10% Statistical Luhn Collision Rate for Long Numeric Runs**:
+     - Long numeric references (such as tracking IDs like `1234567890123`, 14-digit timestamps like `20250114103000`, or bare amounts like `12345678901234`) survive because they happen to fail the Luhn checksum.
+     - Because Luhn is a mod-10 checksum algorithm, approximately **1 in 10 random digit sequences (~10%)** will pass Luhn purely by chance and will be redacted as `[CARD]`. This ~10% false-positive rate is explicitly accepted as an operational compromise to guarantee that all valid payment cards are redacted without maintaining brittle merchant-specific tracking format allowlists.
 
 ### 3. Bank Account Numbers and National IDs
 - **Decision**: Out of scope for SP-102; flagged for Neha.
@@ -115,12 +124,6 @@ SupportPilot ticket text must be sanitized before transmission to downstream LLM
   - Redaction tokens are explicitly bounded so they are not recognized as card context keywords in subsequent passes.
   - `RedactionResult` is implemented as a `NamedTuple`, ensuring backward-compatible indexing (`result[0]`), attribute access (`result.text`), and tuple unpacking (`text, counts = redact_text(...)`).
   - Running redaction multiple times over already-redacted text yields identical text and zero additional redactions.
-
-### 6. Ten-Digit Numbers, Timestamps, and Known False Positives
-- **Behavior & Known False-Positive Class**:
-  - The phone detection pattern matches standard 10-digit formats (e.g. US 10-digit numbers or Indian numbers). Consequently, unhyphenated 10-digit numbers such as 10-digit order numbers or numeric identifiers (e.g. `Order 1234567890 shipped`) are redacted as `[PHONE]`.
-  - Longer unhyphenated references (such as 14-digit timestamps like `Ref 20250114103000` or 14-digit amounts `Amount 12345678901234 INR`) do not match the phone regex and fail the Luhn check, correctly surviving unredacted.
-  - **Risk Acknowledged**: Redacting standalone 10-digit numeric identifiers as `[PHONE]` is an acknowledged false-positive class inherent to fail-closed phone sanitization without customer-specific domain allowlists.
 
 ## Reporting & Privacy Invariants
 
