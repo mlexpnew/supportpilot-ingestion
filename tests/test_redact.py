@@ -346,3 +346,13 @@ def test_crash_resilience_cleans_stale_report(tmp_path):
     fresh_report = json.loads(stale_report.read_text(encoding="utf-8"))
     assert "stale" not in fresh_report
     assert fresh_report["total_records"] == 1
+
+
+def test_idempotence_card_placeholder_in_tracking_window():
+    """Ensure [CARD] placeholder does not act as a keyword or expand window across clauses."""
+    s = "My card 4111 1111 1111 1112 failed. Tracking 1234567890123 is separate."
+    pass1, counts1 = redact_text(s)
+    pass2, counts2 = redact_text(pass1)
+    assert pass1 == "My card [CARD] failed. Tracking 1234567890123 is separate."
+    assert pass2 == pass1
+    assert counts2 == {"card": 0, "email": 0, "phone": 0}
