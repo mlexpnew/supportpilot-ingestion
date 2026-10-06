@@ -19,7 +19,7 @@ class Status(str, Enum):
 
 
 class Ticket(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
 
     ticket_id: str = Field(min_length=1)
     customer_id: str = Field(min_length=1)

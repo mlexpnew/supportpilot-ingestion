@@ -453,3 +453,24 @@ def test_fail_on_rejects_cli_flag(tmp_path):
     with patch.object(sys, "argv", test_args_no_flag):
         code = cli_main()
         assert code == 0
+
+
+def test_validation_errors_hide_input():
+    from pydantic import ValidationError
+
+    from supportpilot.ingestion.models import Ticket
+
+    try:
+        Ticket.model_validate(
+            {
+                "ticket_id": "T-1",
+                "customer_id": "C-1",
+                "created_at": "secret_bad_date",
+                "channel": "email",
+                "body": "secret_customer_data",
+                "status": "open",
+            }
+        )
+    except ValidationError as exc:
+        assert "secret_bad_date" not in str(exc)
+        assert "input_value" not in str(exc)
