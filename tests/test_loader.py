@@ -76,7 +76,7 @@ def test_unknown_channel_is_rejected(tmp_path):
     assert report["invalid_records"] == 1
 
 
-def test_duplicate_ticket_id_is_rejected(tmp_path):
+def test_duplicate_ticket_id_is_rejected_with_ticket_id(tmp_path):
     input_file = tmp_path / "input.jsonl"
     output_dir = tmp_path / "output"
 
@@ -92,6 +92,15 @@ def test_duplicate_ticket_id_is_rejected(tmp_path):
 
     assert report["valid_records"] == 1
     assert report["invalid_records"] == 1
+
+    rejects = (output_dir / "rejects.jsonl").read_text(encoding="utf-8")
+
+    reject = json.loads(rejects.strip())
+
+    assert reject["ticket_id"] == "T-1001"
+    assert reject["field"] == "ticket_id"
+    assert reject["error_type"] == "duplicate_ticket_id"
+    assert "Payment failed" not in rejects
 
 
 def test_corrupt_json_is_rejected(tmp_path):

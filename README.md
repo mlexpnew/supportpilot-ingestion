@@ -1,4 +1,16 @@
 # supportpilot-ingestion
+# SupportPilot Ingestion
+
+## Overview
+
+Streaming JSONL ticket ingestion and validation service built with Python and Pydantic v2.
+
+## Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ## Rejection Error Codes
 
 Rejected records use a stable application-level error vocabulary:

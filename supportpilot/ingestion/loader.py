@@ -12,13 +12,19 @@ def _reject(
     line_number: int,
     error_type: str,
     field: str | None = None,
+    ticket_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a sanitized rejection record without exposing PII."""
-    return {
+    reject = {
         "line_number": line_number,
         "field": field,
         "error_type": error_type,
     }
+
+    if ticket_id is not None:
+        reject["ticket_id"] = ticket_id
+
+    return reject
 
 
 def _validation_rejection(
@@ -103,6 +109,7 @@ def validate_lines(
                         line_number,
                         "duplicate_ticket_id",
                         "ticket_id",
+                        ticket_id=ticket.ticket_id,
                     ),
                 )
                 continue
@@ -227,6 +234,7 @@ def process_file(
                             line_number,
                             "duplicate_ticket_id",
                             "ticket_id",
+                            ticket_id=ticket.ticket_id,
                         ),
                         ensure_ascii=False,
                     )
