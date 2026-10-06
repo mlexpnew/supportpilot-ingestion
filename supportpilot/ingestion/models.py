@@ -46,6 +46,13 @@ class Ticket(BaseModel):
             raise ValueError("must not be empty")
         return value
 
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def validate_created_at_is_string(cls, value: object) -> object:
+        if not isinstance(value, str):
+            raise ValueError("must be an ISO 8601 string")  # noqa: TRY004
+        return value
+
     @field_validator("created_at")
     @classmethod
     def validate_timezone(cls, value: datetime) -> datetime:
