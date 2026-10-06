@@ -87,7 +87,7 @@ SupportPilot ticket text must be sanitized before transmission to downstream LLM
     2. Numbers accompanied by card keywords (`card`, `visa`, `mastercard`, `amex`) in the immediate 25-character context window are redacted as `[CARD]` even if they fail Luhn.
     3. Ungrouped solid runs of 13–19 digits without card keywords (such as courier tracking numbers like `1234567890123`) must pass the Luhn checksum to be redacted; if they fail Luhn, they remain unredacted.
   - **Accepted False-Positive Risk**: A tracking number or serial number formatted in 4-4-4-4 or immediately adjacent to the word "card" will be redacted as `[CARD]`. We accept this minor false-positive risk because preventing card data exfiltration is non-negotiable for fintech compliance.
-  - **Known Gap (Residual Leak)**: A customer who writes an ungrouped, mistyped 16-digit card that fails Luhn without any nearby card keywords (e.g. `"my number is 4111111111111112"`) will survive redaction unredacted. This false-negative risk was explicitly evaluated and **accepted by Neha (Product & Compliance)** because indiscriminately redacting all ungrouped 13–19 digit strings would destroy 100% of order numbers, shipment barcodes, and courier tracking numbers across all non-card tickets.
+  - **Known Gap (Residual Leak)**: A customer who writes an ungrouped, mistyped 16-digit card that fails Luhn without any nearby card keywords (e.g. `"my number is 4111111111111112"`) will survive redaction unredacted. This false-negative gap is **flagged for Neha (Product & Compliance) and pending her decision**. Until formal product/compliance sign-off, accountability is held by engineering (the author and PR reviewers: Arjun, Sana). This trade-off is proposed because indiscriminately redacting all ungrouped 13–19 digit strings would destroy 100% of order numbers, shipment barcodes, and courier tracking numbers across all non-card tickets.
 
 ### 2. Order Numbers, Ticket IDs, and Tracking Numbers
 - **Decision**: Preserved intact without requiring manual keyword allowlists, with an acknowledged statistical false-positive rate.
@@ -100,12 +100,13 @@ SupportPilot ticket text must be sanitized before transmission to downstream LLM
 - **Decision**: Out of scope for SP-102; flagged for Neha.
 - **Rationale**: Bank account numbers (9–18 digits depending on country) and national identifiers (such as US SSN, Indian PAN / Aadhaar) do not have a uniform global checksum and risk massive false positives if matched naively. This has been explicitly flagged as an open product question for Neha prior to expanding the PII taxonomy.
 
-### 4. Non-String Values, Malformed Fields, and CLI Error Handling
-- **Decision**: `null` values (such as `subject: null` or `body: null`) are preserved as `null` with 0 redactions. Non-string, non-null values raise a `TypeError` in `redact_field`.
-- **CLI Clean Exit & PII Leak Prevention**:
-  - In the CLI, encountering a non-string or malformed field triggers a clean exit (`exit 1`) with a sanitized message (`Error: PII-redactable fields must be strings or null`) printed to `stderr`.
-  - Raw Python tracebacks are suppressed, and the offending field value / record content is strictly excluded from output streams, stderr, and logs to prevent accidental PII leakage during ingestion failures.
-  - Any partially written temporary files (`.redacted.jsonl.tmp`, `.redaction_report.json.tmp`) are cleaned up immediately via `unlink`.
+### 4. Non-String Values, Malformed Fields, and CLI Batch Failure Decision
+- **Two-Layer Architecture**:
+  - **Core Layer (`redact_field`)**: Preserves `null` values as `null` with 0 redactions. Non-string, non-null values raise a `TypeError("PII-redactable fields must be strings or null")`.
+  - **CLI Layer (`process_file` / `__main__.py`)**: Catches `TypeError`, annotates with the 1-indexed line number, prints a clean error message (`Error at line {line_number}: PII-redactable fields must be strings or null`) to `stderr`, immediately unlinks temporary output files (`.redacted.jsonl.tmp`, `.redaction_report.json.tmp`), and exits with code `1`. Raw tracebacks and record field values are strictly suppressed to guarantee zero PII leakage on failure.
+- **Product Decision (Fail-Stop Batch Run)**:
+  - Encountering a single malformed row fails the entire batch run rather than skipping or writing a sanitized reject record.
+  - **Accepted Trade-Off**: In a production nightly batch, a single corrupt record will halt the processing of 100k tickets. This fail-stop policy is explicitly accepted for SP-102 because preprocessing operates strictly on `out/valid.jsonl` (the output of the SP-101 ticket validator), which already enforces data types and shunts invalid records to `rejects.jsonl`. A non-string field reaching SP-102 indicates an upstream pipeline breach or severe data corruption, justifying an immediate abort before sending compromised data to external LLMs. If per-record reject tolerance is required in the future, it can be designed as a coordinated extension with Priya and Neha.
 
 ### 5. Idempotence & Data Structure Invariants
 - **Decision**: The redaction process is strictly idempotent across multiple passes.
@@ -114,6 +115,12 @@ SupportPilot ticket text must be sanitized before transmission to downstream LLM
   - Redaction tokens are explicitly bounded so they are not recognized as card context keywords in subsequent passes.
   - `RedactionResult` is implemented as a `NamedTuple`, ensuring backward-compatible indexing (`result[0]`), attribute access (`result.text`), and tuple unpacking (`text, counts = redact_text(...)`).
   - Running redaction multiple times over already-redacted text yields identical text and zero additional redactions.
+
+### 6. Ten-Digit Numbers, Timestamps, and Known False Positives
+- **Behavior & Known False-Positive Class**:
+  - The phone detection pattern matches standard 10-digit formats (e.g. US 10-digit numbers or Indian numbers). Consequently, unhyphenated 10-digit numbers such as 10-digit order numbers or numeric identifiers (e.g. `Order 1234567890 shipped`) are redacted as `[PHONE]`.
+  - Longer unhyphenated references (such as 14-digit timestamps like `Ref 20250114103000` or 14-digit amounts `Amount 12345678901234 INR`) do not match the phone regex and fail the Luhn check, correctly surviving unredacted.
+  - **Risk Acknowledged**: Redacting standalone 10-digit numeric identifiers as `[PHONE]` is an acknowledged false-positive class inherent to fail-closed phone sanitization without customer-specific domain allowlists.
 
 ## Reporting & Privacy Invariants
 

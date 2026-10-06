@@ -376,9 +376,62 @@ def test_cli_non_string_field_clean_exit_without_pii(tmp_path, capsys):
         assert code == 1
 
     captured = capsys.readouterr()
-    assert "Error: PII-redactable fields must be strings or null" in captured.err
+    assert (
+        "Error at line 1: PII-redactable fields must be strings or null" in captured.err
+    )
     assert str(secret_value) not in captured.err
     assert str(secret_value) not in captured.out
     assert "Traceback" not in captured.err
     assert not (output_dir / "redacted.jsonl").exists()
     assert not (output_dir / "redaction_report.json").exists()
+
+
+def test_full_pipeline_record_fields_preserved(tmp_path):
+    """Ensure all valid.jsonl metadata fields (customer_id, created_at, language, status) and null subject survive intact."""
+    input_file = tmp_path / "valid.jsonl"
+    output_dir = tmp_path / "out"
+
+    record = {
+        "ticket_id": "T-1002",
+        "customer_id": "C-12",
+        "created_at": "2025-01-14T09:20:30+05:30",
+        "channel": "chat",
+        "subject": None,
+        "body": "I was charged twice for order #55231 on my card 4111 1111 1111 1111.",
+        "language": "en",
+        "status": "pending",
+    }
+    input_file.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    report = process_file(input_file, output_dir)
+    assert report["total_records"] == 1
+    assert report["counts"]["card"] == 1
+
+    redacted_lines = (
+        (output_dir / "redacted.jsonl").read_text(encoding="utf-8").strip().split("\n")
+    )
+    result = json.loads(redacted_lines[0])
+
+    assert result["ticket_id"] == "T-1002"
+    assert result["customer_id"] == "C-12"
+    assert result["created_at"] == "2025-01-14T09:20:30+05:30"
+    assert result["channel"] == "chat"
+    assert result["subject"] is None
+    assert result["body"] == "I was charged twice for order #55231 on my card [CARD]."
+    assert result["language"] == "en"
+    assert result["status"] == "pending"
+
+
+def test_ten_digit_numbers_and_long_numeric_references():
+    """Verify 10-digit numbers redact as [PHONE] (known false-positive) while 14-digit references survive."""
+    res1 = redact_text("Order 1234567890 shipped")
+    assert res1.text == "Order [PHONE] shipped"
+    assert res1.counts["phone"] == 1
+
+    res2 = redact_text("Ref 20250114103000")
+    assert res2.text == "Ref 20250114103000"
+    assert res2.counts == {"card": 0, "email": 0, "phone": 0}
+
+    res3 = redact_text("Amount 12345678901234 INR")
+    assert res3.text == "Amount 12345678901234 INR"
+    assert res3.counts == {"card": 0, "email": 0, "phone": 0}

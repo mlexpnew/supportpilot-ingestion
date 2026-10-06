@@ -220,7 +220,7 @@ def process_file(
             input_path.open("r", encoding="utf-8") as in_file,
             tmp_redacted_path.open("w", encoding="utf-8") as out_file,
         ):
-            for line in in_file:
+            for line_number, line in enumerate(in_file, start=1):
                 if not line.strip():
                     continue
 
@@ -230,17 +230,20 @@ def process_file(
 
                 total_records += 1
 
-                if "subject" in record and record["subject"] is not None:
-                    redacted_subj, subj_counts = redact_field(record["subject"])
-                    record["subject"] = redacted_subj
-                    for k, v in subj_counts.items():
-                        total_counts[k] += v
+                try:
+                    if "subject" in record and record["subject"] is not None:
+                        redacted_subj, subj_counts = redact_field(record["subject"])
+                        record["subject"] = redacted_subj
+                        for k, v in subj_counts.items():
+                            total_counts[k] += v
 
-                if "body" in record and record["body"] is not None:
-                    redacted_body, body_counts = redact_field(record["body"])
-                    record["body"] = redacted_body
-                    for k, v in body_counts.items():
-                        total_counts[k] += v
+                    if "body" in record and record["body"] is not None:
+                        redacted_body, body_counts = redact_field(record["body"])
+                        record["body"] = redacted_body
+                        for k, v in body_counts.items():
+                            total_counts[k] += v
+                except TypeError as exc:
+                    raise TypeError(f"line {line_number}: {exc}") from None
 
                 out_file.write(json.dumps(record, ensure_ascii=False) + "\n")
 

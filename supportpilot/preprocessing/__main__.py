@@ -45,7 +45,11 @@ def main() -> int:
         print(f"Path conflict: {exc}", file=sys.stderr)
         return 1
     except TypeError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        msg = str(exc)
+        if msg.startswith("line "):
+            print(f"Error at {msg}", file=sys.stderr)
+        else:
+            print(f"Error: {msg}", file=sys.stderr)
         return 1
     except OSError as exc:
         print(f"Error processing files: {exc}", file=sys.stderr)
