@@ -1,0 +1,10 @@
+{"ticket_id": "T-1001", "customer_id": "C-88", "created_at": "2025-01-14T09:15:00Z", "channel": "email", "subject": "Order not delivered", "body": "My order #55231 was supposed to arrive on Monday.", "status": "open"}
+{"ticket_id": "T-1002", "customer_id": "C-12", "created_at": "2025-01-14T09:20:30+05:30", "channel": "chat", "body": "I was charged twice for the same item.", "language": "en", "status": "pending"}
+{"ticket_id": "T-1003", "customer_id": "C-45", "created_at": "14/01/2025 10:05", "channel": "email", "subject": "Refund", "body": "Please refund my purchase.", "status": "open"}
+{"ticket_id": "T-1004", "customer_id": "C-77", "created_at": "2025-01-14T10:30:00Z", "channel": "fax", "body": "Need help with my account.", "status": "open"}
+{"ticket_id": "T-1005", "customer_id": "C-31", "created_at": "2025-01-14T11:00:00Z", "channel": "social", "body": "   ", "status": "open"}
+{"ticket_id": "T-1001", "customer_id": "C-88", "created_at": "2025-01-14T09:15:00Z", "channel": "email", "subject": "Order not delivered (follow-up)", "body": "Any update on this please?", "status": "pending"}
+{"ticket_id": "T-1006", "customer_id": "C-90", "created_at": "2025-01-14T12:10:00Z", "channel": "phone", "subject": "Card PIN reset", "body": "मुझे अपना कार्ड पिन रीसेट करना है।", "language": "hi", "status": "resolved"}
+{"ticket_id": "T-1007", "created_at": "2025-01-14T12:45:00Z", "channel": "chat", "body": "Where is my refund?", "status": "open"}
+{this line is not valid json at all
+{"ticket_id": "T-1008", "customer_id": "C-19", "created_at": "2025-01-14T13:20:00Z", "channel": "email", "subject": "Wrong size", "body": "I received a medium instead of a large.", "status": "escalated"}
