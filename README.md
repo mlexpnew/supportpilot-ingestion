@@ -98,11 +98,11 @@ Blank lines and lines containing only whitespace are skipped during processing:
 
 - **Current Implementation**: In-memory Python `set[str]` storing unique accepted `ticket_id` values.
 - **Workbook Projection (2 GB limit)**:
-  - For a ~2 GB memory boundary, the in-memory set can accommodate approximately **14.4 million records** (~1.46 GB resident memory for the ID set, plus runtime and OS headroom).
+  - At ~109 bytes per ID (`108.87 bytes/ID` net delta), a 2 GB memory boundary can accommodate approximately **18 million records** (or ~14–15 million records leaving generous runtime and OS headroom).
 - **Empirical Measurements (`/usr/bin/time -l`)**:
   - Baseline (1 record): **31.77 MB** RSS (`31,768,576 bytes`).
-  - 1,000,000 records (139 MB file): **140.6 MB** RSS (`140,600,000 bytes`), processed in **9.38 s** (~106,600 records/s).
-  - Net memory delta for 1M IDs: `140.6 MB - 31.77 MB` = **108.83 MB** (~`108.83 bytes/ID`).
+  - 1,000,000 records (139 MB file): **140.64 MB** RSS (`140,640,256 bytes`), processed in **9.38 s** (~106,600 records/s).
+  - Net memory delta for 1M IDs: `140,640,256 bytes - 31,768,576 bytes` = **108,871,680 bytes** (~`108.87 bytes/ID`, or ~`109 bytes/ID`).
 - **Alternative for Greater Scale**: For datasets exceeding 10–14 million records or in severely memory-constrained environments (<512 MB RAM), replace the in-memory set with:
   - An external key-value store (e.g. Redis `SET` / `SETNX` commands).
   - An embedded disk-backed index (such as SQLite with an indexed ID table or RocksDB / LMDB).
