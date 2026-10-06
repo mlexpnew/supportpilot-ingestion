@@ -21,12 +21,24 @@ pip install -r requirements-dev.txt
 
 ## CLI Usage
 
+### Ingestion & Validation (SP-101)
+
 ```bash
 python -m supportpilot.ingestion --input data/sample_tickets.jsonl --output-dir out
 ```
 
 Optional flags:
 - `--fail-on-rejects`: Exits with non-zero status (code 2) if any invalid records are encountered. By default, the CLI exits `0` upon completing processing and writes invalid records to `rejects.jsonl`.
+
+### PII Redaction (SP-102)
+
+```bash
+python -m supportpilot.preprocessing --input out/valid.jsonl --output-dir out_redacted
+```
+
+Reads tickets line by line, redacting sensitive customer PII from `body` and `subject` fields:
+- `redacted.jsonl`: Sanitized records with `[EMAIL]`, `[PHONE]`, and `[CARD]` placeholders.
+- `redaction_report.json`: Sorted-key report holding aggregate redaction counts with zero PII leakage.
 
 ## Schema & Extraneous Fields (`extra="ignore"`)
 
