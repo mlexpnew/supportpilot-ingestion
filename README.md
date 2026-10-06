@@ -59,14 +59,21 @@ Blank lines and lines containing only whitespace are skipped during processing:
 - Tracked separately in `report.json` under `blank_lines_skipped`.
 - Invariant: `total_records == valid_records + invalid_records`. Blank lines do not represent ticket records and are excluded from `total_records`.
 
-## Deduplication Memory Estimate & Alternative
+## Deduplication Memory Measurements & 2 GB Projection
 
 - **Current Implementation**: In-memory Python `set[str]` storing unique accepted `ticket_id` values.
-- **Memory Footprint**:
-  - Python string object overhead is ~50 bytes + length; hash table entry is ~8 bytes.
-  - For **50,000 records** (~16-char ID average): ~4–5 MB RAM.
-  - For **1,000,000 records**: ~70–80 MB RAM.
-- **Alternative for Scale**: For tens of millions of records or memory-constrained worker nodes, replace the in-memory set with an external key-value store (e.g. Redis `SET` / `SETNX`) or a persistent disk-backed index (such as SQLite / RocksDB / LMDB) or a Bloom filter for probabilistic pre-filtering.
+- **Empirical Measurements (`/usr/bin/time -l`)**:
+  - Baseline (1 record): **32.88 MB** RSS (Python runtime + imports baseline).
+  - 1,000,000 records (139 MB file): **134.14 MB** RSS, processed in **8.45 s** (~118,000 records/s).
+  - Net memory delta for 1M IDs: `134.14 MB - 32.88 MB` = **101.26 MB**.
+  - **Per-ID Cost**: ~`101.25 bytes/ID` (consistent with CPython's 64-byte `PyASCIIObject` for ~8-char IDs + 16 bytes hash table entry + allocator padding).
+- **2 GB RAM Projection**:
+  - Available memory budget: `(2,000 MB - 32.88 MB) / 101.25 bytes/ID` ≈ **~19.4 million records**.
+  - A standard 2 GB container will reach its memory ceiling at approximately 19–20 million unique ticket IDs.
+- **Alternative for Greater Scale**: For datasets exceeding 10–20 million records or in severely memory-constrained environments (<512 MB RAM), replace the in-memory set with:
+  - An external key-value store (e.g. Redis `SET` / `SETNX` commands).
+  - An embedded disk-backed index (such as SQLite with an indexed ID table or RocksDB / LMDB).
+  - A Bloom filter for $O(1)$ constant-memory probabilistic pre-filtering.
 
 ## Timezone Handling & Product Decision (Flagged for Neha)
 
