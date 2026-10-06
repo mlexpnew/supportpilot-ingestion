@@ -73,14 +73,21 @@ SupportPilot ticket text must be sanitized before transmission to downstream LLM
 ## Decisions on Open Questions
 
 ### 1. 16-Digit Number Failing Luhn: Redact or Leave?
-- **Decision**: Leave unredacted.
-- **Rationale**: Real payment cards adhere to the Luhn checksum standard. Redacting invalid-Luhn numbers creates catastrophic false positives on tracking numbers, order references, parcel IDs, and device serial numbers. For fintech security compliance, legitimate card numbers will always pass the checksum.
+- **Decision**: Fail closed for card-shaped and context-accompanied numbers.
+- **Rationale & Accepted Risk**:
+  - For fintech clients whose enterprise contracts prohibit customer payment card data from ever reaching external LLM APIs, a false negative is a contractual and regulatory breach, while a false positive merely costs minor LLM contextual visibility.
+  - Mistyped cards (such as `4111 1111 1111 1112` in sample S-4 where a single digit is transposed or mistyped) fail the Luhn checksum but are unmistakably card-formatted.
+  - To prevent leaks of customer card numbers due to typos, SupportPilot adopts a hybrid fail-closed strategy:
+    1. Numbers formatted in card-like groups (e.g. 4-4-4-4 such as `4111 1111 1111 1112` or Amex 4-6-5) are redacted as `[CARD]` even if they fail Luhn.
+    2. Numbers accompanied by card keywords (`card`, `visa`, `mastercard`, `amex`) in the immediate context window are redacted as `[CARD]` even if they fail Luhn.
+    3. Ungrouped solid runs of 13–19 digits without card keywords (such as courier tracking numbers like `1234567890123`) must pass the Luhn checksum to be redacted; if they fail Luhn, they remain unredacted.
+  - **Risk Accepted**: A tracking number or serial number formatted in 4-4-4-4 or immediately following the word "card" will be redacted as `[CARD]`. We accept this minor false-positive risk because preventing card data exfiltration is non-negotiable for fintech compliance. Flagged as a compliance decision for Neha.
 
 ### 2. Order Numbers, Ticket IDs, and Tracking Numbers
 - **Decision**: Preserved intact without redaction.
 - **Rationale**:
   - Order numbers (e.g. `#55231`) and ticket IDs (e.g. `T-1001`) contain fewer than 13 digits and have non-digit prefixes (`#`, `T-`).
-  - Tracking numbers (e.g. 13-digit `1234567890123` in sample S-4) fail the Luhn checksum and remain intact without requiring fragile keyword allowlists.
+  - Tracking numbers (e.g. 13-digit `1234567890123` in sample S-4) are ungrouped and fail the Luhn checksum, and thus remain intact without requiring fragile keyword allowlists.
 
 ### 3. Bank Account Numbers and National IDs
 - **Decision**: Out of scope for SP-102; flagged for Neha.
@@ -95,11 +102,9 @@ SupportPilot ticket text must be sanitized before transmission to downstream LLM
 
 ## Reporting & Privacy Invariants
 
-- `redaction_report.json` contains only numeric counts, sorted keys, and a trailing newline:
-  - `card`: Count of redacted payment cards.
-  - `email`: Count of redacted emails.
-  - `phone`: Count of redacted phone numbers.
+- `redaction_report.json` contains only numeric counts nested under a single canonical `counts` dictionary, alongside top-level metadata, with sorted keys and a trailing newline:
+  - `counts`: Dictionary mapping PII type to count (`card`, `email`, `phone`).
   - `total_records`: Number of records processed.
   - `total_redactions`: Sum of all redactions.
-  - `counts`: Dictionary of redaction counts by type.
+- To prevent drifting sources of truth and key collisions, individual entity counts are not duplicated at the top level.
 - Original customer text, ticket IDs, and matched PII values are **never** recorded in the report, CLI logs, stdout, or stderr.

@@ -38,7 +38,19 @@ python -m supportpilot.preprocessing --input out/valid.jsonl --output-dir out_re
 
 Reads tickets line by line, redacting sensitive customer PII from `body` and `subject` fields:
 - `redacted.jsonl`: Sanitized records with `[EMAIL]`, `[PHONE]`, and `[CARD]` placeholders.
-- `redaction_report.json`: Sorted-key report holding aggregate redaction counts with zero PII leakage.
+- `redaction_report.json`: Sorted-key JSON report with per-type counts nested under `counts`:
+
+```json
+{
+  "counts": {
+    "card": 1,
+    "email": 2,
+    "phone": 3
+  },
+  "total_records": 8,
+  "total_redactions": 6
+}
+```
 
 ## Schema & Extraneous Fields (`extra="ignore"`)
 
