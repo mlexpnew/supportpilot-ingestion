@@ -215,53 +215,58 @@ def process_file(
     total_records = 0
     total_counts = {"card": 0, "email": 0, "phone": 0}
 
-    with (
-        input_path.open("r", encoding="utf-8") as in_file,
-        tmp_redacted_path.open("w", encoding="utf-8") as out_file,
-    ):
-        for line in in_file:
-            if not line.strip():
-                continue
+    try:
+        with (
+            input_path.open("r", encoding="utf-8") as in_file,
+            tmp_redacted_path.open("w", encoding="utf-8") as out_file,
+        ):
+            for line in in_file:
+                if not line.strip():
+                    continue
 
-            record = json.loads(line)
-            if not isinstance(record, dict):
-                continue
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    continue
 
-            total_records += 1
+                total_records += 1
 
-            if "subject" in record and record["subject"] is not None:
-                redacted_subj, subj_counts = redact_field(record["subject"])
-                record["subject"] = redacted_subj
-                for k, v in subj_counts.items():
-                    total_counts[k] += v
+                if "subject" in record and record["subject"] is not None:
+                    redacted_subj, subj_counts = redact_field(record["subject"])
+                    record["subject"] = redacted_subj
+                    for k, v in subj_counts.items():
+                        total_counts[k] += v
 
-            if "body" in record and record["body"] is not None:
-                redacted_body, body_counts = redact_field(record["body"])
-                record["body"] = redacted_body
-                for k, v in body_counts.items():
-                    total_counts[k] += v
+                if "body" in record and record["body"] is not None:
+                    redacted_body, body_counts = redact_field(record["body"])
+                    record["body"] = redacted_body
+                    for k, v in body_counts.items():
+                        total_counts[k] += v
 
-            out_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+                out_file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    total_redactions = sum(total_counts.values())
-    report: dict[str, Any] = {
-        "counts": dict(sorted(total_counts.items())),
-        "total_records": total_records,
-        "total_redactions": total_redactions,
-    }
+        total_redactions = sum(total_counts.values())
+        report: dict[str, Any] = {
+            "counts": dict(sorted(total_counts.items())),
+            "total_records": total_records,
+            "total_redactions": total_redactions,
+        }
 
-    with tmp_report_path.open("w", encoding="utf-8") as report_file:
-        json.dump(
-            report,
-            report_file,
-            indent=2,
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        report_file.write("\n")
+        with tmp_report_path.open("w", encoding="utf-8") as report_file:
+            json.dump(
+                report,
+                report_file,
+                indent=2,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            report_file.write("\n")
 
-    # Atomically promote temporary output files upon complete run
-    tmp_redacted_path.replace(redacted_path)
-    tmp_report_path.replace(report_path)
+        # Atomically promote temporary output files upon complete run
+        tmp_redacted_path.replace(redacted_path)
+        tmp_report_path.replace(report_path)
 
-    return report
+        return report
+    except Exception:
+        tmp_redacted_path.unlink(missing_ok=True)
+        tmp_report_path.unlink(missing_ok=True)
+        raise

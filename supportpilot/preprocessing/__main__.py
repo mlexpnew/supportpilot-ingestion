@@ -44,6 +44,9 @@ def main() -> int:
     except ValueError as exc:
         print(f"Path conflict: {exc}", file=sys.stderr)
         return 1
+    except TypeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     except OSError as exc:
         print(f"Error processing files: {exc}", file=sys.stderr)
         return 1

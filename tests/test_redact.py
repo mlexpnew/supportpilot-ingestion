@@ -356,3 +356,29 @@ def test_idempotence_card_placeholder_in_tracking_window():
     assert pass1 == "My card [CARD] failed. Tracking 1234567890123 is separate."
     assert pass2 == pass1
     assert counts2 == {"card": 0, "email": 0, "phone": 0}
+
+
+def test_cli_non_string_field_clean_exit_without_pii(tmp_path, capsys):
+    """Verify CLI exits 1 with clean error and no record values or tracebacks when encountering non-string fields."""
+    input_file = tmp_path / "bad.jsonl"
+    output_dir = tmp_path / "bad_out"
+    secret_value = 12345678
+    input_file.write_text(
+        json.dumps({"ticket_id": "X-1", "body": secret_value}) + "\n",
+        encoding="utf-8",
+    )
+
+    with patch(
+        "sys.argv",
+        ["prog", "--input", str(input_file), "--output-dir", str(output_dir)],
+    ):
+        code = cli_main()
+        assert code == 1
+
+    captured = capsys.readouterr()
+    assert "Error: PII-redactable fields must be strings or null" in captured.err
+    assert str(secret_value) not in captured.err
+    assert str(secret_value) not in captured.out
+    assert "Traceback" not in captured.err
+    assert not (output_dir / "redacted.jsonl").exists()
+    assert not (output_dir / "redaction_report.json").exists()
