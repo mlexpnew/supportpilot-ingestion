@@ -51,6 +51,14 @@ class Ticket(BaseModel):
     def validate_created_at_is_string(cls, value: object) -> object:
         if not isinstance(value, str):
             raise ValueError("must be an ISO 8601 string")  # noqa: TRY004
+        try:
+            float(value.strip())
+            raise ValueError(
+                "must be an ISO 8601 string, not a numeric timestamp"
+            )  # noqa: TRY004
+        except ValueError as exc:
+            if "must be an ISO 8601 string" in str(exc):
+                raise
         return value
 
     @field_validator("created_at")

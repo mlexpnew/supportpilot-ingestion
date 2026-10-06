@@ -258,6 +258,25 @@ def test_numeric_timestamp_is_rejected(tmp_path):
     assert reject["error_type"] == "invalid_timestamp"
 
 
+def test_numeric_timestamp_string_is_rejected(tmp_path):
+    input_file = tmp_path / "input.jsonl"
+    output_dir = tmp_path / "output"
+
+    ticket = valid_ticket()
+    ticket["created_at"] = "1736846100"
+    write_jsonl(input_file, [ticket])
+
+    report = process_file(input_file, output_dir)
+
+    assert report["valid_records"] == 0
+    assert report["invalid_records"] == 1
+
+    rejects = (output_dir / "rejects.jsonl").read_text(encoding="utf-8")
+    reject = json.loads(rejects.strip())
+    assert reject["field"] == "created_at"
+    assert reject["error_type"] == "invalid_timestamp"
+
+
 def test_utf8_bom_is_handled(tmp_path):
     input_file = tmp_path / "input.jsonl"
     output_dir = tmp_path / "output"
