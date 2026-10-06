@@ -435,3 +435,54 @@ def test_ten_digit_numbers_and_long_numeric_references():
     res3 = redact_text("Amount 12345678901234 INR")
     assert res3.text == "Amount 12345678901234 INR"
     assert res3.counts == {"card": 0, "email": 0, "phone": 0}
+
+
+def test_hindi_devanagari_card_keywords():
+    """Verify Devanagari card keywords redact ungrouped Luhn-fail cards and preserve non-card numbers."""
+    # 1. Luhn-valid card in Hindi
+    res1 = redact_text("मेरा कार्ड नंबर 4111111111111111 है")
+    assert res1.text == "मेरा कार्ड नंबर [CARD] है"
+    assert res1.counts["card"] == 1
+
+    # 2. Grouped Luhn-fail card in Hindi
+    res2 = redact_text("मेरा कार्ड नंबर 4111 1111 1111 1112 है")
+    assert res2.text == "मेरा कार्ड नंबर [CARD] है"
+    assert res2.counts["card"] == 1
+
+    # 3. Mixed English/Hindi with credit card keyword and ungrouped Luhn-fail card
+    res3 = redact_text("my क्रेडिट कार्ड 4111111111111112 failed")
+    assert res3.text == "my क्रेडिट कार्ड [CARD] failed"
+    assert res3.counts["card"] == 1
+
+    # 4. Bare 16-digit Luhn-fail card in Hindi with 'कार्ड' keyword
+    res4 = redact_text("मेरा कार्ड नंबर 4111111111111112 है")
+    assert res4.text == "मेरा कार्ड नंबर [CARD] है"
+    assert res4.counts["card"] == 1
+
+    # 5. Bare 16-digit Luhn-fail card without card keywords survives (known gap)
+    res5 = redact_text("मेरा नंबर 4111111111111112 है")
+    assert res5.text == "मेरा नंबर 4111111111111112 है"
+    assert res5.counts["card"] == 0
+
+    # 6. Non-card Hindi sentence with 13-digit tracking number next to 'ऑर्डर' survives
+    res6 = redact_text("ऑर्डर 1234567890123 भेजा गया")
+    assert res6.text == "ऑर्डर 1234567890123 भेजा गया"
+    assert res6.counts == {"card": 0, "email": 0, "phone": 0}
+
+
+def test_hindi_devanagari_idempotence():
+    """Verify multi-pass idempotence across Devanagari text, danda delimiters, and card placeholders."""
+    samples = [
+        "मेरा कार्ड नंबर 4111111111111111 है",
+        "मेरा कार्ड नंबर 4111 1111 1111 1112 है",
+        "my क्रेडिट कार्ड 4111111111111112 failed",
+        "मेरा कार्ड नंबर 4111111111111112 है",
+        "मेरा नंबर 4111111111111112 है",
+        "ऑर्डर 1234567890123 भेजा गया",
+        "मेरा कार्ड 4111 1111 1111 1112 है। ट्रैकिंग 1234567890123 अलग है।",
+    ]
+    for s in samples:
+        pass1, c1 = redact_text(s)
+        pass2, c2 = redact_text(pass1)
+        assert pass1 == pass2
+        assert c2 == {"card": 0, "email": 0, "phone": 0}
