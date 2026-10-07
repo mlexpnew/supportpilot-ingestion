@@ -1,0 +1,285 @@
+"""Safe OrderHub order-status client."""
+
+from __future__ import annotations
+
+import json
+import os
+import random
+import re
+import time
+from dataclasses import dataclass
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+DEFAULT_DEADLINE_SECONDS = 3.0
+MAX_ATTEMPTS = 3
+MAX_ORDER_ID_LENGTH = 64
+BASE_BACKOFF_SECONDS = 0.1
+
+ORDER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+class OrderHubError(Exception):
+    """Base exception for OrderHub failures."""
+
+
+class OrderNotFound(OrderHubError):
+    """Raised when the requested order does not exist."""
+
+
+class AuthenticationError(OrderHubError):
+    """Raised when authentication with OrderHub fails."""
+
+
+class ServiceUnavailable(OrderHubError):
+    """Raised when OrderHub cannot provide a valid response."""
+
+
+# Backward compatibility aliases
+OrderHubOrderError = OrderHubError
+OrderHubTransientError = ServiceUnavailable
+ServiceUnavailableOrderError = ServiceUnavailable
+
+
+@dataclass(frozen=True)
+class OrderStatus:
+    """Safe order-status data returned to callers."""
+
+    order_id: str
+    status: str
+    carrier: str | None
+    eta: str | None
+
+
+def _validate_order_id(order_id: str) -> None:
+    """Validate an untrusted order ID before any network access."""
+    if not isinstance(order_id, str):
+        raise ValueError("order_id must be a string")
+
+    if not order_id:
+        raise ValueError("order_id must not be empty")
+
+    if len(order_id) > MAX_ORDER_ID_LENGTH:
+        raise ValueError("order_id is too long")
+
+    if ORDER_ID_PATTERN.fullmatch(order_id) is None:
+        raise ValueError("invalid order_id")
+
+
+def _get_config() -> tuple[str, str]:
+    """Read and validate OrderHub configuration."""
+    base_url = os.environ.get("ORDERHUB_BASE_URL")
+    api_key = os.environ.get("ORDERHUB_API_KEY")
+
+    if not base_url:
+        raise ServiceUnavailable("OrderHub configuration is unavailable")
+
+    if not api_key:
+        raise AuthenticationError("OrderHub authentication is not configured")
+
+    base_url = base_url.rstrip("/")
+
+    if not base_url:
+        raise ServiceUnavailable("OrderHub configuration is unavailable")
+
+    return base_url, api_key
+
+
+def _remaining_time(deadline: float) -> float:
+    """Return seconds remaining before the request deadline."""
+    return max(0.0, deadline - time.monotonic())
+
+
+def _backoff_seconds(attempt: int, remaining: float) -> float:
+    """Calculate bounded exponential backoff with jitter."""
+    if remaining <= 0:
+        return 0.0
+
+    exponential = BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
+    jitter = random.uniform(0.0, exponential * 0.25)
+
+    return min(exponential + jitter, remaining)
+
+
+def _sleep(delay: float) -> None:
+    """Sleep for a bounded retry delay."""
+    if delay > 0:
+        time.sleep(delay)
+
+
+def _build_url(base_url: str, order_id: str) -> str:
+    """Build the OrderHub URL from validated components."""
+    return f"{base_url}/orders/{order_id}"
+
+
+def _parse_response(payload: bytes, requested_order_id: str) -> OrderStatus:
+    """Parse only the approved fields from an OrderHub response."""
+    try:
+        data: Any = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ServiceUnavailable("OrderHub returned invalid JSON") from exc
+
+    if not isinstance(data, dict):
+        raise ServiceUnavailable("OrderHub returned invalid data")
+
+    required_fields = ("order_id", "status", "carrier", "eta")
+
+    for field in required_fields:
+        if field not in data:
+            raise ServiceUnavailable("OrderHub response is missing required fields")
+
+    response_order_id = data["order_id"]
+    status = data["status"]
+    carrier = data["carrier"]
+    eta = data["eta"]
+
+    if response_order_id != requested_order_id:
+        raise ServiceUnavailable("OrderHub returned an unexpected order")
+
+    if not isinstance(response_order_id, str):
+        raise ServiceUnavailable("OrderHub returned invalid order data")
+
+    if not isinstance(status, str):
+        raise ServiceUnavailable("OrderHub returned invalid status data")
+
+    if carrier is not None and not isinstance(carrier, str):
+        raise ServiceUnavailable("OrderHub returned invalid carrier data")
+
+    if eta is not None and not isinstance(eta, str):
+        raise ServiceUnavailable("OrderHub returned invalid ETA data")
+
+    return OrderStatus(
+        order_id=response_order_id,
+        status=status,
+        carrier=carrier,
+        eta=eta,
+    )
+
+
+def _request_once(
+    url: str,
+    api_key: str,
+    timeout: float,
+) -> tuple[int, bytes, str | None]:
+    """Perform one HTTP request and return safe response metadata."""
+    request = Request(
+        url,
+        method="GET",
+        headers={"X-Api-Key": api_key},
+    )
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            status = response.status
+            body = response.read()
+            retry_after = response.headers.get("Retry-After")
+            return status, body, retry_after
+    except HTTPError as exc:
+        retry_after = exc.headers.get("Retry-After")
+        body = exc.read()
+        return exc.code, body, retry_after
+
+
+def get_order_status(
+    order_id: str,
+    *,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+) -> OrderStatus:
+    """Fetch an order status while enforcing security and time limits."""
+    _validate_order_id(order_id)
+
+    if deadline_seconds <= 0:
+        raise ValueError("deadline_seconds must be positive")
+
+    base_url, api_key = _get_config()
+    deadline = time.monotonic() + deadline_seconds
+    url = _build_url(base_url, order_id)
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        remaining = _remaining_time(deadline)
+
+        if remaining <= 0:
+            raise ServiceUnavailable("OrderHub request deadline exceeded")
+
+        try:
+            status_code, body, retry_after = _request_once(
+                url,
+                api_key,
+                remaining,
+            )
+
+        except (TimeoutError, URLError, OSError):
+            if attempt == MAX_ATTEMPTS:
+                raise ServiceUnavailable("OrderHub service is unavailable") from None
+
+            remaining = _remaining_time(deadline)
+
+            if remaining <= 0:
+                raise ServiceUnavailable("OrderHub request deadline exceeded")
+
+            delay = _backoff_seconds(attempt, remaining)
+            _sleep(delay)
+            continue
+
+        if status_code == 200:
+            return _parse_response(body, order_id)
+
+        if status_code == 404:
+            raise OrderNotFound("Order not found")
+
+        if status_code == 401:
+            raise AuthenticationError("OrderHub authentication failed")
+
+        if status_code == 429:
+            if attempt == MAX_ATTEMPTS:
+                raise ServiceUnavailable("OrderHub service is unavailable")
+
+            remaining = _remaining_time(deadline)
+
+            if remaining <= 0:
+                raise ServiceUnavailable("OrderHub request deadline exceeded")
+
+            retry_delay = _parse_retry_after(retry_after)
+            if retry_delay is None:
+                retry_delay = _backoff_seconds(attempt, remaining)
+
+            if retry_delay >= remaining:
+                raise ServiceUnavailable("OrderHub request deadline exceeded")
+
+            _sleep(retry_delay)
+            continue
+
+        if 500 <= status_code <= 599:
+            if attempt == MAX_ATTEMPTS:
+                raise ServiceUnavailable("OrderHub service is unavailable")
+
+            remaining = _remaining_time(deadline)
+
+            if remaining <= 0:
+                raise ServiceUnavailable("OrderHub request deadline exceeded")
+
+            delay = _backoff_seconds(attempt, remaining)
+            _sleep(delay)
+            continue
+
+        raise ServiceUnavailable("OrderHub returned an unexpected response")
+
+    raise ServiceUnavailable("OrderHub service is unavailable")
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a numeric Retry-After value without exposing its contents."""
+    if value is None:
+        return None
+
+    try:
+        delay = float(value)
+    except ValueError:
+        return None
+
+    if delay < 0:
+        return None
+
+    return delay
