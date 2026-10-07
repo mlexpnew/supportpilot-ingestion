@@ -486,3 +486,21 @@ def test_hindi_devanagari_idempotence():
         pass2, c2 = redact_text(pass1)
         assert pass1 == pass2
         assert c2 == {"card": 0, "email": 0, "phone": 0}
+
+
+def test_hindi_inflected_card_plural_known_gap():
+    """Lock in behavior for inflected Hindi card forms vs touching card numbers.
+
+    Inflected Hindi forms like 'कार्डों' (ending with combining vowel signs)
+    are excluded by letter lookarounds and survive unredacted (documented known gap).
+    Conversely, card numbers touching base keywords ('कार्ड4111111111111112') are redacted.
+    """
+    # 1. Numbers touching base keyword are redacted
+    res_touching = redact_text("कार्ड4111111111111112")
+    assert res_touching.text == "कार्ड[CARD]"
+    assert res_touching.counts["card"] == 1
+
+    # 2. Plural inflected form survives unredacted as documented known gap
+    res_plural = redact_text("कार्डों 4111111111111112")
+    assert res_plural.text == "कार्डों 4111111111111112"
+    assert res_plural.counts == {"card": 0, "email": 0, "phone": 0}
