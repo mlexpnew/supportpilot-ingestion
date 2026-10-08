@@ -349,3 +349,114 @@ def test_http_non_localhost_base_url_rejected(monkeypatch):
             orderhub.get_order_status("55231")
 
     request.assert_not_called()
+
+
+def test_body_read_respects_deadline_during_drip():
+    """A response dripping one byte at a time raises deadline error before finishing."""
+    clock = 100.0
+
+    def fake_monotonic():
+        return clock
+
+    class SlowStream:
+        def read(self, n):
+            nonlocal clock
+            clock += 0.5
+            return b"x"
+
+    class FakeResponse:
+        def __init__(self, stream):
+            self.status = 200
+            self.headers = {}
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, n):
+            return self.stream.read(n)
+
+    fake_response = FakeResponse(SlowStream())
+
+    with patch("time.monotonic", side_effect=fake_monotonic), patch(
+        "supportpilot.integrations.orderhub._OPENER.open",
+        return_value=fake_response,
+    ):
+        with pytest.raises(orderhub.ServiceUnavailable) as exc_info:
+            orderhub._request_once(
+                "http://127.0.0.1:8099/orders/55231",
+                "dev-key",
+                3.0,
+                deadline=102.0,
+            )
+
+    assert "deadline" in str(exc_info.value).lower()
+
+
+def test_body_size_limit_exact_and_overflow():
+    """A body of exactly the limit passes, and limit + 1 fails without reading further."""
+    import io
+
+    limit = orderhub.MAX_BODY_BYTES
+
+    # Exactly limit passes
+    stream_exact = io.BytesIO(b"a" * limit)
+    result = orderhub._read_body_bounded(stream_exact, deadline=float("inf"))
+    assert len(result) == limit
+
+    # Limit + 1 fails without reading further
+    reads_called = 0
+
+    class OverflowStream:
+        def __init__(self):
+            self.data = io.BytesIO(b"a" * (limit + 500))
+
+        def read(self, n):
+            nonlocal reads_called
+            reads_called += 1
+            return self.data.read(n)
+
+    stream_over = OverflowStream()
+    with pytest.raises(orderhub.ServiceUnavailable) as exc_info:
+        orderhub._read_body_bounded(stream_over, deadline=float("inf"))
+
+    assert "size limit" in str(exc_info.value).lower()
+    # It must stop reading as soon as total exceeds limit
+    assert stream_over.data.tell() <= limit + 1
+
+
+def test_error_response_never_reads_unbounded_body():
+    """Error responses do not read an unbounded body."""
+    read_called = False
+
+    class UnboundedStream:
+        def read(self, *args):
+            nonlocal read_called
+            read_called = True
+            return b"infinite"
+
+        def close(self):
+            pass
+
+    exc = orderhub.HTTPError(
+        url="http://127.0.0.1:8099/orders/55231",
+        code=500,
+        msg="Internal Server Error",
+        hdrs={},
+        fp=UnboundedStream(),
+    )
+
+    with patch("supportpilot.integrations.orderhub._OPENER.open", side_effect=exc):
+        code, body, _ = orderhub._request_once(
+            "http://127.0.0.1:8099/orders/55231",
+            "dev-key",
+            3.0,
+            deadline=float("inf"),
+        )
+
+    assert code == 500
+    assert body == b""
+    assert not read_called

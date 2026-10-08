@@ -19,6 +19,7 @@ MAX_ATTEMPTS = 3
 MAX_ORDER_ID_LENGTH = 64
 BASE_BACKOFF_SECONDS = 0.1
 
+MAX_BODY_BYTES = 65_536
 ORDER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -190,10 +191,40 @@ def _parse_response(payload: bytes, requested_order_id: str) -> OrderStatus:
     )
 
 
+def _read_body_bounded(
+    stream: Any,
+    deadline: float,
+    max_bytes: int = MAX_BODY_BYTES,
+    chunk_size: int = 4096,
+) -> bytes:
+    """Read stream in bounded chunks enforcing size limit and deadline."""
+    chunks: list[bytes] = []
+    total = 0
+
+    while True:
+        if time.monotonic() >= deadline:
+            raise ServiceUnavailable("OrderHub request deadline exceeded")
+
+        remaining_budget = max_bytes - total + 1
+        to_read = min(chunk_size, remaining_budget)
+        chunk = stream.read(to_read)
+        if not chunk:
+            break
+
+        total += len(chunk)
+        if total > max_bytes:
+            raise ServiceUnavailable("OrderHub response body exceeded size limit")
+
+        chunks.append(chunk)
+
+    return b"".join(chunks)
+
+
 def _request_once(
     url: str,
     api_key: str,
     timeout: float,
+    deadline: float | None = None,
 ) -> tuple[int, bytes, str | None]:
     """Perform one HTTP request and return safe response metadata."""
     request = Request(
@@ -202,16 +233,20 @@ def _request_once(
         headers={"X-Api-Key": api_key},
     )
 
+    effective_deadline = (
+        deadline if deadline is not None else (time.monotonic() + timeout)
+    )
+
     try:
         with _OPENER.open(request, timeout=timeout) as response:
             status = response.status
-            body = response.read()
             retry_after = response.headers.get("Retry-After")
+            body = _read_body_bounded(response, deadline=effective_deadline)
             return status, body, retry_after
     except HTTPError as exc:
         retry_after = exc.headers.get("Retry-After")
-        body = exc.read()
-        return exc.code, body, retry_after
+        # Do not read unbounded error bodies; response text is never exposed
+        return exc.code, b"", retry_after
 
 
 def get_order_status(
@@ -240,6 +275,7 @@ def get_order_status(
                 url,
                 api_key,
                 remaining,
+                deadline=deadline,
             )
 
         except (TimeoutError, URLError, OSError):
