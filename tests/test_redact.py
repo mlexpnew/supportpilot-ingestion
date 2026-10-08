@@ -489,11 +489,20 @@ def test_hindi_devanagari_idempotence():
 
 
 def test_hindi_inflected_card_plural_known_gap():
-    """Lock in behavior for inflected Hindi card forms vs touching card numbers.
+    """Lock in behavior for inflected Hindi card forms and keyword-free known gaps.
 
-    Inflected Hindi forms like 'कार्डों' (ending with combining vowel signs)
-    are excluded by letter lookarounds and survive unredacted (documented known gap).
-    Conversely, card numbers touching base keywords ('कार्ड4111111111111112') are redacted.
+    Documented in docs/design.md (Section 1, 'Known Gap (Residual Leak)') and
+    flagged as an open decision for Neha (Product & Compliance).
+    If you close this gap on purpose, you MUST update docs/design.md and the
+    Questions for Neha section in the PR description in the same change.
+
+    Known gaps locked in by this test:
+    1. Numbers touching base keywords ('कार्ड4111111111111112') match via negative
+       letter lookarounds and are redacted as [CARD].
+    2. Inflected Hindi nouns with combining vowel signs ('कार्डों 4111111111111112')
+       are excluded by letter boundaries and survive unredacted (known gap).
+    3. Keyword-free sentences with ungrouped Luhn-fail numbers ('मेरा नंबर 4111111111111112 है')
+       survive unredacted (other half of the known gap).
     """
     # 1. Numbers touching base keyword are redacted
     res_touching = redact_text("कार्ड4111111111111112")
@@ -504,3 +513,8 @@ def test_hindi_inflected_card_plural_known_gap():
     res_plural = redact_text("कार्डों 4111111111111112")
     assert res_plural.text == "कार्डों 4111111111111112"
     assert res_plural.counts == {"card": 0, "email": 0, "phone": 0}
+
+    # 3. Keyword-free sentence with ungrouped Luhn-fail card survives (other half of known gap)
+    res_keyword_free = redact_text("मेरा नंबर 4111111111111112 है")
+    assert res_keyword_free.text == "मेरा नंबर 4111111111111112 है"
+    assert res_keyword_free.counts == {"card": 0, "email": 0, "phone": 0}
