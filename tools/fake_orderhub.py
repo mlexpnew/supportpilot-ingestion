@@ -3,16 +3,38 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ORDERS = {
-    "55231": {"order_id": "55231", "status": "shipped", "carrier": "BlueDart",
-              "eta": "2025-01-17", "customer_email": "priya.sharma@example.co.in",
-              "ship_to": "12 MG Road, Bengaluru"},
-    "55232": {"order_id": "55232", "status": "processing", "carrier": None,
-              "eta": None, "customer_email": "rahul@example.com",
-              "ship_to": "7 Park Street, Kolkata"},
-    "55234": {"order_id": "55234", "status": "delivered", "carrier": "Delhivery",
-              "eta": None, "customer_email": "a@example.com", "ship_to": "1 Main St"},
-    "55235": {"order_id": "55235", "status": "shipped", "carrier": "DTDC",
-              "eta": "2025-01-18", "customer_email": "b@example.com", "ship_to": "2 Main St"},
+    "55231": {
+        "order_id": "55231",
+        "status": "shipped",
+        "carrier": "BlueDart",
+        "eta": "2025-01-17",
+        "customer_email": "priya.sharma@example.co.in",
+        "ship_to": "12 MG Road, Bengaluru",
+    },
+    "55232": {
+        "order_id": "55232",
+        "status": "processing",
+        "carrier": None,
+        "eta": None,
+        "customer_email": "rahul@example.com",
+        "ship_to": "7 Park Street, Kolkata",
+    },
+    "55234": {
+        "order_id": "55234",
+        "status": "delivered",
+        "carrier": "Delhivery",
+        "eta": None,
+        "customer_email": "a@example.com",
+        "ship_to": "1 Main St",
+    },
+    "55235": {
+        "order_id": "55235",
+        "status": "shipped",
+        "carrier": "DTDC",
+        "eta": "2025-01-18",
+        "customer_email": "b@example.com",
+        "ship_to": "2 Main St",
+    },
 }
 HITS: dict[str, int] = {}
 
