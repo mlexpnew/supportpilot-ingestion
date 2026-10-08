@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from http.client import IncompleteRead
+from http.client import BadStatusLine, IncompleteRead, LineTooLong
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -430,8 +430,9 @@ def test_body_size_limit_exact_and_overflow():
 
 
 def test_error_response_never_reads_unbounded_body():
-    """Error responses do not read an unbounded body."""
+    """Error responses do not read an unbounded body and close the connection."""
     read_called = False
+    close_called = False
 
     class UnboundedStream:
         def read(self, *args):
@@ -440,7 +441,8 @@ def test_error_response_never_reads_unbounded_body():
             return b"infinite"
 
         def close(self):
-            pass
+            nonlocal close_called
+            close_called = True
 
     exc = orderhub.HTTPError(
         url="http://127.0.0.1:8099/orders/55231",
@@ -461,6 +463,7 @@ def test_error_response_never_reads_unbounded_body():
     assert code == 500
     assert body == b""
     assert not read_called
+    assert close_called
 
 
 @pytest.mark.parametrize(
@@ -601,6 +604,25 @@ def test_incomplete_read_raises_service_unavailable(env):
             orderhub.get_order_status("55231")
 
     assert "incomplete" in str(exc_info.value).lower()
+
+
+@pytest.mark.parametrize(
+    "http_exc",
+    [
+        BadStatusLine("garbage"),
+        LineTooLong("header line too long"),
+    ],
+)
+def test_bad_status_line_and_line_too_long_raise_service_unavailable(env, http_exc):
+    """Garbage status line or oversized header from opener raises ServiceUnavailable."""
+    with patch(
+        "supportpilot.integrations.orderhub._OPENER.open",
+        side_effect=http_exc,
+    ) as mock_open:
+        with pytest.raises(orderhub.ServiceUnavailable):
+            orderhub.get_order_status("55231")
+
+    mock_open.assert_called_once()
 
 
 def test_deeply_nested_json_recursion_error_raises_service_unavailable(env):

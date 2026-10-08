@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date
-from http.client import IncompleteRead, InvalidURL
+from http.client import HTTPException
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -249,10 +249,7 @@ def _read_body_bounded(
 
         remaining_budget = max_bytes - total + 1
         to_read = min(chunk_size, remaining_budget)
-        try:
-            chunk = stream.read(to_read)
-        except IncompleteRead as exc:
-            raise ServiceUnavailable("OrderHub response body was incomplete") from exc
+        chunk = stream.read(to_read)
         if not chunk:
             break
 
@@ -291,14 +288,17 @@ def _request_once(
             retry_after = response.headers.get("Retry-After")
             body = _read_body_bounded(response, deadline=effective_deadline)
             return status, body, retry_after
-    except IncompleteRead as exc:
-        raise ServiceUnavailable("OrderHub response body was incomplete") from exc
-    except (ValueError, InvalidURL) as exc:
-        raise ConfigurationError("OrderHub configuration is unavailable") from exc
     except HTTPError as exc:
-        retry_after = exc.headers.get("Retry-After")
-        # Do not read unbounded error bodies; response text is never exposed
-        return exc.code, b"", retry_after
+        try:
+            retry_after = exc.headers.get("Retry-After")
+            # Do not read unbounded error bodies; response text is never exposed
+            return exc.code, b"", retry_after
+        finally:
+            exc.close()
+    except HTTPException as exc:
+        raise ServiceUnavailable(
+            "OrderHub response was incomplete or invalid HTTP"
+        ) from exc
 
 
 def get_order_status(
@@ -342,8 +342,6 @@ def get_order_status(
             delay = _backoff_seconds(attempt, remaining)
             _sleep(delay)
             continue
-        except IncompleteRead as exc:
-            raise ServiceUnavailable("OrderHub response body was incomplete") from exc
         except ValueError as exc:
             raise ConfigurationError("OrderHub configuration is unavailable") from exc
 
