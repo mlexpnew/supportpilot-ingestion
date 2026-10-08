@@ -460,3 +460,38 @@ def test_error_response_never_reads_unbounded_body():
     assert code == 500
     assert body == b""
     assert not read_called
+
+
+@pytest.mark.parametrize(
+    "invalid_id",
+    [
+        "55231\n",
+        "55231\r\n",
+        "55231 ",
+        "55231\t",
+        "55231\x00",
+        "５５２３１",
+        "A" * 65,
+    ],
+)
+def test_order_id_trailing_newlines_control_and_fullwidth_rejected(env, invalid_id):
+    """Trailing newlines, control chars, full-width digits, and 65-char IDs are rejected pre-network."""
+    with patch("supportpilot.integrations.orderhub._request_once") as request:
+        with pytest.raises(ValueError):
+            orderhub.get_order_status(invalid_id)
+
+    request.assert_not_called()
+
+
+def test_order_id_64_characters_passes(env):
+    """A valid 64-character order ID passes validation and reaches the network."""
+    valid_id = "A" * 64
+    fake_order = _order_response(valid_id)
+    with patch(
+        "supportpilot.integrations.orderhub._request_once",
+        return_value=(200, json.dumps(fake_order).encode("utf-8"), None),
+    ) as request:
+        result = orderhub.get_order_status(valid_id)
+
+    assert result.order_id == valid_id
+    assert request.call_count == 1
