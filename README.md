@@ -59,6 +59,7 @@ Programmatic client for querying the merchant's OrderHub service:
 ```python
 from supportpilot.integrations.orderhub import (
     get_order_status,
+    ConfigurationError,
     OrderNotFound,
     AuthenticationError,
     ServiceUnavailable,
@@ -68,10 +69,12 @@ from supportpilot.integrations.orderhub import (
 try:
     status = get_order_status("55231")
     print(status.order_id, status.status, status.carrier, status.eta)
+except ConfigurationError:
+    print("OrderHub client misconfigured")
 except OrderNotFound:
     print("Order does not exist")
 except AuthenticationError:
-    print("OrderHub API key rejected")
+    print("OrderHub API key rejected by server")
 except ServiceUnavailable:
     print("OrderHub service unavailable or deadline exceeded")
 ```
@@ -80,7 +83,7 @@ except ServiceUnavailable:
 - **Strict 3.0 s Deadline**: Enforces an absolute 3.0-second timeout budget across all attempts (at most 3 attempts).
 - **PII Zero-Leakage**: Strips customer email and physical shipping addresses from the upstream response. Returns only an `OrderStatus` dataclass containing `order_id`, `status`, `carrier`, and `eta`.
 - **Pre-Network Validation**: Rejects path traversal (`../admin`), query string injection (`55231?x=1`), empty strings, and oversized IDs with `ValueError` before any network call.
-- **Typed Exceptions**: Disambiguates between `OrderNotFound` (404), `AuthenticationError` (401), and `ServiceUnavailable` (5xx, timeouts, 429 exhaustion, corrupt JSON).
+- **Typed Exceptions**: Disambiguates between `ConfigurationError` (missing key or malformed URL), `OrderNotFound` (404), `AuthenticationError` (401), and `ServiceUnavailable` (5xx, timeouts, 429 exhaustion, corrupt JSON).
 
 ## Schema & Extraneous Fields (`extra="ignore"`)
 

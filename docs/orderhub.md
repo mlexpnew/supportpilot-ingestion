@@ -35,11 +35,18 @@ Two strict constraints govern this integration:
   - Network-layer errors: connection dropped (`URLError`), OS socket errors (`OSError`), and timeouts (`TimeoutError`).
 - **Not Retried**: Deterministic client failures:
   - HTTP `404` (`OrderNotFound`): An order that does not exist will not exist milliseconds later. Immediate fail-fast.
-  - HTTP `401` (`AuthenticationError`): A bad or missing API key requires operator intervention. Retrying wastes chat budget.
+  - HTTP `401` (`AuthenticationError`): Server explicitly rejected the provided API key. Requires operator intervention; retrying wastes chat budget.
+  - Setup / Local errors (`ConfigurationError`): Missing `ORDERHUB_BASE_URL`, missing `ORDERHUB_API_KEY`, or malformed URLs. Immediate fail-fast before network access.
+
+### Decision 1b: Exception Hierarchy — Why ConfigurationError is a sibling to ServiceUnavailable
+- `ConfigurationError` inherits directly from `OrderHubError` as a sibling to `ServiceUnavailable`, rather than subclassing it.
+- **Rationale**: If `ConfigurationError` subclassed `ServiceUnavailable`, a misconfigured deployment (e.g. forgotten `ORDERHUB_API_KEY` in environment variables) would masquerade as an upstream OrderHub service outage to any caller catching `ServiceUnavailable`. Sibling classes keep deploy/infrastructure misconfigurations cleanly distinguishable from merchant API downtime.
 
 ### Decision 2: Retry-After says 30 s but 1.5 s remain in budget. What happens?
 - If $\text{retry\_delay} \ge \text{remaining\_budget}$, sleeping would guarantee a deadline breach.
 - The client aborts immediately and raises `ServiceUnavailable("OrderHub request deadline exceeded")` without sleeping.
+- **Robust Value Parsing**: Non-numeric or non-finite `Retry-After` headers (e.g. `nan`, `inf`, negative delays) are safely discarded, falling back to standard exponential backoff with jitter.
+- **Unified Retry Helper**: All retryable outcomes (transient network failures, 429 rate limits, and 5xx server errors) route through a single `_retry_or_fail` helper to ensure uniform attempt capping and deadline arithmetic.
 
 ### Decision 3: What happens on a 200 response with a non-JSON body, missing fields, or invalid values?
 - Upstream returned unexpected data (e.g., an HTML gateway error page, truncated payload, or invalid field contents).

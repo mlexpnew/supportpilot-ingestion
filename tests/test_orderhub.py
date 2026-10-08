@@ -346,7 +346,7 @@ def test_http_non_localhost_base_url_rejected(monkeypatch):
     monkeypatch.setenv("ORDERHUB_API_KEY", "dev-key")
 
     with patch("supportpilot.integrations.orderhub._request_once") as request:
-        with pytest.raises(orderhub.ServiceUnavailable):
+        with pytest.raises(orderhub.ConfigurationError):
             orderhub.get_order_status("55231")
 
     request.assert_not_called()
@@ -649,15 +649,79 @@ def test_deeply_nested_json_recursion_error_raises_service_unavailable(env):
         "http://localhost:notaport",
     ],
 )
-def test_malformed_base_url_value_error_raises_service_unavailable(
-    monkeypatch, bad_url
-):
-    """Malformed ORDERHUB_BASE_URL raising ValueError ends in ServiceUnavailable."""
+def test_malformed_base_url_raises_configuration_error(monkeypatch, bad_url):
+    """Malformed ORDERHUB_BASE_URL raising ValueError ends in ConfigurationError."""
     monkeypatch.setenv("ORDERHUB_BASE_URL", bad_url)
     monkeypatch.setenv("ORDERHUB_API_KEY", "dev-key")
 
     with patch("supportpilot.integrations.orderhub._request_once") as request:
-        with pytest.raises(orderhub.ServiceUnavailable):
+        with pytest.raises(orderhub.ConfigurationError):
             orderhub.get_order_status("55231")
 
     request.assert_not_called()
+
+
+def test_missing_api_key_raises_configuration_error(monkeypatch):
+    """Missing ORDERHUB_API_KEY raises ConfigurationError before network access."""
+    monkeypatch.setenv("ORDERHUB_BASE_URL", "http://127.0.0.1:8099")
+    monkeypatch.delenv("ORDERHUB_API_KEY", raising=False)
+
+    with patch("supportpilot.integrations.orderhub._request_once") as request:
+        with pytest.raises(orderhub.ConfigurationError):
+            orderhub.get_order_status("55231")
+
+    request.assert_not_called()
+
+
+def test_missing_base_url_raises_configuration_error(monkeypatch):
+    """Missing ORDERHUB_BASE_URL raises ConfigurationError before network access."""
+    monkeypatch.delenv("ORDERHUB_BASE_URL", raising=False)
+    monkeypatch.setenv("ORDERHUB_API_KEY", "dev-key")
+
+    with patch("supportpilot.integrations.orderhub._request_once") as request:
+        with pytest.raises(orderhub.ConfigurationError):
+            orderhub.get_order_status("55231")
+
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("bad_retry_after", ["nan", "inf", "-1"])
+def test_retry_after_non_finite_or_negative_falls_back_to_backoff(env, bad_retry_after):
+    """Non-finite or negative Retry-After headers fall back to standard backoff."""
+    responses = [
+        (429, b'{"error":"rate_limited"}', bad_retry_after),
+        (200, json.dumps(_order_response("55234")).encode("utf-8"), None),
+    ]
+
+    with patch(
+        "supportpilot.integrations.orderhub._request_once",
+        side_effect=responses,
+    ), patch("supportpilot.integrations.orderhub._sleep") as sleep:
+        res = orderhub.get_order_status("55234")
+
+    assert res.order_id == "55234"
+    sleep.assert_called_once()
+    assert 0.0 < sleep.call_args.args[0] <= 0.25
+
+
+def test_total_elapsed_deadline_with_fake_clock(env):
+    """Retry loop aborts when fake clock advances past total deadline."""
+    clock = 100.0
+
+    def fake_monotonic():
+        return clock
+
+    def fake_sleep(duration):
+        nonlocal clock
+        clock += duration
+
+    with patch("time.monotonic", side_effect=fake_monotonic), patch(
+        "time.sleep", side_effect=fake_sleep
+    ), patch(
+        "supportpilot.integrations.orderhub._request_once",
+        side_effect=orderhub.URLError("transient error"),
+    ):
+        with pytest.raises(orderhub.ServiceUnavailable) as exc_info:
+            orderhub.get_order_status("55231", deadline_seconds=0.15)
+
+    assert "deadline" in str(exc_info.value).lower()

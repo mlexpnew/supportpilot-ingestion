@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import random
 import re
@@ -46,14 +48,11 @@ class ServiceUnavailable(OrderHubError):
     """Raised when OrderHub cannot provide a valid response."""
 
 
-class ConfigurationError(ServiceUnavailable):
+class ConfigurationError(OrderHubError):
     """Raised when OrderHub configuration is invalid or missing."""
 
 
-# Backward compatibility aliases
-OrderHubOrderError = OrderHubError
-OrderHubTransientError = ServiceUnavailable
-ServiceUnavailableOrderError = ServiceUnavailable
+logger = logging.getLogger(__name__)
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -108,7 +107,7 @@ def _get_config() -> tuple[str, str]:
         raise ConfigurationError("OrderHub configuration is unavailable")
 
     if not api_key:
-        raise AuthenticationError("OrderHub authentication is not configured")
+        raise ConfigurationError("OrderHub authentication is not configured")
 
     base_url = base_url.rstrip("/")
 
@@ -155,6 +154,27 @@ def _sleep(delay: float) -> None:
     """Sleep for a bounded retry delay."""
     if delay > 0:
         time.sleep(delay)
+
+
+def _retry_or_fail(
+    attempt: int,
+    deadline: float,
+    delay: float | None = None,
+) -> None:
+    """Consolidated retry helper enforcing max attempts and deadline budget."""
+    if attempt >= MAX_ATTEMPTS:
+        raise ServiceUnavailable("OrderHub service is unavailable")
+
+    remaining = _remaining_time(deadline)
+    if remaining <= 0:
+        raise ServiceUnavailable("OrderHub request deadline exceeded")
+
+    if delay is None:
+        delay = _backoff_seconds(attempt, remaining)
+    elif delay >= remaining:
+        raise ServiceUnavailable("OrderHub request deadline exceeded")
+
+    _sleep(delay)
 
 
 def _build_url(base_url: str, order_id: str) -> str:
@@ -329,63 +349,47 @@ def get_order_status(
                 remaining,
                 deadline=deadline,
             )
-
-        except (TimeoutError, URLError, OSError):
-            if attempt == MAX_ATTEMPTS:
-                raise ServiceUnavailable("OrderHub service is unavailable") from None
-
-            remaining = _remaining_time(deadline)
-
-            if remaining <= 0:
-                raise ServiceUnavailable("OrderHub request deadline exceeded")
-
-            delay = _backoff_seconds(attempt, remaining)
-            _sleep(delay)
+        except (TimeoutError, URLError, OSError) as exc:
+            logger.warning(
+                "OrderHub network error on attempt %d: %s",
+                attempt,
+                type(exc).__name__,
+            )
+            _retry_or_fail(attempt, deadline)
             continue
-        except ValueError as exc:
-            raise ConfigurationError("OrderHub configuration is unavailable") from exc
 
         if status_code == 200:
+            logger.info("OrderHub request succeeded on attempt %d", attempt)
             return _parse_response(body, order_id)
 
         if status_code == 404:
+            logger.info("OrderHub order not found on attempt %d", attempt)
             raise OrderNotFound("Order not found")
 
         if status_code == 401:
+            logger.warning("OrderHub authentication failed on attempt %d", attempt)
             raise AuthenticationError("OrderHub authentication failed")
 
         if status_code == 429:
-            if attempt == MAX_ATTEMPTS:
-                raise ServiceUnavailable("OrderHub service is unavailable")
-
-            remaining = _remaining_time(deadline)
-
-            if remaining <= 0:
-                raise ServiceUnavailable("OrderHub request deadline exceeded")
-
+            logger.warning("OrderHub rate limited on attempt %d", attempt)
             retry_delay = _parse_retry_after(retry_after)
-            if retry_delay is None:
-                retry_delay = _backoff_seconds(attempt, remaining)
-
-            if retry_delay >= remaining:
-                raise ServiceUnavailable("OrderHub request deadline exceeded")
-
-            _sleep(retry_delay)
+            _retry_or_fail(attempt, deadline, delay=retry_delay)
             continue
 
         if 500 <= status_code <= 599:
-            if attempt == MAX_ATTEMPTS:
-                raise ServiceUnavailable("OrderHub service is unavailable")
-
-            remaining = _remaining_time(deadline)
-
-            if remaining <= 0:
-                raise ServiceUnavailable("OrderHub request deadline exceeded")
-
-            delay = _backoff_seconds(attempt, remaining)
-            _sleep(delay)
+            logger.warning(
+                "OrderHub server error %d on attempt %d",
+                status_code,
+                attempt,
+            )
+            _retry_or_fail(attempt, deadline)
             continue
 
+        logger.warning(
+            "OrderHub unexpected status code %d on attempt %d",
+            status_code,
+            attempt,
+        )
         raise ServiceUnavailable("OrderHub returned an unexpected response")
 
     raise ServiceUnavailable("OrderHub service is unavailable")
@@ -401,7 +405,7 @@ def _parse_retry_after(value: str | None) -> float | None:
     except ValueError:
         return None
 
-    if delay < 0:
+    if not math.isfinite(delay) or delay < 0:
         return None
 
     return delay
