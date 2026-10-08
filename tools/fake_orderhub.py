@@ -56,10 +56,32 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True})
         if self.path.startswith("/__hits/"):
             return self._send(200, {"hits": HITS.get(self.path.rsplit("/", 1)[-1], 0)})
+        if self.path == "/leak" or self.path.startswith("/leak"):
+            HITS["leak"] = HITS.get("leak", 0) + 1
+            return self._send(200, {"leaked": True})
         if self.headers.get("X-Api-Key") != "dev-key":
             return self._send(401, {"error": "unauthorized"})
         order_id = self.path.rstrip("/").rsplit("/", 1)[-1]
         HITS[order_id] = HITS.get(order_id, 0) + 1
+        if order_id in ("redirect", "55237"):
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:8098/leak")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if order_id in ("drip", "55238"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            try:
+                for _ in range(30):
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                    time.sleep(0.5)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if order_id == "55233":
             return self._send(500, {"error": "internal"})
         if order_id == "55234" and HITS[order_id] <= 2:

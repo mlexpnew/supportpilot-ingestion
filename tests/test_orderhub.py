@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from http.client import BadStatusLine, IncompleteRead, LineTooLong
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -734,3 +736,47 @@ def test_total_elapsed_deadline_with_fake_clock(env):
             orderhub.get_order_status("55231", deadline_seconds=0.15)
 
     assert "deadline" in str(exc_info.value).lower()
+
+
+@pytest.fixture
+def fake_orderhub_server():
+    """Run an ephemeral fake OrderHub server for live protocol tests."""
+    from http.server import ThreadingHTTPServer
+
+    from tools.fake_orderhub import Handler
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{port}"
+    server.shutdown()
+
+
+def test_live_fake_server_redirect_route(fake_orderhub_server, monkeypatch):
+    """A 302 redirect on fake server raises ServiceUnavailable with key never sent to 2nd host."""
+    from tools.fake_orderhub import HITS
+
+    monkeypatch.setenv("ORDERHUB_BASE_URL", fake_orderhub_server)
+    monkeypatch.setenv("ORDERHUB_API_KEY", "dev-key")
+    HITS.clear()
+
+    with pytest.raises(orderhub.ServiceUnavailable):
+        orderhub.get_order_status("redirect")
+
+    assert HITS.get("leak", 0) == 0
+    assert HITS.get("redirect", 0) == 1
+
+
+def test_live_fake_server_drip_route(fake_orderhub_server, monkeypatch):
+    """Slow drip on fake server gives up near the configured deadline."""
+    monkeypatch.setenv("ORDERHUB_BASE_URL", fake_orderhub_server)
+    monkeypatch.setenv("ORDERHUB_API_KEY", "dev-key")
+
+    t0 = time.perf_counter()
+    with pytest.raises(orderhub.ServiceUnavailable) as exc_info:
+        orderhub.get_order_status("drip", deadline_seconds=0.5)
+    elapsed = time.perf_counter() - t0
+
+    assert "deadline" in str(exc_info.value).lower()
+    assert 0.45 <= elapsed <= 1.5

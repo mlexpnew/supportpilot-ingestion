@@ -11,7 +11,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date
-from http.client import HTTPException
+from http.client import HTTPException, HTTPResponse
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -256,6 +256,7 @@ def _read_body_bounded(
     """Read stream in bounded chunks enforcing size limit and deadline."""
     chunks: list[bytes] = []
     total = 0
+    read_fn = stream.read1 if isinstance(stream, HTTPResponse) else stream.read
 
     while True:
         if time.monotonic() >= deadline:
@@ -263,7 +264,7 @@ def _read_body_bounded(
 
         remaining_budget = max_bytes - total + 1
         to_read = min(chunk_size, remaining_budget)
-        chunk = stream.read(to_read)
+        chunk = read_fn(to_read)
         if not chunk:
             break
 
