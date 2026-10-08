@@ -41,10 +41,15 @@ Two strict constraints govern this integration:
 - If $\text{retry\_delay} \ge \text{remaining\_budget}$, sleeping would guarantee a deadline breach.
 - The client aborts immediately and raises `ServiceUnavailable("OrderHub request deadline exceeded")` without sleeping.
 
-### Decision 3: What happens on a 200 response with a non-JSON body or missing fields?
-- Upstream returned unexpected data (e.g., an HTML gateway error page or truncated payload).
+### Decision 3: What happens on a 200 response with a non-JSON body, missing fields, or invalid values?
+- Upstream returned unexpected data (e.g., an HTML gateway error page, truncated payload, or invalid field contents).
 - Raises `ServiceUnavailable`.
 - Raw bodies, HTML snippets, and field error details are **never** echoed in exception messages to avoid HTML injection and PII leakage.
+- **Field Value Constraints & Trade-Offs**:
+  - `status`: Bounded token string (max 32 chars, matching `^[A-Za-z0-9_-]+$`). A strict enum breaks whenever OrderHub introduces new order lifecycle states (e.g., `out_for_delivery`), whereas open free text risks prompt injection into downstream LLMs. A bounded token pattern owns this trade-off by allowing state expansion while barring arbitrary sentences.
+  - `eta`: Must be `None` or a valid ISO calendar date matching `YYYY-MM-DD` verified via `datetime.date.fromisoformat`. Unparseable strings like `"tomorrow"`, invalid months like `"2025-13-45"`, or out-of-range days are rejected.
+  - `carrier`: Must be `None` or a non-empty string up to 64 chars matching `^[A-Za-z0-9 ._-]+$`. Prompt injection phrases (e.g., containing *"Ignore previous instructions"*) are rejected to prevent attacker payloads from entering chat prompts.
+  - `Empty Strings`: Empty strings in `status`, `carrier`, or `order_id` are rejected as invalid data.
 
 ### Decision 4: What counts as a valid `order_id`?
 - **Rules**: Must be a non-empty `str`, length $\le 64$ characters, matching `re.fullmatch(r"^[A-Za-z0-9_-]+$", order_id)`.

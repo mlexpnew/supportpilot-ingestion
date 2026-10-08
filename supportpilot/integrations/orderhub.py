@@ -8,6 +8,7 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -17,10 +18,15 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 DEFAULT_DEADLINE_SECONDS = 3.0
 MAX_ATTEMPTS = 3
 MAX_ORDER_ID_LENGTH = 64
+MAX_STATUS_LENGTH = 32
+MAX_CARRIER_LENGTH = 64
 BASE_BACKOFF_SECONDS = 0.1
 
 MAX_BODY_BYTES = 65_536
 ORDER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+STATUS_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+CARRIER_PATTERN = re.compile(r"^[A-Za-z0-9 ._-]+$")
+PROMPT_INJECTION_PATTERN = re.compile(r"(?i)\b(?:ignore|system|prompt|instruction)\b")
 
 
 class OrderHubError(Exception):
@@ -171,17 +177,44 @@ def _parse_response(payload: bytes, requested_order_id: str) -> OrderStatus:
     if response_order_id != requested_order_id:
         raise ServiceUnavailable("OrderHub returned an unexpected order")
 
-    if not isinstance(response_order_id, str):
+    if (
+        not isinstance(response_order_id, str)
+        or not response_order_id
+        or len(response_order_id) > MAX_ORDER_ID_LENGTH
+        or ORDER_ID_PATTERN.fullmatch(response_order_id) is None
+    ):
         raise ServiceUnavailable("OrderHub returned invalid order data")
 
-    if not isinstance(status, str):
+    if (
+        not isinstance(status, str)
+        or not status
+        or len(status) > MAX_STATUS_LENGTH
+        or STATUS_PATTERN.fullmatch(status) is None
+    ):
         raise ServiceUnavailable("OrderHub returned invalid status data")
 
-    if carrier is not None and not isinstance(carrier, str):
-        raise ServiceUnavailable("OrderHub returned invalid carrier data")
+    if carrier is not None:
+        if (
+            not isinstance(carrier, str)
+            or not carrier
+            or len(carrier) > MAX_CARRIER_LENGTH
+            or CARRIER_PATTERN.fullmatch(carrier) is None
+            or PROMPT_INJECTION_PATTERN.search(carrier) is not None
+        ):
+            raise ServiceUnavailable("OrderHub returned invalid carrier data")
 
-    if eta is not None and not isinstance(eta, str):
-        raise ServiceUnavailable("OrderHub returned invalid ETA data")
+    if eta is not None:
+        if (
+            not isinstance(eta, str)
+            or not eta
+            or len(eta) != 10
+            or not re.fullmatch(r"^\d{4}-\d{2}-\d{2}$", eta)
+        ):
+            raise ServiceUnavailable("OrderHub returned invalid ETA data")
+        try:
+            date.fromisoformat(eta)
+        except ValueError:
+            raise ServiceUnavailable("OrderHub returned invalid ETA data")
 
     return OrderStatus(
         order_id=response_order_id,
