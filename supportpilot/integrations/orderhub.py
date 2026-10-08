@@ -10,7 +10,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 DEFAULT_DEADLINE_SECONDS = 3.0
@@ -41,6 +42,24 @@ class ServiceUnavailable(OrderHubError):
 OrderHubOrderError = OrderHubError
 OrderHubTransientError = ServiceUnavailable
 ServiceUnavailableOrderError = ServiceUnavailable
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    """Refuse HTTP redirects to prevent leaking authentication headers."""
+
+    def redirect_request(
+        self,
+        req: Any,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+_OPENER = build_opener(_NoRedirectHandler)
 
 
 @dataclass(frozen=True)
@@ -83,6 +102,19 @@ def _get_config() -> tuple[str, str]:
 
     if not base_url:
         raise ServiceUnavailable("OrderHub configuration is unavailable")
+
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        raise ServiceUnavailable("OrderHub configuration is unavailable")
+
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ServiceUnavailable("OrderHub configuration is unavailable")
+
+    if parsed.scheme == "http" and parsed.hostname not in ("127.0.0.1", "localhost"):
+        raise ServiceUnavailable(
+            "OrderHub base URL must use HTTPS for non-localhost hosts"
+        )
 
     return base_url, api_key
 
@@ -171,7 +203,7 @@ def _request_once(
     )
 
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with _OPENER.open(request, timeout=timeout) as response:
             status = response.status
             body = response.read()
             retry_after = response.headers.get("Retry-After")

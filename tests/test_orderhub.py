@@ -314,3 +314,38 @@ def test_api_key_never_appears_in_exception(env):
             orderhub.get_order_status("55231")
 
     assert "dev-key" not in str(exc_info.value)
+
+
+def test_redirect_handler_refuses_redirect():
+    """_NoRedirectHandler returns None to prevent forwarding requests or headers."""
+    handler = orderhub._NoRedirectHandler()
+    req = orderhub.Request("http://127.0.0.1:8099/orders/55231")
+    assert (
+        handler.redirect_request(req, None, 302, "Found", {}, "https://evil.com")
+        is None
+    )
+
+
+@pytest.mark.parametrize("code", [301, 302, 307, 308])
+def test_3xx_redirect_codes_raise_service_unavailable(env, code):
+    """3xx redirects end as ServiceUnavailable with exactly one request."""
+    with patch(
+        "supportpilot.integrations.orderhub._request_once",
+        return_value=(code, b"", None),
+    ) as request:
+        with pytest.raises(orderhub.ServiceUnavailable):
+            orderhub.get_order_status("55231")
+
+    assert request.call_count == 1
+
+
+def test_http_non_localhost_base_url_rejected(monkeypatch):
+    """Non-localhost base URLs must use HTTPS."""
+    monkeypatch.setenv("ORDERHUB_BASE_URL", "http://api.orderhub.example.com")
+    monkeypatch.setenv("ORDERHUB_API_KEY", "dev-key")
+
+    with patch("supportpilot.integrations.orderhub._request_once") as request:
+        with pytest.raises(orderhub.ServiceUnavailable):
+            orderhub.get_order_status("55231")
+
+    request.assert_not_called()
