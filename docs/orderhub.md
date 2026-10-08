@@ -23,6 +23,7 @@ Two strict constraints govern this integration:
   - Attempt 2: sleep $\approx 0.10\text{--}0.125\,\text{s}$, remaining budget $\le 2.9\,\text{s}$.
   - Attempt 3: sleep $\approx 0.20\text{--}0.25\,\text{s}$, remaining budget $\le 2.65\,\text{s}$.
   - Every sleep is bounded: $\text{sleep\_duration} = \min(\text{backoff}, \text{remaining\_budget})$. If $\text{remaining\_budget} \le 0$, the loop aborts immediately with `ServiceUnavailable`. Total execution cannot exceed 3.0 s.
+- **Streaming Drip Bound**: The socket timeout applies to each socket recv call, and the deadline is checked between chunks. In the worst-case slow drip scenario where bytes arrive just under the timeout threshold, total latency is bounded by **deadline plus at most one socket timeout** (~6 s worst case).
 
 ---
 
@@ -52,10 +53,13 @@ Two strict constraints govern this integration:
 - Upstream returned unexpected data (e.g., an HTML gateway error page, truncated payload, or invalid field contents).
 - Raises `ServiceUnavailable`.
 - Raw bodies, HTML snippets, and field error details are **never** echoed in exception messages to avoid HTML injection and PII leakage.
-- **Field Value Constraints & Trade-Offs**:
-  - `status`: Bounded token string (max 32 chars, matching `^[A-Za-z0-9_-]+$`). A strict enum breaks whenever OrderHub introduces new order lifecycle states (e.g., `out_for_delivery`), whereas open free text risks prompt injection into downstream LLMs. A bounded token pattern owns this trade-off by allowing state expansion while barring arbitrary sentences.
-  - `eta`: Must be `None` or a valid ISO calendar date matching `YYYY-MM-DD` verified via `datetime.date.fromisoformat`. Unparseable strings like `"tomorrow"`, invalid months like `"2025-13-45"`, or out-of-range days are rejected.
-  - `carrier`: Must be `None` or a non-empty string up to 64 chars matching `^[A-Za-z0-9 ._-]+$`. Prompt injection phrases (e.g., containing *"Ignore previous instructions"*) are rejected to prevent attacker payloads from entering chat prompts.
+- **Fail-Closed Policy vs Degrading**:
+  - We decided to fail the entire lookup with `ServiceUnavailable` rather than degrading malformed `carrier` or `eta` to `None`.
+  - *Rationale*: A corrupted carrier (e.g. integer or 5,000 chars) or invalid ETA indicates payload corruption or upstream contract violation. Returning partial data risks downstream chat agents giving customers misleading assurances with untrusted data. Failing closed maintains system invariants and satisfies Priya's acceptance criteria.
+- **Field Value Constraints & Formats**:
+  - `status`: Bounded token string (max 32 chars, matching `^[A-Za-z0-9_-]+$`). Assumed to be machine tokens (`snake_case` or `kebab-case`, e.g. `shipped`, `delivered`, `out_for_delivery`). Spaces are strictly forbidden to prevent natural language sentences from being accepted as status codes and acting as prompt injection vectors into downstream LLMs.
+  - `eta`: Must be `None` or a valid ISO calendar date matching `YYYY-MM-DD` using strictly ASCII digits (`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`) verified via `datetime.date.fromisoformat`. Non-ASCII digits, unparseable strings like `"tomorrow"`, invalid months like `"2025-13-45"`, or out-of-range days are rejected.
+  - `carrier`: Must be `None` or a non-empty string up to 64 chars matching the character allowlist `^[A-Za-z0-9 ._-]+$`. The previous keyword denylist (`ignore|system|prompt|instruction`) was dropped because it caused false positives on legitimate carriers (such as *"System Logistics"*), while being trivially bypassed by variations; the character allowlist and 64-char length cap provide the real, robust security controls.
   - `Empty Strings`: Empty strings in `status`, `carrier`, or `order_id` are rejected as invalid data.
 
 ### Decision 4: What counts as a valid `order_id`?

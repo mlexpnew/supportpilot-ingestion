@@ -29,7 +29,7 @@ MAX_BODY_BYTES = 65_536
 ORDER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 STATUS_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 CARRIER_PATTERN = re.compile(r"^[A-Za-z0-9 ._-]+$")
-PROMPT_INJECTION_PATTERN = re.compile(r"(?i)\b(?:ignore|system|prompt|instruction)\b")
+ETA_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 
 class OrderHubError(Exception):
@@ -228,17 +228,11 @@ def _parse_response(payload: bytes, requested_order_id: str) -> OrderStatus:
             or not carrier
             or len(carrier) > MAX_CARRIER_LENGTH
             or CARRIER_PATTERN.fullmatch(carrier) is None
-            or PROMPT_INJECTION_PATTERN.search(carrier) is not None
         ):
             raise ServiceUnavailable("OrderHub returned invalid carrier data")
 
     if eta is not None:
-        if (
-            not isinstance(eta, str)
-            or not eta
-            or len(eta) != 10
-            or not re.fullmatch(r"^\d{4}-\d{2}-\d{2}$", eta)
-        ):
+        if not isinstance(eta, str) or not eta or ETA_PATTERN.fullmatch(eta) is None:
             raise ServiceUnavailable("OrderHub returned invalid ETA data")
         try:
             date.fromisoformat(eta)
