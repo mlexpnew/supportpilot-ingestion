@@ -52,6 +52,36 @@ Reads tickets line by line, redacting sensitive customer PII from `body` and `su
 }
 ```
 
+## OrderHub Client (SP-103)
+
+Programmatic client for querying the merchant's OrderHub service:
+
+```python
+from supportpilot.integrations.orderhub import (
+    get_order_status,
+    OrderNotFound,
+    AuthenticationError,
+    ServiceUnavailable,
+)
+
+# Fetch status safely (defaults to a 3.0s total deadline across all retries)
+try:
+    status = get_order_status("55231")
+    print(status.order_id, status.status, status.carrier, status.eta)
+except OrderNotFound:
+    print("Order does not exist")
+except AuthenticationError:
+    print("OrderHub API key rejected")
+except ServiceUnavailable:
+    print("OrderHub service unavailable or deadline exceeded")
+```
+
+### Key Guarantees
+- **Strict 3.0 s Deadline**: Enforces an absolute 3.0-second timeout budget across all attempts (at most 3 attempts).
+- **PII Zero-Leakage**: Strips customer email and physical shipping addresses from the upstream response. Returns only an `OrderStatus` dataclass containing `order_id`, `status`, `carrier`, and `eta`.
+- **Pre-Network Validation**: Rejects path traversal (`../admin`), query string injection (`55231?x=1`), empty strings, and oversized IDs with `ValueError` before any network call.
+- **Typed Exceptions**: Disambiguates between `OrderNotFound` (404), `AuthenticationError` (401), and `ServiceUnavailable` (5xx, timeouts, 429 exhaustion, corrupt JSON).
+
 ## Schema & Extraneous Fields (`extra="ignore"`)
 
 The ticket model is configured with `extra="ignore"`. Any unexpected additional fields provided by clients or upstream systems are safely accepted and ignored, ensuring ingestion does not break when clients send non-standard metadata, while omitting extra keys from the normalized output in `valid.jsonl`.
