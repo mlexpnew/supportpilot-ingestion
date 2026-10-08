@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from http.client import IncompleteRead
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -582,3 +583,59 @@ def test_response_empty_string_fields_rejected(env):
         ):
             with pytest.raises(orderhub.ServiceUnavailable):
                 orderhub.get_order_status("55231")
+
+
+def test_incomplete_read_raises_service_unavailable(env):
+    """Truncated HTTP body raising IncompleteRead ends in ServiceUnavailable."""
+    fake_stream = MagicMock()
+    fake_stream.status = 200
+    fake_stream.headers = {}
+    fake_stream.read.side_effect = IncompleteRead(b"partial", expected=100)
+    fake_stream.__enter__.return_value = fake_stream
+
+    with patch(
+        "supportpilot.integrations.orderhub._OPENER.open",
+        return_value=fake_stream,
+    ):
+        with pytest.raises(orderhub.ServiceUnavailable) as exc_info:
+            orderhub.get_order_status("55231")
+
+    assert "incomplete" in str(exc_info.value).lower()
+
+
+def test_deeply_nested_json_recursion_error_raises_service_unavailable(env):
+    """Deeply nested JSON triggering RecursionError ends in ServiceUnavailable."""
+    with patch(
+        "supportpilot.integrations.orderhub._request_once",
+        return_value=(200, b'{"nested": 1}', None),
+    ), patch(
+        "json.loads",
+        side_effect=RecursionError("maximum recursion depth exceeded"),
+    ):
+        with pytest.raises(orderhub.ServiceUnavailable) as exc_info:
+            orderhub.get_order_status("55231")
+
+    assert "nested" not in str(exc_info.value)
+    assert "invalid json" in str(exc_info.value).lower()
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "http://[invalid-ipv6",
+        "http://localhost:99999999",
+        "http://localhost:notaport",
+    ],
+)
+def test_malformed_base_url_value_error_raises_service_unavailable(
+    monkeypatch, bad_url
+):
+    """Malformed ORDERHUB_BASE_URL raising ValueError ends in ServiceUnavailable."""
+    monkeypatch.setenv("ORDERHUB_BASE_URL", bad_url)
+    monkeypatch.setenv("ORDERHUB_API_KEY", "dev-key")
+
+    with patch("supportpilot.integrations.orderhub._request_once") as request:
+        with pytest.raises(orderhub.ServiceUnavailable):
+            orderhub.get_order_status("55231")
+
+    request.assert_not_called()

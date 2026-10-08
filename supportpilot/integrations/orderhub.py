@@ -9,6 +9,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date
+from http.client import IncompleteRead, InvalidURL
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -43,6 +44,10 @@ class AuthenticationError(OrderHubError):
 
 class ServiceUnavailable(OrderHubError):
     """Raised when OrderHub cannot provide a valid response."""
+
+
+class ConfigurationError(ServiceUnavailable):
+    """Raised when OrderHub configuration is invalid or missing."""
 
 
 # Backward compatibility aliases
@@ -100,7 +105,7 @@ def _get_config() -> tuple[str, str]:
     api_key = os.environ.get("ORDERHUB_API_KEY")
 
     if not base_url:
-        raise ServiceUnavailable("OrderHub configuration is unavailable")
+        raise ConfigurationError("OrderHub configuration is unavailable")
 
     if not api_key:
         raise AuthenticationError("OrderHub authentication is not configured")
@@ -108,18 +113,22 @@ def _get_config() -> tuple[str, str]:
     base_url = base_url.rstrip("/")
 
     if not base_url:
-        raise ServiceUnavailable("OrderHub configuration is unavailable")
+        raise ConfigurationError("OrderHub configuration is unavailable")
 
     try:
         parsed = urlparse(base_url)
-    except Exception:
-        raise ServiceUnavailable("OrderHub configuration is unavailable")
+        scheme = parsed.scheme
+        netloc = parsed.netloc
+        hostname = parsed.hostname
+        _ = parsed.port
+    except (ValueError, Exception) as exc:
+        raise ConfigurationError("OrderHub configuration is unavailable") from exc
 
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ServiceUnavailable("OrderHub configuration is unavailable")
+    if scheme not in ("http", "https") or not netloc or not hostname:
+        raise ConfigurationError("OrderHub configuration is unavailable")
 
-    if parsed.scheme == "http" and parsed.hostname not in ("127.0.0.1", "localhost"):
-        raise ServiceUnavailable(
+    if scheme == "http" and hostname not in ("127.0.0.1", "localhost"):
+        raise ConfigurationError(
             "OrderHub base URL must use HTTPS for non-localhost hosts"
         )
 
@@ -157,7 +166,7 @@ def _parse_response(payload: bytes, requested_order_id: str) -> OrderStatus:
     """Parse only the approved fields from an OrderHub response."""
     try:
         data: Any = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ServiceUnavailable("OrderHub returned invalid JSON") from exc
 
     if not isinstance(data, dict):
@@ -240,7 +249,10 @@ def _read_body_bounded(
 
         remaining_budget = max_bytes - total + 1
         to_read = min(chunk_size, remaining_budget)
-        chunk = stream.read(to_read)
+        try:
+            chunk = stream.read(to_read)
+        except IncompleteRead as exc:
+            raise ServiceUnavailable("OrderHub response body was incomplete") from exc
         if not chunk:
             break
 
@@ -260,11 +272,14 @@ def _request_once(
     deadline: float | None = None,
 ) -> tuple[int, bytes, str | None]:
     """Perform one HTTP request and return safe response metadata."""
-    request = Request(
-        url,
-        method="GET",
-        headers={"X-Api-Key": api_key},
-    )
+    try:
+        request = Request(
+            url,
+            method="GET",
+            headers={"X-Api-Key": api_key},
+        )
+    except ValueError as exc:
+        raise ConfigurationError("OrderHub configuration is unavailable") from exc
 
     effective_deadline = (
         deadline if deadline is not None else (time.monotonic() + timeout)
@@ -276,6 +291,10 @@ def _request_once(
             retry_after = response.headers.get("Retry-After")
             body = _read_body_bounded(response, deadline=effective_deadline)
             return status, body, retry_after
+    except IncompleteRead as exc:
+        raise ServiceUnavailable("OrderHub response body was incomplete") from exc
+    except (ValueError, InvalidURL) as exc:
+        raise ConfigurationError("OrderHub configuration is unavailable") from exc
     except HTTPError as exc:
         retry_after = exc.headers.get("Retry-After")
         # Do not read unbounded error bodies; response text is never exposed
@@ -323,6 +342,10 @@ def get_order_status(
             delay = _backoff_seconds(attempt, remaining)
             _sleep(delay)
             continue
+        except IncompleteRead as exc:
+            raise ServiceUnavailable("OrderHub response body was incomplete") from exc
+        except ValueError as exc:
+            raise ConfigurationError("OrderHub configuration is unavailable") from exc
 
         if status_code == 200:
             return _parse_response(body, order_id)
