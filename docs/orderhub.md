@@ -47,12 +47,14 @@ Two strict constraints govern this integration:
 - Raw bodies, HTML snippets, and field error details are **never** echoed in exception messages to avoid HTML injection and PII leakage.
 
 ### Decision 4: What counts as a valid `order_id`?
-- **Rules**: Must be a non-empty `str`, length $\le 64$ characters, matching regex `^[A-Za-z0-9_-]+$`.
+- **Rules**: Must be a non-empty `str`, length $\le 64$ characters, matching `re.fullmatch(r"^[A-Za-z0-9_-]+$", order_id)`.
+- **Why `fullmatch`**: Standard `re.match` with `$` treats a trailing newline `\n` as matching immediately before the end of the line. Using `re.fullmatch` strictly enforces that every character from index 0 to length matches the allowed ASCII set, categorically rejecting trailing newlines (`"55231\n"`), carriage returns (`"55231\r\n"`), spaces, tabs, null bytes (`"55231\x00"`), and Unicode full-width digits (`"５５２３１"`).
 - **Enforcement**:
   - Path traversal (`../admin`): rejected before network.
   - Query parameter injection (`55231?x=1`): rejected before network.
+  - Trailing newlines, tabs, and control characters: rejected before network.
   - Empty string (`""`) or non-string (`int`, `None`): rejected before network.
-  - Oversized input (e.g., 10,000 characters): rejected before network.
+  - Oversized input (e.g., 65 characters or 10,000 characters): rejected before network.
 - Raises `ValueError` prior to opening any socket or URL connection.
 
 ### Decision 5: Standard library `urllib` or an external library?
