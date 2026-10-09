@@ -7,7 +7,14 @@ from unittest.mock import patch
 import pytest
 
 from supportpilot.ingestion.__main__ import main as cli_main
-from supportpilot.ingestion.loader import process_file, validate_lines
+from supportpilot.ingestion.loader import (
+    BlankFileError,
+    EmptyFileError,
+    PathConflictError,
+    UnsupportedEncodingError,
+    process_file,
+    validate_lines,
+)
 
 
 def write_jsonl(path, records):
@@ -423,17 +430,41 @@ def test_source_overwrite_is_prevented(tmp_path):
     conflicting_input = output_dir / "valid.jsonl"
     conflicting_input.write_text("{}\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="conflicts with output files"):
+    with pytest.raises(PathConflictError, match="conflicts with output files"):
         process_file(conflicting_input, output_dir)
+
+
+def test_overwrite_refusal_cli_exits_code_2(tmp_path, capsys):
+    output_dir = tmp_path / "output_conflict"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    conflicting_file = output_dir / "valid.jsonl"
+    conflicting_file.write_text('{"ticket_id": "T-1"}\n', encoding="utf-8")
+
+    test_args = [
+        "prog",
+        "--input",
+        str(conflicting_file),
+        "--output-dir",
+        str(output_dir),
+    ]
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 2
+
+    captured = capsys.readouterr()
+    assert "Path conflict:" in captured.err
+    summary = json.loads(captured.out.strip().split("\n")[-1])
+    assert summary["exit_reason"] == "bad_file"
 
 
 def test_fail_on_rejects_cli_flag(tmp_path):
     input_file = tmp_path / "input.jsonl"
     output_dir = tmp_path / "output"
 
-    ticket = valid_ticket()
-    ticket["channel"] = "unknown_channel"
-    write_jsonl(input_file, [ticket])
+    ticket_bad = valid_ticket("T-BAD")
+    ticket_bad["channel"] = "unknown_channel"
+    ticket_good = valid_ticket("T-GOOD")
+    write_jsonl(input_file, [ticket_good, ticket_bad])
 
     test_args = [
         "prog",
@@ -447,7 +478,7 @@ def test_fail_on_rejects_cli_flag(tmp_path):
         code = cli_main()
         assert code == 3
 
-    # Without flag, exits 0
+    # Without flag, exits 0 because total < 20 and valid > 0
     test_args_no_flag = [
         "prog",
         "--input",
@@ -598,8 +629,10 @@ def test_utf16_without_bom_fails_as_file_level_error(tmp_path, capsys):
     content = (json.dumps(valid_ticket("T-NOBOM")) + "\n").encode("utf-16-le")
     input_file.write_bytes(content)
 
-    # 1. Loader raises ValueError
-    with pytest.raises(ValueError, match="UTF-16 without BOM is not supported"):
+    # 1. Loader raises UnsupportedEncodingError
+    with pytest.raises(
+        UnsupportedEncodingError, match="UTF-16 without BOM is not supported"
+    ):
         process_file(input_file, output_dir)
 
     # 2. CLI exits with code 2
@@ -675,7 +708,7 @@ def test_empty_file_exits_code_2(tmp_path, capsys):
     input_file.touch()
     output_dir = tmp_path / "output_empty"
 
-    with pytest.raises(ValueError, match="Input file is empty"):
+    with pytest.raises(EmptyFileError, match="Input file is empty"):
         process_file(input_file, output_dir)
 
     test_args = ["prog", "--input", str(input_file), "--output-dir", str(output_dir)]
@@ -697,7 +730,7 @@ def test_blank_only_file_exits_code_2(tmp_path, capsys):
     input_file.write_text("\n   \n\t  \n\n", encoding="utf-8")
     output_dir = tmp_path / "output_blank"
 
-    with pytest.raises(ValueError, match="Input file contains only blank lines"):
+    with pytest.raises(BlankFileError, match="Input file contains only blank lines"):
         process_file(input_file, output_dir)
 
     test_args = ["prog", "--input", str(input_file), "--output-dir", str(output_dir)]
@@ -854,3 +887,72 @@ def test_incident_export_file_processes_correctly(tmp_path):
         assert (output_dir / "report.json").read_bytes() == (
             baseline_dir / "report.json"
         ).read_bytes()
+
+
+def test_small_file_all_invalid_records_fails(tmp_path):
+    input_file = tmp_path / "allbad.jsonl"
+    output_dir = tmp_path / "output_allbad"
+
+    # Small file (3 lines), all invalid records
+    input_file.write_text("x\nx\nx\n", encoding="utf-8")
+
+    test_args = ["prog", "--input", str(input_file), "--output-dir", str(output_dir)]
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 3
+
+
+def test_crash_handler_masks_exception_payload_pii(tmp_path, capsys):
+    input_file = tmp_path / "dummy.jsonl"
+    output_dir = tmp_path / "dummy_out"
+    input_file.write_text('{"a": 1}\n', encoding="utf-8")
+
+    import supportpilot.ingestion.__main__ as main_mod
+
+    secret_pii = "SECRET_PAYLOAD_SSN_987-65-4321_DO_NOT_LEAK"
+    with patch.object(
+        main_mod, "process_file", side_effect=RuntimeError(f"crash with {secret_pii}")
+    ):
+        test_args = [
+            "prog",
+            "--input",
+            str(input_file),
+            "--output-dir",
+            str(output_dir),
+        ]
+        with patch.object(sys, "argv", test_args):
+            code = cli_main()
+            assert code == 1
+
+    captured = capsys.readouterr()
+    assert secret_pii not in captured.out
+    assert secret_pii not in captured.err
+    assert "RuntimeError" in captured.err
+
+
+def test_reject_rate_unrounded_comparison(tmp_path):
+    input_file = tmp_path / "unrounded.jsonl"
+    output_dir = tmp_path / "output_unrounded"
+
+    # 1001 invalid out of 2000 records = 0.5005 > 0.50
+    records = []
+    for i in range(999):
+        records.append(json.dumps(valid_ticket(f"T-V-{i}")))
+    for i in range(1001):
+        bad = valid_ticket(f"T-B-{i}")
+        bad["body"] = ""
+        records.append(json.dumps(bad))
+    input_file.write_text("\n".join(records) + "\n", encoding="utf-8")
+
+    test_args = [
+        "prog",
+        "--input",
+        str(input_file),
+        "--output-dir",
+        str(output_dir),
+        "--max-reject-rate",
+        "0.5",
+    ]
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 3

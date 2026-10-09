@@ -4,7 +4,13 @@ import sys
 import time
 from pathlib import Path
 
-from .loader import process_file
+from .loader import (
+    BlankFileError,
+    EmptyFileError,
+    PathConflictError,
+    UnsupportedEncodingError,
+    process_file,
+)
 
 EXIT_OK = 0
 EXIT_CRASH = 1
@@ -89,64 +95,84 @@ def main() -> int:
 
     try:
         report = process_file(args.input, args.output_dir)
-    except ValueError as exc:
+    except EmptyFileError as exc:
         elapsed = time.monotonic() - start_time
         print(f"File error: {exc}", file=sys.stderr)
-        msg = str(exc).lower()
-        if "empty" in msg:
-            reason = "empty_file"
-        elif "blank" in msg:
-            reason = "blank_only_file"
-        elif "utf-16 without bom" in msg:
-            reason = "unsupported_encoding"
-        else:
-            reason = "bad_file"
-        _emit_summary(0, 0, 0, 0.0, elapsed, reason)
+        _emit_summary(0, 0, 0, 0.0, elapsed, "empty_file")
         return EXIT_BAD_OR_EMPTY_FILE
-    except OSError as exc:
+    except BlankFileError as exc:
         elapsed = time.monotonic() - start_time
-        print(f"Error processing files: {exc}", file=sys.stderr)
+        print(f"File error: {exc}", file=sys.stderr)
+        _emit_summary(0, 0, 0, 0.0, elapsed, "blank_only_file")
+        return EXIT_BAD_OR_EMPTY_FILE
+    except UnsupportedEncodingError as exc:
+        elapsed = time.monotonic() - start_time
+        print(f"File error: {exc}", file=sys.stderr)
+        _emit_summary(0, 0, 0, 0.0, elapsed, "unsupported_encoding")
+        return EXIT_BAD_OR_EMPTY_FILE
+    except PathConflictError as exc:
+        elapsed = time.monotonic() - start_time
+        print(f"Path conflict: {exc}", file=sys.stderr)
+        _emit_summary(0, 0, 0, 0.0, elapsed, "bad_file")
+        return EXIT_BAD_OR_EMPTY_FILE
+    except (ValueError, OSError) as exc:
+        elapsed = time.monotonic() - start_time
+        print(f"File error: {exc}", file=sys.stderr)
         _emit_summary(0, 0, 0, 0.0, elapsed, "bad_file")
         return EXIT_BAD_OR_EMPTY_FILE
     except Exception as exc:
         elapsed = time.monotonic() - start_time
-        print(f"Fatal crash: {exc}", file=sys.stderr)
+        print(f"Fatal crash: {exc.__class__.__name__}", file=sys.stderr)
         _emit_summary(0, 0, 0, 0.0, elapsed, "crash")
         return EXIT_CRASH
 
     total = report["total_records"]
     valid = report["valid_records"]
     invalid = report["invalid_records"]
-    reject_rate = round(invalid / total, 4) if total > 0 else 0.0
+    raw_reject_rate = invalid / total if total > 0 else 0.0
     elapsed = time.monotonic() - start_time
 
     print("Ticket ingestion completed successfully.")
     print(f"Total records: {total}")
     print(f"Valid records: {valid}")
     print(f"Invalid records: {invalid}")
-    print(f"Reject rate: {reject_rate:.4f}")
+    print(f"Reject rate: {raw_reject_rate:.4f}")
     print(f"Blank lines skipped: {report['blank_lines_skipped']}")
     print(f"Output directory: {args.output_dir}")
+
+    # Guard: zero valid records with total > 0 must never exit 0 regardless of sample size
+    if total > 0 and valid == 0:
+        print(
+            "Rejection guard triggered: zero valid records produced (100% rejected).",
+            file=sys.stderr,
+        )
+        _emit_summary(
+            total, valid, invalid, raw_reject_rate, elapsed, "reject_rate_too_high"
+        )
+        return EXIT_REJECT_RATE_TOO_HIGH
 
     if args.fail_on_rejects and invalid > 0:
         print(
             "Rejection guard triggered: invalid records encountered with --fail-on-rejects.",
             file=sys.stderr,
         )
-        _emit_summary(total, valid, invalid, reject_rate, elapsed, "fail_on_rejects")
+        _emit_summary(
+            total, valid, invalid, raw_reject_rate, elapsed, "fail_on_rejects"
+        )
         return EXIT_REJECT_RATE_TOO_HIGH
 
-    if total >= args.min_records and reject_rate > args.max_reject_rate:
+    # Unrounded comparison against max_reject_rate
+    if total >= args.min_records and raw_reject_rate > args.max_reject_rate:
         print(
-            f"Rejection guard triggered: reject rate {reject_rate:.4f} exceeds threshold {args.max_reject_rate}.",
+            f"Rejection guard triggered: reject rate {raw_reject_rate:.4f} exceeds threshold {args.max_reject_rate}.",
             file=sys.stderr,
         )
         _emit_summary(
-            total, valid, invalid, reject_rate, elapsed, "reject_rate_too_high"
+            total, valid, invalid, raw_reject_rate, elapsed, "reject_rate_too_high"
         )
         return EXIT_REJECT_RATE_TOO_HIGH
 
-    _emit_summary(total, valid, invalid, reject_rate, elapsed, "ok")
+    _emit_summary(total, valid, invalid, raw_reject_rate, elapsed, "ok")
     return EXIT_OK
 
 

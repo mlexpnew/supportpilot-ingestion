@@ -10,6 +10,26 @@ from .models import Ticket
 MAX_LINE_BYTES = 1_048_576  # 1 MB line length limit to prevent unbounded memory usage
 
 
+class IngestionError(Exception):
+    """Base exception for ingestion pipeline errors."""
+
+
+class EmptyFileError(IngestionError, ValueError):
+    """Raised when the input file is 0 bytes."""
+
+
+class BlankFileError(IngestionError, ValueError):
+    """Raised when the input file contains only blank lines."""
+
+
+class UnsupportedEncodingError(IngestionError, ValueError):
+    """Raised when the input file has an unsupported encoding (e.g. UTF-16 without BOM)."""
+
+
+class PathConflictError(IngestionError, ValueError):
+    """Raised when the input file conflicts with output directory destination files."""
+
+
 def _reject(
     line_number: int,
     error_type: str,
@@ -149,7 +169,7 @@ def validate_lines(
             and not (header.startswith(b"\xff\xfe") or header.startswith(b"\xfe\xff"))
             and (header[0] == 0 or header[1] == 0)
         ):
-            raise ValueError("UTF-16 without BOM is not supported")
+            raise UnsupportedEncodingError("UTF-16 without BOM is not supported")
 
         if header.startswith(b"\xff\xfe"):
             encoding = "utf-16-le"
@@ -364,7 +384,7 @@ def process_file(
         (resolved_output_dir / "report.json").resolve(),
     }
     if resolved_input in conflicting_outputs:
-        raise ValueError(
+        raise PathConflictError(
             f"Input file '{input_path}' conflicts with output files in '{output_dir}'."
         )
 
@@ -418,8 +438,8 @@ def process_file(
 
         if total_records == 0:
             if blank_lines_skipped > 0:
-                raise ValueError("Input file contains only blank lines")
-            raise ValueError("Input file is empty")
+                raise BlankFileError("Input file contains only blank lines")
+            raise EmptyFileError("Input file is empty")
 
         report = {
             "blank_lines_skipped": blank_lines_skipped,
