@@ -1,6 +1,7 @@
 import codecs
 import json
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -444,7 +445,7 @@ def test_fail_on_rejects_cli_flag(tmp_path):
     ]
     with patch.object(sys, "argv", test_args):
         code = cli_main()
-        assert code == 2
+        assert code == 3
 
     # Without flag, exits 0
     test_args_no_flag = [
@@ -539,3 +540,317 @@ def test_deeply_nested_json_recursion_error_is_rejected_as_invalid_json(
     rejects = (output_dir / "rejects.jsonl").read_text(encoding="utf-8")
     reject = json.loads(rejects.strip())
     assert reject["error_type"] == "invalid_json"
+
+
+def test_utf16_le_bom_processes_correctly(tmp_path):
+    input_file = tmp_path / "input_utf16le.jsonl"
+    output_dir = tmp_path / "output_utf16le"
+
+    ticket1 = valid_ticket("T-LE-1")
+    ticket2 = valid_ticket("T-LE-2")
+    content = codecs.BOM_UTF16_LE + (
+        json.dumps(ticket1) + "\n" + json.dumps(ticket2) + "\n"
+    ).encode("utf-16-le")
+    input_file.write_bytes(content)
+
+    report = process_file(input_file, output_dir)
+    assert report["total_records"] == 2
+    assert report["valid_records"] == 2
+    assert report["invalid_records"] == 0
+
+    valid_lines = (
+        (output_dir / "valid.jsonl").read_text(encoding="utf-8").strip().split("\n")
+    )
+    assert len(valid_lines) == 2
+    assert json.loads(valid_lines[0])["ticket_id"] == "T-LE-1"
+    assert json.loads(valid_lines[1])["ticket_id"] == "T-LE-2"
+
+
+def test_utf16_be_bom_processes_correctly(tmp_path):
+    input_file = tmp_path / "input_utf16be.jsonl"
+    output_dir = tmp_path / "output_utf16be"
+
+    ticket1 = valid_ticket("T-BE-1")
+    ticket2 = valid_ticket("T-BE-2")
+    content = codecs.BOM_UTF16_BE + (
+        json.dumps(ticket1) + "\n" + json.dumps(ticket2) + "\n"
+    ).encode("utf-16-be")
+    input_file.write_bytes(content)
+
+    report = process_file(input_file, output_dir)
+    assert report["total_records"] == 2
+    assert report["valid_records"] == 2
+    assert report["invalid_records"] == 0
+
+    valid_lines = (
+        (output_dir / "valid.jsonl").read_text(encoding="utf-8").strip().split("\n")
+    )
+    assert len(valid_lines) == 2
+    assert json.loads(valid_lines[0])["ticket_id"] == "T-BE-1"
+    assert json.loads(valid_lines[1])["ticket_id"] == "T-BE-2"
+
+
+def test_utf16_without_bom_fails_as_file_level_error(tmp_path, capsys):
+    input_file = tmp_path / "input_nobom.jsonl"
+    output_dir = tmp_path / "output_nobom"
+
+    # Encode without BOM using 'utf-16-le'
+    content = (json.dumps(valid_ticket("T-NOBOM")) + "\n").encode("utf-16-le")
+    input_file.write_bytes(content)
+
+    # 1. Loader raises ValueError
+    with pytest.raises(ValueError, match="UTF-16 without BOM is not supported"):
+        process_file(input_file, output_dir)
+
+    # 2. CLI exits with code 2
+    test_args = ["prog", "--input", str(input_file), "--output-dir", str(output_dir)]
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 2
+
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out.strip().split("\n")[-1])
+    assert summary["exit_reason"] == "unsupported_encoding"
+
+
+def test_mixed_encodings_in_file(tmp_path):
+    input_file = tmp_path / "mixed.jsonl"
+    output_dir = tmp_path / "output_mixed"
+
+    valid_line_1 = (json.dumps(valid_ticket("T-M1")) + "\n").encode("utf-8")
+    invalid_bytes_line = b'{"ticket_id": "T-BAD", "body": "corrupt \x80\xff line"}\n'
+    valid_line_2 = (json.dumps(valid_ticket("T-M2")) + "\n").encode("utf-8")
+
+    input_file.write_bytes(valid_line_1 + invalid_bytes_line + valid_line_2)
+
+    report = process_file(input_file, output_dir)
+    assert report["total_records"] == 3
+    assert report["valid_records"] == 2
+    assert report["invalid_records"] == 1
+    assert report["rejection_reasons"]["invalid_encoding"] == 1
+
+
+def test_reject_rate_threshold_exactly_at_boundary(tmp_path):
+    input_file = tmp_path / "boundary.jsonl"
+    output_dir = tmp_path / "output_boundary"
+
+    # Create exactly 20 records: 10 valid, 10 invalid -> reject rate = 10 / 20 = 0.50
+    records = []
+    for i in range(10):
+        records.append(json.dumps(valid_ticket(f"T-VAL-{i}")))
+    for i in range(10):
+        bad_ticket = valid_ticket(f"T-INV-{i}")
+        bad_ticket["body"] = ""  # empty_body
+        records.append(json.dumps(bad_ticket))
+
+    input_file.write_text("\n".join(records) + "\n", encoding="utf-8")
+
+    # Boundary test: reject_rate == max_reject_rate (0.5 == 0.5) must PASS (exit 0)
+    test_args = [
+        "prog",
+        "--input",
+        str(input_file),
+        "--output-dir",
+        str(output_dir),
+        "--max-reject-rate",
+        "0.5",
+    ]
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 0
+
+    # Exceed boundary: add 1 more invalid record -> 11 invalid out of 21 (~0.5238 > 0.50)
+    bad_ticket_extra = valid_ticket("T-INV-EXTRA")
+    bad_ticket_extra["body"] = ""
+    records.append(json.dumps(bad_ticket_extra))
+    input_file.write_text("\n".join(records) + "\n", encoding="utf-8")
+
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 3
+
+
+def test_empty_file_exits_code_2(tmp_path, capsys):
+    input_file = tmp_path / "empty.jsonl"
+    input_file.touch()
+    output_dir = tmp_path / "output_empty"
+
+    with pytest.raises(ValueError, match="Input file is empty"):
+        process_file(input_file, output_dir)
+
+    test_args = ["prog", "--input", str(input_file), "--output-dir", str(output_dir)]
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 2
+
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out.strip().split("\n")[-1])
+    assert summary["total"] == 0
+    assert summary["valid"] == 0
+    assert summary["invalid"] == 0
+    assert summary["reject_rate"] == 0.0
+    assert summary["exit_reason"] == "empty_file"
+
+
+def test_blank_only_file_exits_code_2(tmp_path, capsys):
+    input_file = tmp_path / "blank_only.jsonl"
+    input_file.write_text("\n   \n\t  \n\n", encoding="utf-8")
+    output_dir = tmp_path / "output_blank"
+
+    with pytest.raises(ValueError, match="Input file contains only blank lines"):
+        process_file(input_file, output_dir)
+
+    test_args = ["prog", "--input", str(input_file), "--output-dir", str(output_dir)]
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 2
+
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out.strip().split("\n")[-1])
+    assert summary["total"] == 0
+    assert summary["valid"] == 0
+    assert summary["invalid"] == 0
+    assert summary["reject_rate"] == 0.0
+    assert summary["exit_reason"] == "blank_only_file"
+
+
+def test_cli_exit_codes(tmp_path):
+    output_dir = tmp_path / "out"
+
+    # Exit 2: non-existent file
+    with patch.object(
+        sys,
+        "argv",
+        [
+            "prog",
+            "--input",
+            str(tmp_path / "nonexistent.jsonl"),
+            "--output-dir",
+            str(output_dir),
+        ],
+    ):
+        assert cli_main() == 2
+
+    # Exit 0: normal processing (<20 records default threshold does not trigger)
+    valid_file = tmp_path / "valid.jsonl"
+    write_jsonl(valid_file, [valid_ticket("T-1"), valid_ticket("T-2")])
+    with patch.object(
+        sys,
+        "argv",
+        ["prog", "--input", str(valid_file), "--output-dir", str(output_dir)],
+    ):
+        assert cli_main() == 0
+
+    # Exit 3: reject rate too high
+    with patch.object(
+        sys,
+        "argv",
+        [
+            "prog",
+            "--input",
+            str(valid_file),
+            "--output-dir",
+            str(output_dir),
+            "--fail-on-rejects",
+        ],
+    ):
+        bad_ticket = valid_ticket("T-BAD")
+        bad_ticket["channel"] = "invalid_chan"
+        write_jsonl(valid_file, [bad_ticket])
+        assert cli_main() == 3
+
+    # Exit 1: crash
+    import supportpilot.ingestion.__main__ as main_mod
+
+    with patch.object(
+        main_mod, "process_file", side_effect=RuntimeError("unexpected fatal crash")
+    ):
+        with patch.object(
+            sys,
+            "argv",
+            ["prog", "--input", str(valid_file), "--output-dir", str(output_dir)],
+        ):
+            assert cli_main() == 1
+
+
+def test_summary_line_contains_no_pii_or_ids(tmp_path, capsys):
+    input_file = tmp_path / "pii_test.jsonl"
+    output_dir = tmp_path / "output_pii"
+
+    secret_body = "Super secret credit card number 4111-2222-3333-4444 and secret_user@example.com"
+    ticket = valid_ticket("T-SECRET-ID-999")
+    ticket["body"] = secret_body
+    write_jsonl(input_file, [ticket])
+
+    test_args = ["prog", "--input", str(input_file), "--output-dir", str(output_dir)]
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 0
+
+    captured = capsys.readouterr()
+    summary_raw = captured.out.strip().split("\n")[-1]
+    summary = json.loads(summary_raw)
+
+    assert set(summary.keys()) == {
+        "total",
+        "valid",
+        "invalid",
+        "reject_rate",
+        "elapsed",
+        "exit_reason",
+    }
+    assert summary["total"] == 1
+    assert summary["valid"] == 1
+    assert summary["invalid"] == 0
+    assert summary["exit_reason"] == "ok"
+
+    # Strict check: verify no PII or identifiers leaked in summary JSON
+    assert "T-SECRET-ID-999" not in summary_raw
+    assert "secret_user@example.com" not in summary_raw
+    assert "4111-2222-3333-4444" not in summary_raw
+    assert "Super secret" not in summary_raw
+
+
+def test_utf8_baseline_regression_byte_identical(tmp_path):
+    baseline_dir = Path("/tmp/baseline")
+    if not baseline_dir.exists():
+        pytest.skip("Baseline directory /tmp/baseline not present")
+
+    output_dir = tmp_path / "baseline_check"
+    sample_path = Path("data/sample_tickets.jsonl")
+
+    report = process_file(sample_path, output_dir)
+    assert report["total_records"] == 10
+    assert report["valid_records"] == 4
+    assert report["invalid_records"] == 6
+
+    # Byte-identical checks
+    for fname in ["valid.jsonl", "rejects.jsonl", "report.json"]:
+        baseline_bytes = (baseline_dir / fname).read_bytes()
+        actual_bytes = (output_dir / fname).read_bytes()
+        assert actual_bytes == baseline_bytes, f"Mismatch in {fname}"
+
+
+def test_incident_export_file_processes_correctly(tmp_path):
+    incident_path = Path("data/incident_export.jsonl")
+    if not incident_path.exists():
+        pytest.skip("Incident export file data/incident_export.jsonl not found")
+
+    output_dir = tmp_path / "incident_check"
+    report = process_file(incident_path, output_dir)
+
+    assert report["total_records"] == 10
+    assert report["valid_records"] == 4
+    assert report["invalid_records"] == 6
+
+    baseline_dir = Path("/tmp/baseline")
+    if baseline_dir.exists():
+        assert (output_dir / "valid.jsonl").read_bytes() == (
+            baseline_dir / "valid.jsonl"
+        ).read_bytes()
+        assert (output_dir / "rejects.jsonl").read_bytes() == (
+            baseline_dir / "rejects.jsonl"
+        ).read_bytes()
+        assert (output_dir / "report.json").read_bytes() == (
+            baseline_dir / "report.json"
+        ).read_bytes()
