@@ -21,14 +21,33 @@ pip install -r requirements-dev.txt
 
 ## CLI Usage
 
-### Ingestion & Validation (SP-101)
+### Ingestion & Validation (SP-101 / SP-104)
 
 ```bash
 python -m supportpilot.ingestion --input data/sample_tickets.jsonl --output-dir out
 ```
 
 Optional flags:
-- `--fail-on-rejects`: Exits with non-zero status (code 2) if any invalid records are encountered. By default, the CLI exits `0` upon completing processing and writes invalid records to `rejects.jsonl`.
+- `--max-reject-rate`: Maximum allowed fraction of rejected records (default: `0.5`). Evaluated when total records $\ge 20$. If `reject_rate > max_reject_rate`, exits with code `3`.
+- `--min-records`: Minimum record count required before evaluating `--max-reject-rate` (default: `20`). Prevents small sample variance from causing false alarms.
+- `--fail-on-rejects`: Exits with code `3` if any invalid records are encountered (breaking change: previously exited code `2`).
+
+### CLI Exit Codes
+
+| Exit Code | Meaning | Triggers |
+|---|---|---|
+| `0` | OK | Completed normally with reject rate $\le$ threshold |
+| `1` | Crash | Unhandled fatal exception or crash |
+| `2` | Bad or Empty File | File not found, unreadable, 0-byte file, blank-only file, or UTF-16 without BOM |
+| `3` | Reject Rate Too High | `reject_rate > max_reject_rate` (for $\ge 20$ records), zero valid records (`valid == 0` with `total > 0`), or `--fail-on-rejects` with invalid lines |
+
+### Operational Summary Line
+
+The ingestion CLI prints exactly one JSON line to `stdout` upon termination:
+```json
+{"total": 10, "valid": 4, "invalid": 6, "reject_rate": 0.6, "elapsed": 0.0032, "exit_reason": "ok"}
+```
+Strict Zero-Leakage: Contains only numeric operational metrics and status enums. Never contains ticket bodies, customer data, ticket IDs, or file paths.
 
 ### PII Redaction (SP-102)
 
@@ -147,7 +166,7 @@ Blank lines and lines containing only whitespace are skipped during processing:
    - `created_at` must be an ISO 8601 formatted string with an explicit UTC offset or timezone specifier (e.g. `2025-01-14T09:15:00Z` or `2025-01-14T10:30:00+05:30`). Timezone-naive timestamps (e.g. `2025-01-14T09:15:00`) and numeric timestamps are strictly rejected as `invalid_timestamp`.
    - *Trade-off*: Strict rejection protects downstream SLA metrics and analytics from timing inaccuracies. If upstream data sources omit timezone offsets, those records will be rejected. Neha should confirm if upstream sources can supply timezone offsets or if a default assumption (e.g. UTC) should be introduced.
 2. **CLI Exit Code**:
-   - By default, the CLI exits `0` when ingestion finishes, even if records are rejected, allowing pipelines to inspect `report.json` and `rejects.jsonl`. For CI/CD pipelines that require immediate failure on any reject, `--fail-on-rejects` exits with code `2`.
+   - Standardized in SP-104: exits `0` on success, `1` on crash, `2` on bad/empty file, and `3` on high rejection rate or zero valid records. Note: failing on invalid records now exits code `3` rather than code `2` (breaking change for automated callers).
 3. **Client-Controlled `ticket_id` on Rejections**:
    - Sanitized `ticket_id` values (capped at 64 characters) are preserved in `rejects.jsonl` to assist debugging. We assume ticket IDs are non-sensitive identifiers; however, if client sources ever embed PII (e.g. customer email addresses) in `ticket_id`, Neha should decide whether to mask or omit `ticket_id` from reject logs.
 
@@ -155,7 +174,9 @@ Blank lines and lines containing only whitespace are skipped during processing:
 
 - **Line Length Guard**: Lines are read in chunks up to 1 MB (`MAX_LINE_BYTES = 1_048_576`). Lines exceeding 1 MB are discarded without buffering and rejected with `line_too_long`, preventing unbounded memory growth.
 - **UTF-8 BOM**: Files starting with a UTF-8 Byte Order Mark (`\xef\xbb\xbf`) are automatically supported; the BOM is stripped from the first line without error.
-- **Non-UTF-8 Bytes**: Input files are streamed in binary mode. Lines containing invalid UTF-8 bytes are rejected as `invalid_encoding` without crashing or dumping raw bytes to stderr.
+- **UTF-16 Support**: Automatically detects UTF-16LE (`\xff\xfe`) and UTF-16BE (`\xfe\xff`) by peeking the initial 2 bytes without buffering the whole file in memory. Lines are streamed and decoded incrementally on 2-byte-aligned newline delimiters.
+- **UTF-16 without BOM Rejection**: UTF-16 files lacking a BOM (detected via alternating null bytes in the header) are rejected loudly at the file level with an `UnsupportedEncodingError` and exit code `2`.
+- **Non-UTF-8 Bytes**: Input files are streamed in binary mode. Lines containing invalid bytes are rejected as `invalid_encoding` without crashing or dumping raw bytes to stderr.
 - **Hostile JSON**: Deeply nested JSON that triggers parser recursion errors is caught and marked as `invalid_json`.
 
 ## Crash Safety & Atomic Outputs
