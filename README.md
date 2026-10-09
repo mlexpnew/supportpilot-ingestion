@@ -21,14 +21,33 @@ pip install -r requirements-dev.txt
 
 ## CLI Usage
 
-### Ingestion & Validation (SP-101)
+### Ingestion & Validation (SP-101 / SP-104)
 
 ```bash
 python -m supportpilot.ingestion --input data/sample_tickets.jsonl --output-dir out
 ```
 
 Optional flags:
-- `--fail-on-rejects`: Exits with non-zero status (code 2) if any invalid records are encountered. By default, the CLI exits `0` upon completing processing and writes invalid records to `rejects.jsonl`.
+- `--max-reject-rate`: Maximum allowed fraction of rejected records (default: `0.5`). Evaluated when total records $\ge 20$. If `reject_rate > max_reject_rate`, exits with code `3`.
+- `--min-records`: Minimum record count required before evaluating `--max-reject-rate` (default: `20`). Prevents small sample variance from causing false alarms.
+- `--fail-on-rejects`: Exits with code `3` if any invalid records are encountered.
+
+### CLI Exit Codes
+
+| Exit Code | Meaning | Triggers |
+|---|---|---|
+| `0` | OK | Completed normally with reject rate $\le$ threshold |
+| `1` | Crash | Unhandled fatal exception or crash |
+| `2` | Bad or Empty File | File not found, unreadable, 0-byte file, blank-only file, or UTF-16 without BOM |
+| `3` | Reject Rate Too High | `reject_rate > max_reject_rate` (for $\ge 20$ records) or `--fail-on-rejects` with invalid lines |
+
+### Operational Summary Line
+
+The ingestion CLI prints exactly one JSON line to `stdout` upon termination:
+```json
+{"total": 10, "valid": 4, "invalid": 6, "reject_rate": 0.6, "elapsed": 0.0032, "exit_reason": "ok"}
+```
+Strict Zero-Leakage: Contains only numeric operational metrics and status enums. Never contains ticket bodies, customer data, ticket IDs, or file paths.
 
 ### PII Redaction (SP-102)
 
@@ -155,7 +174,9 @@ Blank lines and lines containing only whitespace are skipped during processing:
 
 - **Line Length Guard**: Lines are read in chunks up to 1 MB (`MAX_LINE_BYTES = 1_048_576`). Lines exceeding 1 MB are discarded without buffering and rejected with `line_too_long`, preventing unbounded memory growth.
 - **UTF-8 BOM**: Files starting with a UTF-8 Byte Order Mark (`\xef\xbb\xbf`) are automatically supported; the BOM is stripped from the first line without error.
-- **Non-UTF-8 Bytes**: Input files are streamed in binary mode. Lines containing invalid UTF-8 bytes are rejected as `invalid_encoding` without crashing or dumping raw bytes to stderr.
+- **UTF-16 Support**: Automatically detects UTF-16LE (`\xff\xfe`) and UTF-16BE (`\xfe\xff`) by peeking the initial 2 bytes without buffering the whole file in memory. Lines are streamed and decoded incrementally on 2-byte-aligned newline delimiters.
+- **UTF-16 without BOM Rejection**: UTF-16 files lacking a BOM (detected via alternating null bytes in the header) are rejected loudly at the file level with a `ValueError` and exit code `2`.
+- **Non-UTF-8 Bytes**: Input files are streamed in binary mode. Lines containing invalid bytes are rejected as `invalid_encoding` without crashing or dumping raw bytes to stderr.
 - **Hostile JSON**: Deeply nested JSON that triggers parser recursion errors is caught and marked as `invalid_json`.
 
 ## Crash Safety & Atomic Outputs
