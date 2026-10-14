@@ -53,6 +53,7 @@ def process_triage_file(
 
     counts: dict[str, int] = {label: 0 for label in LABELS}
     total_records = 0
+    skipped_records = 0
 
     tmp_triaged = output_dir / ".triaged.jsonl.tmp"
 
@@ -66,9 +67,21 @@ def process_triage_file(
 
             try:
                 ticket = json.loads(line_str)
-            except json.JSONDecodeError as exc:
-                tmp_triaged.unlink(missing_ok=True)
-                raise ValueError(f"Line {idx}: Invalid JSON: {exc}") from exc
+            except (json.JSONDecodeError, RecursionError) as exc:
+                skipped_records += 1
+                print(
+                    f"Warning: Line {idx}: Skipping invalid JSON: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+
+            if not isinstance(ticket, dict):
+                skipped_records += 1
+                print(
+                    f"Warning: Line {idx}: Skipping non-object record",
+                    file=sys.stderr,
+                )
+                continue
 
             subject = ticket.get("subject")
             body = ticket.get("body", "")
@@ -85,21 +98,23 @@ def process_triage_file(
                 confidence = res["confidence"]
                 needs_review = res["needs_review"]
 
-            ticket["predicted_label"] = pred_label
-            if confidence is not None:
-                ticket["confidence"] = confidence
-                ticket["needs_review"] = needs_review
-
             counts[pred_label] = counts.get(pred_label, 0) + 1
             total_records += 1
 
-            out_f.write(json.dumps(ticket, ensure_ascii=False) + "\n")
+            record = {
+                "ticket_id": ticket.get("ticket_id"),
+                "label": pred_label,
+                "confidence": confidence,
+                "needs_review": needs_review,
+            }
+            out_f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     # Atomic rename
     tmp_triaged.replace(triaged_file)
 
     report = {
         "total_records": total_records,
+        "skipped_records": skipped_records,
         "method": method,
         "counts": counts,
         "output_file": str(triaged_file),
@@ -222,6 +237,8 @@ def main() -> int:
         print("Ticket triage completed successfully.")
         print(f"Method: {report['method']}")
         print(f"Total records: {report['total_records']}")
+        if report.get("skipped_records", 0) > 0:
+            print(f"Skipped records: {report['skipped_records']}")
         for label, count in report["counts"].items():
             print(f"  {label:<12}: {count}")
         print(f"Output directory: {args.output_dir}")

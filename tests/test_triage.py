@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from supportpilot.triage import LABELS
-from supportpilot.triage.__main__ import main as cli_main
+from supportpilot.triage.__main__ import main as cli_main, process_triage_file
 from supportpilot.triage.evaluate import (
     compare_classifiers,
     evaluate_predictions,
@@ -333,14 +333,124 @@ def test_cli_batch_file_processing(tmp_path, capsys):
         triaged_records = [json.loads(line) for line in f if line.strip()]
 
     assert len(triaged_records) == 2
-    assert triaged_records[0]["predicted_label"] == "delivery"
-    assert triaged_records[1]["predicted_label"] == "cancellation"
+    assert triaged_records[0]["label"] == "delivery"
+    assert triaged_records[1]["label"] == "cancellation"
+
+    expected_keys = {"ticket_id", "label", "confidence", "needs_review"}
+    for record in triaged_records:
+        assert set(record.keys()) == expected_keys
+        assert len(record) == 4
+        assert "body" not in record
 
     with open(report_file, "r", encoding="utf-8") as f:
         report = json.load(f)
     assert report["total_records"] == 2
     assert report["counts"]["delivery"] == 1
     assert report["counts"]["cancellation"] == 1
+
+
+def test_triage_output_contract_exact_keys(tmp_path):
+    """Assert output contract strictly produces ticket_id, label, confidence, needs_review."""
+    input_file = tmp_path / "tickets.jsonl"
+    output_dir = tmp_path / "out_triage"
+
+    sample_tickets = [
+        {
+            "ticket_id": "T-101",
+            "subject": "Delay inquiry",
+            "body": "Where is my package? It is 3 days late.",
+            "customer_id": "C-999",
+            "extra_field": "do_not_leak",
+        },
+        {
+            "ticket_id": "T-102",
+            "subject": "Cancellation",
+            "body": "Cancel my order immediately before dispatch",
+            "channel": "email",
+        },
+    ]
+    with open(input_file, "w", encoding="utf-8") as f:
+        for t in sample_tickets:
+            f.write(json.dumps(t) + "\n")
+
+    report = process_triage_file(
+        input_path=input_file,
+        output_dir=output_dir,
+        method="model",
+    )
+    assert report["total_records"] == 2
+
+    triaged_file = output_dir / "triaged.jsonl"
+    assert triaged_file.exists()
+
+    with open(triaged_file, "r", encoding="utf-8") as f:
+        records = [json.loads(line) for line in f if line.strip()]
+
+    assert len(records) == 2
+    expected_keys = {"ticket_id", "label", "confidence", "needs_review"}
+
+    for r in records:
+        assert set(r.keys()) == expected_keys, f"Keys mismatch: {set(r.keys())}"
+        assert len(r) == 4
+        # Explicitly verify sensitive/unneeded fields from original ticket are omitted
+        assert "body" not in r
+        assert "subject" not in r
+        assert "customer_id" not in r
+        assert "extra_field" not in r
+        assert "channel" not in r
+        assert "predicted_label" not in r
+
+    assert records[0]["ticket_id"] == "T-101"
+    assert records[0]["label"] == "delivery"
+    assert isinstance(records[0]["confidence"], float)
+    assert isinstance(records[0]["needs_review"], bool)
+
+    assert records[1]["ticket_id"] == "T-102"
+    assert records[1]["label"] == "cancellation"
+    assert isinstance(records[1]["confidence"], float)
+    assert isinstance(records[1]["needs_review"], bool)
+
+
+def test_process_triage_file_skips_invalid_json_and_counts(tmp_path, capsys):
+    """Verify that bad JSON lines do not crash the run, are skipped and counted."""
+    input_file = tmp_path / "mixed_tickets.jsonl"
+    output_dir = tmp_path / "out_triage"
+
+    lines = [
+        json.dumps({"ticket_id": "T-1", "body": "Where is my courier package?"}),
+        "{ bad json line without closing brackets",
+        json.dumps({"ticket_id": "T-2", "body": "Please refund my money to original card"}),
+        json.dumps(["not_a_dict_record"]),
+        "",  # blank line
+        json.dumps({"ticket_id": "T-3", "body": "Cancel my order before it ships"}),
+    ]
+    with open(input_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    report = process_triage_file(
+        input_path=input_file,
+        output_dir=output_dir,
+        method="rules",
+    )
+
+    assert report["total_records"] == 3
+    assert report["skipped_records"] == 2
+
+    triaged_file = output_dir / "triaged.jsonl"
+    with open(triaged_file, "r", encoding="utf-8") as f:
+        triaged_records = [json.loads(line) for line in f if line.strip()]
+
+    assert len(triaged_records) == 3
+    expected_keys = {"ticket_id", "label", "confidence", "needs_review"}
+    for record in triaged_records:
+        assert set(record.keys()) == expected_keys
+        assert len(record) == 4
+
+    assert [r["ticket_id"] for r in triaged_records] == ["T-1", "T-2", "T-3"]
+
+    captured = capsys.readouterr()
+    assert "Skipping invalid JSON" in captured.err
+    assert "Skipping non-object record" in captured.err
 
 
 def test_cli_file_not_found(capsys):
