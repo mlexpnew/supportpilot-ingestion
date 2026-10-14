@@ -1,0 +1,180 @@
+{"ticket_id": "TR-001", "body": "Where is my parcel?", "label": "delivery"}
+{"ticket_id": "TR-002", "body": "Tracking number 98213 has had no update since Monday morning, please check with BlueDart.", "label": "delivery"}
+{"ticket_id": "TR-003", "body": "Delivery guy marked item delivered but I was at home all day and nobody came.", "label": "delivery"}
+{"ticket_id": "TR-004", "body": "bhai order kab tak deliver hoga? emergency hai", "label": "delivery"}
+{"ticket_id": "TR-005", "body": "curier boy cancelled without calling", "label": "delivery"}
+{"ticket_id": "TR-006", "body": "I need to update my delivery address to Flat 402, Sunshine Heights before dispatch.", "label": "delivery"}
+{"ticket_id": "TR-007", "body": "Shipment is delayed by 5 days already, why does the status say in transit?", "label": "delivery"}
+{"ticket_id": "TR-008", "body": "Please instruct driver to leave package with security guard at gate.", "label": "delivery"}
+{"ticket_id": "TR-009", "body": "parcle received but package box was completely open and damaged", "label": "delivery"}
+{"ticket_id": "TR-010", "body": "Rider called saying location is out of delivery area and asked me to collect from hub.", "label": "delivery"}
+{"ticket_id": "TR-011", "body": "delvery date was promised yesterday. where is it?", "label": "delivery"}
+{"ticket_id": "TR-012", "body": "Express delivery extra fee paid, but still taking normal ground shipping speed.", "label": "delivery"}
+{"ticket_id": "TR-013", "body": "OTP for delivery not received on my mobile when driver arrived.", "label": "delivery"}
+{"ticket_id": "TR-014", "body": "mera courier abhi tak dispatch kyu nahi hua? 3 din ho gaye", "label": "delivery"}
+{"ticket_id": "TR-015", "body": "Tracking link shows delivered to someone named Ramesh but nobody with that name lives here.", "label": "delivery"}
+{"ticket_id": "TR-016", "body": "Can you expedite delivery for tomorrow? It is a birthday gift.", "label": "delivery"}
+{"ticket_id": "TR-017", "body": "driver marked customer unavailable even though I was waiting outside.", "label": "delivery"}
+{"ticket_id": "TR-018", "body": "Package delivered to wrong house number on my street.", "label": "delivery"}
+{"ticket_id": "TR-019", "body": "Package damaged during transit, please send a replacement unit right away", "label": "delivery"}
+{"ticket_id": "TR-020", "body": "kab tak aayega parcel? live tracking map is not moving at all", "label": "delivery"}
+{"ticket_id": "TR-021", "body": "Expected delivery time was 2 PM, now it says delayed due to weather.", "label": "delivery"}
+{"ticket_id": "TR-022", "body": "delivry partner refused to bring heavy parcel upstairs to 3rd floor.", "label": "delivery"}
+{"ticket_id": "TR-023", "body": "Can I reschedule delivery to this Sunday morning between 10am and 1pm?", "label": "delivery"}
+{"ticket_id": "TR-024", "body": "Item stuck at Delhi sorting facility for 72 hours.", "label": "delivery"}
+{"ticket_id": "TR-025", "body": "shipment tracking shows returned to sender, why was it returned?", "label": "delivery"}
+{"ticket_id": "TR-026", "body": "order dispatched but awb tracking number is showing invalid on courier website", "label": "delivery"}
+{"ticket_id": "TR-027", "body": "urgent: change phone number for delivery agent to call", "label": "delivery"}
+{"ticket_id": "TR-028", "body": "courier boy ne misbehave kiya and threw package on porch", "label": "delivery"}
+{"ticket_id": "TR-029", "body": "Will the delivery require signature upon arrival?", "label": "delivery"}
+{"ticket_id": "TR-030", "body": "parcel status shows out for delivery since 8 am, still not delivered by night", "label": "delivery"}
+{"ticket_id": "TR-031", "body": "I was charged twice for one item on my credit card statement.", "label": "billing"}
+{"ticket_id": "TR-032", "body": "Promo code SAVE20 was applied at checkout but final receipt shows full price.", "label": "billing"}
+{"ticket_id": "TR-033", "body": "Money debited from [CARD] but checkout screen froze and order is not confirmed", "label": "billing"}
+{"ticket_id": "TR-034", "body": "Please send a tax invoice with our company GSTIN number.", "label": "billing"}
+{"ticket_id": "TR-035", "body": "delivery agent demanded 200 extra cash on prepaid order, why was I charged?", "label": "billing"}
+{"ticket_id": "TR-036", "body": "do bar paise cut gaye upi se but order status is failed", "label": "billing"}
+{"ticket_id": "TR-037", "body": "Why is there an unexpected convenience fee of 49 rupees added to my bill?", "label": "billing"}
+{"ticket_id": "TR-038", "body": "you overcharged me 350 rs on invoice, credit it back to my card", "label": "billing"}
+{"ticket_id": "TR-039", "body": "Payment deduction happened twice for order 88412.", "label": "billing"}
+{"ticket_id": "TR-040", "body": "do you accept cash on delivery or only credit cards and UPI?", "label": "billing"}
+{"ticket_id": "TR-041", "body": "My card was charged 1299 instead of the discounted price 999 shown on product page.", "label": "billing"}
+{"ticket_id": "TR-042", "body": "invoice pe galat address aur gstin print hua hai, please correct", "label": "billing"}
+{"ticket_id": "TR-043", "body": "Bank statement shows recurring subscription charge, but I cancelled auto-debit.", "label": "billing"}
+{"ticket_id": "TR-044", "body": "Payment gateway timed out during UPI pin entry but amount was deducted.", "label": "billing"}
+{"ticket_id": "TR-045", "body": "bil amount me extra delivery charge kyu add kiya when cart was above 500?", "label": "billing"}
+{"ticket_id": "TR-046", "body": "Need commercial business invoice copy for audit purposes.", "label": "billing"}
+{"ticket_id": "TR-047", "body": "Cashback of 100 Rs promised on wallet payment was never credited.", "label": "billing"}
+{"ticket_id": "TR-048", "body": "unauthorized charge of 2499 from [CARD] on my account", "label": "billing"}
+{"ticket_id": "TR-049", "body": "Currency converted to USD instead of INR on checkout receipt.", "label": "billing"}
+{"ticket_id": "TR-050", "body": "netbanking payment debited but merchant reference shows pending", "label": "billing"}
+{"ticket_id": "TR-051", "body": "Coupon expired error shown even though valid until midnight tonight.", "label": "billing"}
+{"ticket_id": "TR-052", "body": "paise account se nikal gaye par order list me nahi dikh raha", "label": "billing"}
+{"ticket_id": "TR-053", "body": "Why was handling charge doubled on cash on delivery order?", "label": "billing"}
+{"ticket_id": "TR-054", "body": "Card charged thrice due to multiple OTP submissions.", "label": "billing"}
+{"ticket_id": "TR-055", "body": "Send me the breakdown of VAT and shipping charges on my last order.", "label": "billing"}
+{"ticket_id": "TR-056", "body": "Membership renewal fee deducted without prior email notification.", "label": "billing"}
+{"ticket_id": "TR-057", "body": "biling issue: wrong billing name showing on digital invoice", "label": "billing"}
+{"ticket_id": "TR-058", "body": "Applied gift voucher balance of 500 but full amount debited from debit card.", "label": "billing"}
+{"ticket_id": "TR-059", "body": "Transaction failed at bank end but balance reduced.", "label": "billing"}
+{"ticket_id": "TR-060", "body": "extra packing charge added on receipt without consent", "label": "billing"}
+{"ticket_id": "TR-061", "body": "refund kab aayega? 2 weeks ho gaye", "label": "refund"}
+{"ticket_id": "TR-062", "body": "item never arrived, refund my money", "label": "refund"}
+{"ticket_id": "TR-063", "body": "Returned the defective mixer grinder on 5th Oct, still waiting for refund.", "label": "refund"}
+{"ticket_id": "TR-064", "body": "Order cancelled within 5 minutes, when will amount reverse to my bank?", "label": "refund"}
+{"ticket_id": "TR-065", "body": "I requested refund to original payment source, why did you give store credits?", "label": "refund"}
+{"ticket_id": "TR-066", "body": "pickup boy collected return parcel 4 days ago but return status still not updated.", "label": "refund"}
+{"ticket_id": "TR-067", "body": "refud status shows completed but amount not credited in bank account", "label": "refund"}
+{"ticket_id": "TR-068", "body": "Cancelled one item from multi-product order, where is partial refund?", "label": "refund"}
+{"ticket_id": "TR-069", "body": "paise wapas kab transfer honge? customer care said 24 hours", "label": "refund"}
+{"ticket_id": "TR-070", "body": "Return rejected by warehouse team saying tag missing, but tags were intact.", "label": "refund"}
+{"ticket_id": "TR-071", "body": "Refund amount received is 200 rupees less than purchase price.", "label": "refund"}
+{"ticket_id": "TR-072", "body": "Return courier pickup was scheduled today between 10-2 but nobody showed up.", "label": "refund"}
+{"ticket_id": "TR-073", "body": "wapas kiye hue kapde ka refund abhi tak nahi mila", "label": "refund"}
+{"ticket_id": "TR-074", "body": "Bank ARN number provided for refund is showing not found at my branch.", "label": "refund"}
+{"ticket_id": "TR-075", "body": "Need to initiate return and refund for wrong size shoes received.", "label": "refund"}
+{"ticket_id": "TR-076", "body": "cancel my order immediately and process full reversal to [CARD]", "label": "refund"}
+{"ticket_id": "TR-077", "body": "Wallet refund is showing locked and cannot be withdrawn to bank.", "label": "refund"}
+{"ticket_id": "TR-078", "body": "How many business days does IMPS refund take to reflect?", "label": "refund"}
+{"ticket_id": "TR-079", "body": "item returned via post office speed post, tracking shared, please release refund.", "label": "refund"}
+{"ticket_id": "TR-080", "body": "pura refund chahiye, product quality ekdum bekar hai", "label": "refund"}
+{"ticket_id": "TR-081", "body": "Received damaged ceramic mug, photos attached, please refund.", "label": "refund"}
+{"ticket_id": "TR-082", "body": "Return request button is disabled on my orders page for eligible product.", "label": "refund"}
+{"ticket_id": "TR-083", "body": "agent promised instant refund upon return pickup, still waiting.", "label": "refund"}
+{"ticket_id": "TR-084", "body": "Refund credited to expired card account, how can I redirect to new account?", "label": "refund"}
+{"ticket_id": "TR-085", "body": "refud not received for returned shirt order 5591", "label": "refund"}
+{"ticket_id": "TR-086", "body": "Return pickup attempt failed because delivery executive did not bring bag.", "label": "refund"}
+{"ticket_id": "TR-087", "body": "mene cancel kiya tha order, paise kab wapas aayenge?", "label": "refund"}
+{"ticket_id": "TR-088", "body": "Sent three follow-up emails regarding pending refund for returned laptop sleeve.", "label": "refund"}
+{"ticket_id": "TR-089", "body": "Replacement was out of stock so customer support offered refund, please initiate.", "label": "refund"}
+{"ticket_id": "TR-090", "body": "Store credit reversal to bank account request submitted 10 days ago.", "label": "refund"}
+{"ticket_id": "TR-091", "body": "App crashes every time I tap on place order button.", "label": "technical"}
+{"ticket_id": "TR-092", "body": "Getting 502 bad gateway error on checkout page.", "label": "technical"}
+{"ticket_id": "TR-093", "body": "app crashes every time I open the login page", "label": "technical"}
+{"ticket_id": "TR-094", "body": "Search bar returns zero results for everyday keywords like shoes or shirts.", "label": "technical"}
+{"ticket_id": "TR-095", "body": "Website images are not loading on chrome browser.", "label": "technical"}
+{"ticket_id": "TR-096", "body": "app freeze ho jati hai cart open karte hi", "label": "technical"}
+{"ticket_id": "TR-097", "body": "Cannot apply filter by price on category listing page.", "label": "technical"}
+{"ticket_id": "TR-098", "body": "Payment gateway iframe shows blank white screen on android app.", "label": "technical"}
+{"ticket_id": "TR-099", "body": "Infinite spinner loading loop when opening order history.", "label": "technical"}
+{"ticket_id": "TR-100", "body": "crash on launch after updating to latest iOS version 18.1", "label": "technical"}
+{"ticket_id": "TR-101", "body": "Getting error code ERR_CONNECTION_TIMED_OUT when trying to view invoices.", "label": "technical"}
+{"ticket_id": "TR-102", "body": "Push notifications toggle in app settings turns off automatically.", "label": "technical"}
+{"ticket_id": "TR-103", "body": "cart me items add nahi ho rahe, clicking add to cart does nothing", "label": "technical"}
+{"ticket_id": "TR-104", "body": "Unable to upload screenshot image on support ticket submission form.", "label": "technical"}
+{"ticket_id": "TR-105", "body": "webpage responsive layout broken on iPad tablet view", "label": "technical"}
+{"ticket_id": "TR-106", "body": "Auto-complete location dropdown is not showing my pin code 560034.", "label": "technical"}
+{"ticket_id": "TR-107", "body": "App showing network connection error even when wifi is working fine.", "label": "technical"}
+{"ticket_id": "TR-108", "body": "dark mode text is black on dark grey background, completely unreadable", "label": "technical"}
+{"ticket_id": "TR-109", "body": "getting 404 page not found when clicking on track shipment button", "label": "technical"}
+{"ticket_id": "TR-110", "body": "camera permission error while trying to scan barcode in app", "label": "technical"}
+{"ticket_id": "TR-111", "body": "checkout pe continue button is greyed out and unclickable", "label": "technical"}
+{"ticket_id": "TR-112", "body": "Wishlist page is displaying duplicate copies of saved items.", "label": "technical"}
+{"ticket_id": "TR-113", "body": "Crash report: java.lang.NullPointerException when opening notification tab.", "label": "technical"}
+{"ticket_id": "TR-114", "body": "website session logs out every 30 seconds automatically", "label": "technical"}
+{"ticket_id": "TR-115", "body": "Audio alert sound repeats continuously even after closing notification.", "label": "technical"}
+{"ticket_id": "TR-116", "body": "review submit button gives internal server error 500", "label": "technical"}
+{"ticket_id": "TR-117", "body": "Cannot scroll down on terms and conditions modal popup.", "label": "technical"}
+{"ticket_id": "TR-118", "body": "screen flickering black when switching between product tabs", "label": "technical"}
+{"ticket_id": "TR-119", "body": "app update hone ke baad open hi nahi ho rahi", "label": "technical"}
+{"ticket_id": "TR-120", "body": "Language selector switches back to English automatically after refreshing.", "label": "technical"}
+{"ticket_id": "TR-121", "body": "OTP not coming to [PHONE]", "label": "account"}
+{"ticket_id": "TR-122", "body": "entered OTP 5 times but says session expired, now my account is locked", "label": "account"}
+{"ticket_id": "TR-123", "body": "cancel my active subscription and permanently delete my profile from your database", "label": "account"}
+{"ticket_id": "TR-124", "body": "Forgot my password and reset email link never arrives in my inbox or spam.", "label": "account"}
+{"ticket_id": "TR-125", "body": "I changed my phone number and need to update registered mobile on my profile.", "label": "account"}
+{"ticket_id": "TR-126", "body": "login nahi ho raha, says user does not exist", "label": "account"}
+{"ticket_id": "TR-127", "body": "Account has been suspended without any explanation, please unblock.", "label": "account"}
+{"ticket_id": "TR-128", "body": "How can I merge my two accounts registered under different email addresses?", "label": "account"}
+{"ticket_id": "TR-129", "body": "Two factor authentication app lost after phone reset, need backup code.", "label": "account"}
+{"ticket_id": "TR-130", "body": "acount verification email link says invalid token expired", "label": "account"}
+{"ticket_id": "TR-131", "body": "Please update my primary email address to [EMAIL].", "label": "account"}
+{"ticket_id": "TR-132", "body": "Suspicious login attempt alert received from unknown IP location in Russia.", "label": "account"}
+{"ticket_id": "TR-133", "body": "mera account hack ho gaya hai, unauthorized orders placed", "label": "account"}
+{"ticket_id": "TR-134", "body": "Cannot delete saved credit card details from payment settings.", "label": "account"}
+{"ticket_id": "TR-135", "body": "Need to download all personal data associated with my account under GDPR.", "label": "account"}
+{"ticket_id": "TR-136", "body": "passward change karne ke baad bhi purana password work kar raha hai", "label": "account"}
+{"ticket_id": "TR-137", "body": "Profile name has a typo, how do I edit customer name field?", "label": "account"}
+{"ticket_id": "TR-138", "body": "Account locked due to too many failed attempts, please unlock.", "label": "account"}
+{"ticket_id": "TR-139", "body": "Email verification OTP sent to [EMAIL] arrives after 15 minutes validity.", "label": "account"}
+{"ticket_id": "TR-140", "body": "Unable to unlink my Google sign-in from account.", "label": "account"}
+{"ticket_id": "TR-141", "body": "how to deactivate my account temporarily?", "label": "account"}
+{"ticket_id": "TR-142", "body": "KYC verification documents rejected without giving reason.", "label": "account"}
+{"ticket_id": "TR-143", "body": "purana phone number band ho gaya, how to receive login otp?", "label": "account"}
+{"ticket_id": "TR-144", "body": "Social media login with Apple ID gives authorization error.", "label": "account"}
+{"ticket_id": "TR-145", "body": "Cannot remove secondary phone number from account profile.", "label": "account"}
+{"ticket_id": "TR-146", "body": "acount settings page not allowing to turn off promotional emails", "label": "account"}
+{"ticket_id": "TR-147", "body": "Requesting immediate closure of account and deletion of order history.", "label": "account"}
+{"ticket_id": "TR-148", "body": "Security question answer not being accepted.", "label": "account"}
+{"ticket_id": "TR-149", "body": "Got SMS saying password changed, but I did not initiate this change.", "label": "account"}
+{"ticket_id": "TR-150", "body": "bina otp ke login kaise kare? sim card is damaged", "label": "account"}
+{"ticket_id": "TR-151", "body": "Do you sell gift cards?", "label": "other"}
+{"ticket_id": "TR-152", "body": "I returned the wrong item by accident, can I get my original shoes back?", "label": "other"}
+{"ticket_id": "TR-153", "body": "Are you opening any retail stores in Bangalore anytime soon?", "label": "other"}
+{"ticket_id": "TR-154", "body": "Do you have wholesale pricing for bulk office supply orders?", "label": "other"}
+{"ticket_id": "TR-155", "body": "I want to partner with your brand as an eco-friendly packaging supplier.", "label": "other"}
+{"ticket_id": "TR-156", "body": "Great customer service from agent Priya on call yesterday, thank you!", "label": "other"}
+{"ticket_id": "TR-157", "body": "kya aap log customized printing services provide karte ho?", "label": "other"}
+{"ticket_id": "TR-158", "body": "Where can I find your corporate sustainability and carbon footprint report?", "label": "other"}
+{"ticket_id": "TR-159", "body": "When will the blue winter jackets be back in stock in size Large?", "label": "other"}
+{"ticket_id": "TR-160", "body": "Do you offer student discounts or educational institutional pricing?", "label": "other"}
+{"ticket_id": "TR-161", "body": "Whom should I contact regarding press and media inquiries?", "label": "other"}
+{"ticket_id": "TR-162", "body": "mujhe affiliate program join karna hai, what is the procedure?", "label": "other"}
+{"ticket_id": "TR-163", "body": "What are your customer support call center operating hours on weekends?", "label": "other"}
+{"ticket_id": "TR-164", "body": "Can you provide a certificate of authenticity for the branded watch?", "label": "other"}
+{"ticket_id": "TR-165", "body": "Suggestions for website improvement: add comparison feature between gadgets.", "label": "other"}
+{"ticket_id": "TR-166", "body": "delhi me head office kahan pe hai aapka?", "label": "other"}
+{"ticket_id": "TR-167", "body": "Is gift wrapping and personalized message card service available?", "label": "other"}
+{"ticket_id": "TR-168", "body": "I am a fashion influencer, where should I send my collaboration proposal?", "label": "other"}
+{"ticket_id": "TR-169", "body": "Do you deliver to international addresses in Dubai and London?", "label": "other"}
+{"ticket_id": "TR-170", "body": "kya Sunday ko customer care available hota hai?", "label": "other"}
+{"ticket_id": "TR-171", "body": "Where do you manufacture your organic cotton clothing line?", "label": "other"}
+{"ticket_id": "TR-172", "body": "Looking for job openings in software engineering department, where to apply?", "label": "other"}
+{"ticket_id": "TR-173", "body": "Can I pre-order upcoming book releasing next month?", "label": "other"}
+{"ticket_id": "TR-174", "body": "product warranty registration link kahan milega?", "label": "other"}
+{"ticket_id": "TR-175", "body": "Does this electronics model comply with Bureau of Indian Standards?", "label": "other"}
+{"ticket_id": "TR-176", "body": "Just wanted to say loved the quick delivery and eco packaging, kudos team!", "label": "other"}
+{"ticket_id": "TR-177", "body": "Are there any clearance sale events happening this Diwali season?", "label": "other"}
+{"ticket_id": "TR-178", "body": "sponsor our college cultural festival fest, whom to email?", "label": "other"}
+{"ticket_id": "TR-179", "body": "Can you send a physical paper product catalogue to my office address?", "label": "other"}
+{"ticket_id": "TR-180", "body": "Do you have recycle trade-in program for old electronics gadgets?", "label": "other"}
