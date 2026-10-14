@@ -419,7 +419,9 @@ def test_process_triage_file_skips_invalid_json_and_counts(tmp_path, capsys):
     lines = [
         json.dumps({"ticket_id": "T-1", "body": "Where is my courier package?"}),
         "{ bad json line without closing brackets",
-        json.dumps({"ticket_id": "T-2", "body": "Please refund my money to original card"}),
+        json.dumps(
+            {"ticket_id": "T-2", "body": "Please refund my money to original card"}
+        ),
         json.dumps(["not_a_dict_record"]),
         "",  # blank line
         json.dumps({"ticket_id": "T-3", "body": "Cancel my order before it ships"}),
