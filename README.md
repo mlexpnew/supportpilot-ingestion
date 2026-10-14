@@ -41,9 +41,11 @@ Optional flags:
 | `2` | Bad or Empty File | File not found, unreadable, 0-byte file, blank-only file, or UTF-16 without BOM |
 | `3` | Reject Rate Too High | `reject_rate > max_reject_rate` (for $\ge 20$ records), zero valid records (`valid == 0` with `total > 0`), or `--fail-on-rejects` with invalid lines |
 
+> **Standard Streams Separation**: All human-readable messages (progress, record counts, reject rates, and error diagnostics) are emitted to `stderr`. `stdout` strictly contains only the single JSON summary line upon termination, enabling automated callers to parse `stdout` directly as a single JSON object.
+
 ### Operational Summary Line
 
-The ingestion CLI prints exactly one JSON line to `stdout` upon termination:
+The ingestion CLI prints exactly one JSON line to `stdout` upon termination (all human-readable output is directed to `stderr`):
 ```json
 {"total": 10, "valid": 4, "invalid": 6, "reject_rate": 0.6, "elapsed": 0.0032, "exit_reason": "ok"}
 ```
@@ -165,8 +167,8 @@ Blank lines and lines containing only whitespace are skipped during processing:
 1. **Strict Timezone Enforcement**:
    - `created_at` must be an ISO 8601 formatted string with an explicit UTC offset or timezone specifier (e.g. `2025-01-14T09:15:00Z` or `2025-01-14T10:30:00+05:30`). Timezone-naive timestamps (e.g. `2025-01-14T09:15:00`) and numeric timestamps are strictly rejected as `invalid_timestamp`.
    - *Trade-off*: Strict rejection protects downstream SLA metrics and analytics from timing inaccuracies. If upstream data sources omit timezone offsets, those records will be rejected. Neha should confirm if upstream sources can supply timezone offsets or if a default assumption (e.g. UTC) should be introduced.
-2. **CLI Exit Code**:
-   - Standardized in SP-104: exits `0` on success, `1` on crash, `2` on bad/empty file, and `3` on high rejection rate or zero valid records. Note: failing on invalid records now exits code `3` rather than code `2` (breaking change for automated callers).
+2. **CLI Exit Code & Standard Streams**:
+   - Standardized in SP-104: exits `0` on success, `1` on crash, `2` on bad/empty file, and `3` on high rejection rate or zero valid records. Note: failing on invalid records now exits code `3` rather than code `2` (breaking change for automated callers). Human-readable status lines are emitted to `stderr` so `stdout` contains exclusively the operational JSON summary line for clean downstream machine consumption.
 3. **Client-Controlled `ticket_id` on Rejections**:
    - Sanitized `ticket_id` values (capped at 64 characters) are preserved in `rejects.jsonl` to assist debugging. We assume ticket IDs are non-sensitive identifiers; however, if client sources ever embed PII (e.g. customer email addresses) in `ticket_id`, Neha should decide whether to mask or omit `ticket_id` from reject logs.
 

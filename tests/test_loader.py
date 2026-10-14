@@ -956,3 +956,70 @@ def test_reject_rate_unrounded_comparison(tmp_path):
     with patch.object(sys, "argv", test_args):
         code = cli_main()
         assert code == 3
+
+
+def test_cli_stdout_parses_as_exactly_one_json_object(tmp_path, capsys):
+    input_file = tmp_path / "valid_tickets.jsonl"
+    output_dir = tmp_path / "output_cli_stdout"
+    write_jsonl(input_file, [valid_ticket("T-CLI-1"), valid_ticket("T-CLI-2")])
+
+    test_args = ["prog", "--input", str(input_file), "--output-dir", str(output_dir)]
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 0
+
+    captured = capsys.readouterr()
+
+    # Assert stdout parses directly and strictly as exactly one JSON object.
+    # If any human-readable lines or trailing data were present on stdout,
+    # json.loads() would raise json.JSONDecodeError.
+    data = json.loads(captured.out)
+    assert isinstance(data, dict)
+    assert set(data.keys()) == {
+        "total",
+        "valid",
+        "invalid",
+        "reject_rate",
+        "elapsed",
+        "exit_reason",
+    }
+    assert data["exit_reason"] == "ok"
+    assert data["total"] == 2
+    assert data["valid"] == 2
+    assert data["invalid"] == 0
+
+    # Ensure stdout is exactly one line
+    assert len(captured.out.splitlines()) == 1
+
+    # Ensure human-readable progress and completion lines were moved to stderr
+    assert "Ticket ingestion completed successfully." in captured.err
+    assert "Total records: 2" in captured.err
+    assert "Valid records: 2" in captured.err
+    assert "Invalid records: 0" in captured.err
+    assert "Reject rate: 0.0000" in captured.err
+    assert "Blank lines skipped: 0" in captured.err
+    assert f"Output directory: {output_dir}" in captured.err
+
+    # Also verify that a non-zero exit path (high reject rate) preserves this invariant
+    bad_ticket = valid_ticket("T-CLI-BAD")
+    bad_ticket["body"] = ""
+    write_jsonl(input_file, [bad_ticket])
+
+    test_args_fail = [
+        "prog",
+        "--input",
+        str(input_file),
+        "--output-dir",
+        str(output_dir),
+        "--fail-on-rejects",
+    ]
+    with patch.object(sys, "argv", test_args_fail):
+        code_fail = cli_main()
+        assert code_fail == 3
+
+    captured_fail = capsys.readouterr()
+    data_fail = json.loads(captured_fail.out)
+    assert isinstance(data_fail, dict)
+    assert data_fail["exit_reason"] == "reject_rate_too_high"
+    assert len(captured_fail.out.splitlines()) == 1
+    assert "Rejection guard triggered:" in captured_fail.err
