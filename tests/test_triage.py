@@ -348,6 +348,12 @@ def test_cli_batch_file_processing(tmp_path, capsys):
     assert report["counts"]["delivery"] == 1
     assert report["counts"]["cancellation"] == 1
 
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Ticket triage completed successfully." in captured.err
+    assert "Total records: 2" in captured.err
+    assert "Output directory:" in captured.err
+
 
 def test_triage_output_contract_exact_keys(tmp_path):
     """Assert output contract strictly produces ticket_id, label, confidence, needs_review."""
@@ -479,3 +485,112 @@ def test_cli_evaluate_mode(capsys):
 
     captured = capsys.readouterr()
     assert "SUPPORTPILOT TICKET TRIAGE EVALUATION REPORT" in captured.out
+
+
+def test_cli_batch_missing_ticket_id_is_skipped_and_counted(tmp_path, capsys):
+    """Verify that records with missing, null, or empty ticket_id are skipped and counted."""
+    input_file = tmp_path / "missing_id_tickets.jsonl"
+    output_dir = tmp_path / "out_triage"
+
+    sample_tickets = [
+        {"ticket_id": "T-VALID-1", "body": "Where is my parcel?"},
+        {"body": "Missing ticket_id entirely"},
+        {"ticket_id": None, "body": "None ticket_id"},
+        {"ticket_id": "", "body": "Empty string ticket_id"},
+        {"ticket_id": "   ", "body": "Whitespace ticket_id"},
+        {"ticket_id": "T-VALID-2", "body": "Cancel my order before it ships"},
+    ]
+    with open(input_file, "w", encoding="utf-8") as f:
+        for t in sample_tickets:
+            f.write(json.dumps(t) + "\n")
+
+    test_args = [
+        "prog",
+        "--input",
+        str(input_file),
+        "--output-dir",
+        str(output_dir),
+        "--method",
+        "rules",
+    ]
+    with patch.object(sys, "argv", test_args):
+        code = cli_main()
+        assert code == 0
+
+    triaged_file = output_dir / "triaged.jsonl"
+    with open(triaged_file, "r", encoding="utf-8") as f:
+        records = [json.loads(line) for line in f if line.strip()]
+
+    assert len(records) == 2
+    assert [r["ticket_id"] for r in records] == ["T-VALID-1", "T-VALID-2"]
+    for r in records:
+        assert r["ticket_id"] is not None
+        assert r["ticket_id"] != ""
+
+    report_file = output_dir / "triage_report.json"
+    with open(report_file, "r", encoding="utf-8") as f:
+        report = json.load(f)
+    assert report["total_records"] == 2
+    assert report["skipped_records"] == 4
+
+    captured = capsys.readouterr()
+    assert "Skipping record with missing ticket_id" in captured.err
+
+
+def test_cli_stdout_is_empty_or_one_json_line(tmp_path, capsys):
+    """Verify stdout contract: batch mode has empty stdout (human output in stderr); predict mode has exactly one JSON line."""
+    input_file = tmp_path / "tickets.jsonl"
+    output_dir = tmp_path / "out_triage"
+
+    sample_tickets = [
+        {"ticket_id": "T-1", "body": "Where is my parcel?"},
+        {"ticket_id": "T-2", "body": "Please refund my payment"},
+    ]
+    with open(input_file, "w", encoding="utf-8") as f:
+        for t in sample_tickets:
+            f.write(json.dumps(t) + "\n")
+
+    # 1. Batch mode: stdout must be empty (or at most one JSON line; strictly empty here)
+    batch_args = [
+        "prog",
+        "--input",
+        str(input_file),
+        "--output-dir",
+        str(output_dir),
+        "--method",
+        "rules",
+    ]
+    with patch.object(sys, "argv", batch_args):
+        code = cli_main()
+        assert code == 0
+
+    captured_batch = capsys.readouterr()
+    batch_stdout_lines = [
+        line for line in captured_batch.out.strip().splitlines() if line.strip()
+    ]
+    assert len(batch_stdout_lines) in (0, 1)
+    assert captured_batch.out == ""
+    # Verify human status lines were redirected to stderr
+    assert "Ticket triage completed successfully." in captured_batch.err
+    assert "Total records: 2" in captured_batch.err
+    assert "Output directory:" in captured_batch.err
+
+    # 2. Predict mode: stdout must be strictly one valid JSON line
+    predict_args = [
+        "prog",
+        "--predict",
+        "Where is my parcel?",
+        "--method",
+        "rules",
+    ]
+    with patch.object(sys, "argv", predict_args):
+        code = cli_main()
+        assert code == 0
+
+    captured_predict = capsys.readouterr()
+    predict_stdout_lines = [
+        line for line in captured_predict.out.strip().splitlines() if line.strip()
+    ]
+    assert len(predict_stdout_lines) == 1
+    predict_data = json.loads(predict_stdout_lines[0])
+    assert predict_data["label"] == "delivery"

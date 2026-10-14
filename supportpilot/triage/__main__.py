@@ -83,6 +83,15 @@ def process_triage_file(
                 )
                 continue
 
+            ticket_id = ticket.get("ticket_id")
+            if not ticket_id or not str(ticket_id).strip():
+                skipped_records += 1
+                print(
+                    f"Warning: Line {idx}: Skipping record with missing ticket_id",
+                    file=sys.stderr,
+                )
+                continue
+
             subject = ticket.get("subject")
             body = ticket.get("body", "")
             text_to_classify = f"{subject} {body}".strip() if subject else body
@@ -102,7 +111,7 @@ def process_triage_file(
             total_records += 1
 
             record = {
-                "ticket_id": ticket.get("ticket_id"),
+                "ticket_id": ticket_id,
                 "label": pred_label,
                 "confidence": confidence,
                 "needs_review": needs_review,
@@ -234,14 +243,14 @@ def main() -> int:
             print(f"Triage error: {exc}", file=sys.stderr)
             return 1
 
-        print("Ticket triage completed successfully.")
-        print(f"Method: {report['method']}")
-        print(f"Total records: {report['total_records']}")
+        print("Ticket triage completed successfully.", file=sys.stderr)
+        print(f"Method: {report['method']}", file=sys.stderr)
+        print(f"Total records: {report['total_records']}", file=sys.stderr)
         if report.get("skipped_records", 0) > 0:
-            print(f"Skipped records: {report['skipped_records']}")
+            print(f"Skipped records: {report['skipped_records']}", file=sys.stderr)
         for label, count in report["counts"].items():
-            print(f"  {label:<12}: {count}")
-        print(f"Output directory: {args.output_dir}")
+            print(f"  {label:<12}: {count}", file=sys.stderr)
+        print(f"Output directory: {args.output_dir}", file=sys.stderr)
         return 0
 
     parser.print_help(sys.stderr)
