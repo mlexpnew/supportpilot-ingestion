@@ -2,7 +2,7 @@ LABELS: tuple[str, ...] = (
     "delivery",
     "billing",
     "refund",
-    "technical",
+    "cancellation",
     "account",
     "other",
 )

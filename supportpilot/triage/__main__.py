@@ -77,15 +77,18 @@ def process_triage_file(
             if method == "rules":
                 pred_label = predict_rule(text_to_classify)
                 confidence = None
+                needs_review = False
             else:
                 assert classifier is not None
-                pred_label = classifier.predict(text_to_classify)
-                probs = classifier.predict_proba(text_to_classify)
-                confidence = round(probs.get(pred_label, 0.0), 4)
+                res = classifier.predict_one(text_to_classify)
+                pred_label = res["label"]
+                confidence = res["confidence"]
+                needs_review = res["needs_review"]
 
             ticket["predicted_label"] = pred_label
             if confidence is not None:
                 ticket["confidence"] = confidence
+                ticket["needs_review"] = needs_review
 
             counts[pred_label] = counts.get(pred_label, 0) + 1
             total_records += 1
@@ -169,12 +172,12 @@ def main() -> int:
             if not args.model_path.exists():
                 train_model(args.data, save_path=args.model_path)
             classifier = TriageClassifier.load(args.model_path)
-            pred = classifier.predict(args.predict)
-            probs = classifier.predict_proba(args.predict)
+            res = classifier.predict_one(args.predict)
             output = {
                 "text": args.predict,
-                "label": pred,
-                "confidence": round(probs.get(pred, 0.0), 4),
+                "label": res["label"],
+                "confidence": res["confidence"],
+                "needs_review": res["needs_review"],
                 "method": "model",
             }
         print(json.dumps(output, ensure_ascii=False))

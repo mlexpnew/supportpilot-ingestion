@@ -8,13 +8,19 @@ from . import LABELS
 
 # High-priority multi-word phrases for resolving ambiguous cross-boundary tickets
 PRIORITY_PHRASES: tuple[tuple[str, str], ...] = (
+    # Neha's rule: First customer action decides label ("cancel and refund me" -> cancellation)
+    ("cancel and refund me", "cancellation"),
+    ("cancel my order", "cancellation"),
+    ("cancel order", "cancellation"),
+    ("subscription cancel", "cancellation"),
+    ("cancel subscription", "cancellation"),
+    ("stop dispatch", "cancellation"),
+    ("stop shipment", "cancellation"),
+    ("order cancel", "cancellation"),
     ("refund my money", "refund"),
     ("pura refund", "refund"),
     ("release refund", "refund"),
     ("initiate return and refund", "refund"),
-    ("app crash", "technical"),
-    ("crash on launch", "technical"),
-    ("crashes every time", "technical"),
     ("prepaid order", "billing"),
     ("extra cash", "billing"),
     ("cash on delivery", "billing"),
@@ -22,10 +28,27 @@ PRIORITY_PHRASES: tuple[tuple[str, str], ...] = (
     ("permanently delete my profile", "account"),
     ("hacked", "account"),
     ("hack ho gaya", "account"),
+    ("app crashes", "other"),
+    ("crashes every time", "other"),
+    ("crash on launch", "other"),
     ("wrong item by accident", "other"),
 )
 
 KEYWORD_MAP: Mapping[str, tuple[str, ...]] = {
+    "cancellation": (
+        "cancel",
+        "cancellation",
+        "cancelling",
+        "canceling",
+        "stop dispatch",
+        "stop shipment",
+        "abort",
+        "discontinue",
+        "revoke",
+        "pre-order cancel",
+        "accidental order",
+        "changed mind",
+    ),
     "refund": (
         "refund",
         "refud",
@@ -87,31 +110,6 @@ KEYWORD_MAP: Mapping[str, tuple[str, ...]] = {
         "sign-in",
         "credentials",
     ),
-    "technical": (
-        "crash",
-        "crashes",
-        "freeze",
-        "blank screen",
-        "spinner",
-        "error",
-        "bug",
-        "glitch",
-        "502",
-        "500",
-        "404",
-        "timed out",
-        "unclickable",
-        "dropdown",
-        "layout",
-        "responsive",
-        "camera",
-        "app",
-        "website",
-        "webpage",
-        "nullpointer",
-        "greyed out",
-        "flickering",
-    ),
     "delivery": (
         "delivery",
         "deliv",
@@ -158,6 +156,21 @@ KEYWORD_MAP: Mapping[str, tuple[str, ...]] = {
         "authenticity",
         "sustainable",
         "sustainability",
+        # Technical app/web bugs routed to other per Neha's decision (SP-106 backlog)
+        "crash",
+        "crashes",
+        "freeze",
+        "blank screen",
+        "spinner",
+        "error",
+        "bug",
+        "glitch",
+        "502",
+        "500",
+        "404",
+        "timed out",
+        "unclickable",
+        "nullpointer",
     ),
 }
 
@@ -170,7 +183,7 @@ def predict_rule(text: str) -> str:
 
     Returns:
         One of the valid labels in LABELS ('delivery', 'billing', 'refund',
-        'technical', 'account', 'other'). Defaults to 'other' if no patterns match.
+        'cancellation', 'account', 'other'). Defaults to 'other' if no patterns match.
     """
     if not text or not text.strip():
         return "other"
@@ -192,7 +205,7 @@ def predict_rule(text: str) -> str:
     # Step 3: Find label with highest score, preferring non-other categories on ties
     best_label = "other"
     max_score = 0
-    priority_order = ("refund", "billing", "account", "technical", "delivery")
+    priority_order = ("cancellation", "refund", "billing", "account", "delivery")
 
     for label in priority_order:
         if scores[label] > max_score:

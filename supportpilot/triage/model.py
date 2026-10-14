@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -14,6 +14,7 @@ from sklearn.pipeline import Pipeline
 from . import LABELS
 
 DEFAULT_MODEL_PATH = Path("models/triage_model.joblib")
+DEFAULT_CONFIDENCE_THRESHOLD: float = 0.35
 
 
 def load_dataset(path: Path | str) -> tuple[list[str], list[str], list[str]]:
@@ -54,12 +55,17 @@ def load_dataset(path: Path | str) -> tuple[list[str], list[str], list[str]]:
 class TriageClassifier:
     """Scikit-learn pipeline wrapper for ticket triage classification."""
 
-    def __init__(self, pipeline: Pipeline | None = None) -> None:
+    def __init__(
+        self,
+        pipeline: Pipeline | None = None,
+        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    ) -> None:
         """Initialize classifier with an optional pre-configured pipeline."""
         if pipeline is not None:
             self.pipeline: Pipeline = pipeline
         else:
             self.pipeline = self._build_pipeline()
+        self.confidence_threshold: float = confidence_threshold
         self._is_fitted: bool = False
 
     @staticmethod
@@ -139,6 +145,40 @@ class TriageClassifier:
         classes = self.pipeline.classes_
         return {str(cls): float(prob) for cls, prob in zip(classes, probabilities)}
 
+    def predict_one(self, text: str, threshold: float | None = None) -> dict[str, Any]:
+        """Predict ticket category with confidence score and human review flag.
+
+        Args:
+            text: Customer ticket body text.
+            threshold: Confidence threshold for human review. If confidence < threshold,
+                needs_review is True. Defaults to self.confidence_threshold.
+
+        Returns:
+            Dictionary containing:
+                - 'label': predicted category string from LABELS
+                - 'confidence': predicted probability float (rounded to 4 decimal places)
+                - 'needs_review': boolean flag indicating low confidence
+        """
+        th = self.confidence_threshold if threshold is None else threshold
+
+        if not text or not text.strip():
+            return {
+                "label": "other",
+                "confidence": 1.0,
+                "needs_review": False,
+            }
+
+        pred_label = self.predict(text)
+        probs = self.predict_proba(text)
+        confidence = round(probs.get(pred_label, 0.0), 4)
+        needs_review = confidence < th
+
+        return {
+            "label": pred_label,
+            "confidence": confidence,
+            "needs_review": needs_review,
+        }
+
     def save(self, path: Path | str) -> Path:
         """Serialize and save the trained pipeline to disk."""
         target_path = Path(path)
@@ -179,3 +219,26 @@ def train_model(
         classifier.save(save_path)
 
     return classifier
+
+
+def predict_one(
+    text: str,
+    model_path: Path | str | None = None,
+    threshold: float | None = None,
+) -> dict[str, Any]:
+    """Convenience function to predict label with confidence fallback.
+
+    Args:
+        text: Customer ticket body text.
+        model_path: Optional path to trained model.
+        threshold: Optional confidence threshold.
+
+    Returns:
+        Dictionary with 'label', 'confidence', and 'needs_review'.
+    """
+    path = Path(model_path or DEFAULT_MODEL_PATH)
+    if path.exists():
+        classifier = TriageClassifier.load(path)
+    else:
+        classifier = train_model(save_path=path)
+    return classifier.predict_one(text, threshold=threshold)
