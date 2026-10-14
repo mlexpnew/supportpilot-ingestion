@@ -132,13 +132,13 @@ def main() -> int:
     raw_reject_rate = invalid / total if total > 0 else 0.0
     elapsed = time.monotonic() - start_time
 
-    print("Ticket ingestion completed successfully.")
-    print(f"Total records: {total}")
-    print(f"Valid records: {valid}")
-    print(f"Invalid records: {invalid}")
-    print(f"Reject rate: {raw_reject_rate:.4f}")
-    print(f"Blank lines skipped: {report['blank_lines_skipped']}")
-    print(f"Output directory: {args.output_dir}")
+    print("Ticket ingestion completed successfully.", file=sys.stderr)
+    print(f"Total records: {total}", file=sys.stderr)
+    print(f"Valid records: {valid}", file=sys.stderr)
+    print(f"Invalid records: {invalid}", file=sys.stderr)
+    print(f"Reject rate: {raw_reject_rate:.4f}", file=sys.stderr)
+    print(f"Blank lines skipped: {report['blank_lines_skipped']}", file=sys.stderr)
+    print(f"Output directory: {args.output_dir}", file=sys.stderr)
 
     # Guard: zero valid records with total > 0 must never exit 0 regardless of sample size
     if total > 0 and valid == 0:
