@@ -39,6 +39,9 @@
    - *Backlog Tracking*: A dedicated `technical` category has been logged as **SP-106**. If telemetry indicates app bugs exceed 15% of inbound volume, a distinct classifier will be introduced.
 2. **First-Action Tie-Breaking Rule**:
    - When customer inquiries exhibit cross-boundary overlap (e.g. *"cancel and refund me immediately before parcel leaves warehouse"*), the **customer's first intended action** governs the label (`cancellation`).
+3. **Retention of Suggested Label on Low Confidence (Reviewer Hint - Flagged by Rohan)**:
+   - *Design Choice*: For tickets where model confidence is below the threshold ($\tau = 0.35$), the system marks `needs_review: True` for mandatory human intervention. Rather than overwriting `label` to `other`, the model retains its argmax predicted label (e.g. `delivery`).
+   - *Rationale*: Human triage agents benefit from the model's suggested category as a starting hint/context during manual review. Because `needs_review: True` blocks automated execution and mandates human routing, downstream safety is strictly preserved while reviewer productivity is maximized.
 
 ---
 
@@ -121,6 +124,9 @@ Automated triage must not misroute ambiguous tickets silently. The model incorpo
 - **Empirical Threshold Tuning**:
   - At $\tau = 0.35$: **100.00%** of unflagged predictions are accurate on the held-out test set.
   - Ambiguous queries (e.g. multi-issue complaints or terse noise) are routed to human triage specialists, preventing silent downstream routing errors.
+- **Suggested Label Retention (Reviewer Hint)**:
+  - Low-confidence predictions (`confidence < 0.35`) retain their argmax candidate label (e.g. `delivery`) rather than coercing the label to `other`.
+  - This provides human triage reviewers with a hypothesis hint while `needs_review: True` ensures no unattended routing occurs.
 
 ---
 
