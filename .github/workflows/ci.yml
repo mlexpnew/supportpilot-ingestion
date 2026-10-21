@@ -52,8 +52,18 @@ jobs:
       - name: Build Docker image
         run: docker build -t supportpilot-api .
 
+      - name: Verify image size under 400 MB
+        run: |
+          size_bytes=$(docker inspect supportpilot-api --format='{{.Size}}')
+          size_mb=$(( size_bytes / 1000 / 1000 ))
+          echo "Docker image size: ${size_mb} MB (${size_bytes} bytes)"
+          if [ "$size_mb" -ge 400 ]; then
+            echo "Error: Docker image size (${size_mb} MB) exceeds 400 MB limit"
+            exit 1
+          fi
+
       - name: Run container
-        run: docker run -d -p 8000:8000 supportpilot-api
+        run: docker run -d --name api -p 8000:8000 supportpilot-api
 
       - name: Call /health
         run: |
@@ -66,3 +76,7 @@ jobs:
           done
           echo "Error: /health did not return 200 within 40 seconds"
           exit 1
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs api
