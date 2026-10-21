@@ -186,6 +186,7 @@ def get_api_key(
             headers={"Retry-After": str(retry_after)},
         )
 
+    # Otherwise add the current timestamp and continue
     active_timestamps.append(now)
     rate_limits[key_hash] = active_timestamps
 
