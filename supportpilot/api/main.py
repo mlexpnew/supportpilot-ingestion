@@ -131,7 +131,11 @@ def get_api_key(
     request: Request,
     api_key: str | None = Security(api_key_header),
 ) -> str:
-    """FastAPI dependency that reads and validates the X-API-Key header."""
+    """FastAPI dependency that reads and validates the X-API-Key header.
+
+    Authenticates the request first; rate limiting runs strictly after
+    authentication so only valid keys get counted.
+    """
     key_hash = hash_api_key(api_key)
     request.state.api_key_hash = key_hash
     valid_keys: set[str] = getattr(request.app.state, "api_keys", set())
@@ -151,7 +155,8 @@ def get_api_key(
         extra={"api_key_hash": key_hash},
     )
 
-    # Rate limiting: key hash -> list of request timestamps
+    # Rate limiting: runs after auth (only valid keys get counted)
+    # key hash -> list of request timestamps
     rate_limits: dict[str, list[float]] | None = getattr(
         request.app.state, "rate_limits", None
     )

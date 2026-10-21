@@ -1353,3 +1353,55 @@ def test_rate_limited_total_increments_on_every_429() -> None:
 
         # 429 client errors do NOT pollute errors_total
         assert app.state.counters.errors_total == initial_errors
+
+
+def test_limiter_runs_after_auth_only_valid_keys_counted() -> None:
+    """Verify limiter runs strictly after auth: only valid keys get counted."""
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        hash_api_key,
+    )
+
+    valid_key = "test-key-1"
+    invalid_key = "unauthenticated-attacker-key"
+    invalid_hash = hash_api_key(invalid_key)
+    valid_hash = hash_api_key(valid_key)
+
+    with FastAPITestClient(app) as client:
+        # Reset rate limits for clean state
+        app.state.rate_limits.clear()
+        initial_rate_limited = app.state.counters.rate_limited_total
+
+        payload = {"ticket_id": "T-AUTH-LIMIT-1", "body": "Need support help"}
+
+        # 1. Repeated requests with invalid key (> 60 rate limit)
+        for _ in range(RATE_LIMIT_MAX_REQUESTS + 10):
+            res_bad = client.post(
+                "/triage",
+                headers={"X-API-Key": invalid_key},
+                json=payload,
+            )
+            # Must always return 401 Unauthorized, never 429 Too Many Requests
+            assert res_bad.status_code == 401
+            assert res_bad.json()["detail"] == "Unauthorized"
+
+        # Invalid key was never recorded in rate_limits dictionary
+        assert invalid_key not in app.state.rate_limits
+        assert invalid_hash not in app.state.rate_limits
+        assert app.state.counters.rate_limited_total == initial_rate_limited
+
+        # 2. Missing key also returns 401 and is never counted in rate limits
+        res_no_key = client.post("/triage", json=payload)
+        assert res_no_key.status_code == 401
+        assert "none" not in app.state.rate_limits
+        assert app.state.counters.rate_limited_total == initial_rate_limited
+
+        # 3. Valid key is counted and succeeds normally
+        res_valid = client.post(
+            "/triage",
+            headers={"X-API-Key": valid_key},
+            json=payload,
+        )
+        assert res_valid.status_code == 200
+        assert valid_hash in app.state.rate_limits
+        assert len(app.state.rate_limits[valid_hash]) == 1
