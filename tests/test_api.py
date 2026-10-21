@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import uuid
 import pytest
 from fastapi.testclient import TestClient
 
@@ -587,3 +588,119 @@ def test_counters_exact_output_contract() -> None:
         assert isinstance(data["errors"], int)
         assert isinstance(data["latency"], float)
         assert isinstance(data["needs_review"], int)
+
+
+# =====================================================================
+# 10. X-Request-ID Middleware Tests
+# =====================================================================
+
+
+def test_x_request_id_generated_and_returned_in_header() -> None:
+    """Verify X-Request-ID header is generated and returned on all endpoints."""
+    with TestClient(app) as client:
+        # Check /health
+        res_health = client.get("/health")
+        assert "X-Request-ID" in res_health.headers
+        health_req_id = res_health.headers["X-Request-ID"]
+        assert uuid.UUID(health_req_id)  # must be a valid UUID
+
+        # Check /triage
+        res_triage = client.post(
+            "/triage",
+            json={"ticket_id": "T-REQID-1", "body": "Where is my item?"},
+        )
+        assert res_triage.status_code == 200
+        assert "X-Request-ID" in res_triage.headers
+        triage_req_id = res_triage.headers["X-Request-ID"]
+        assert uuid.UUID(triage_req_id)
+        # Each request gets a unique ID
+        assert health_req_id != triage_req_id
+
+        # Check /metrics
+        res_metrics = client.get("/metrics")
+        assert "X-Request-ID" in res_metrics.headers
+
+
+def test_x_request_id_propagated_from_incoming_header() -> None:
+    """Verify incoming X-Request-ID header is preserved and echoed in response."""
+    custom_id = "custom-client-trace-id-abc-123"
+    with TestClient(app) as client:
+        res = client.post(
+            "/triage",
+            headers={"X-Request-ID": custom_id},
+            json={"ticket_id": "T-REQID-2", "body": "Need refund on order"},
+        )
+        assert res.status_code == 200
+        assert res.headers.get("X-Request-ID") == custom_id
+
+
+def test_x_request_id_present_on_error_responses() -> None:
+    """Verify X-Request-ID is attached even on 422, 413, and 404 error responses."""
+    with TestClient(app) as client:
+        # 422 Unprocessable Entity
+        res_422 = client.post(
+            "/triage",
+            headers={"X-Request-ID": "err-422-id"},
+            json={"ticket_id": "T-ERR", "body": ""},
+        )
+        assert res_422.status_code == 422
+        assert res_422.headers.get("X-Request-ID") == "err-422-id"
+
+        # 413 Payload Too Large
+        res_413 = client.post(
+            "/triage",
+            json={"ticket_id": "T-ERR", "body": "x" * (MAX_BODY_BYTES + 1)},
+        )
+        assert res_413.status_code == 413
+        assert "X-Request-ID" in res_413.headers
+        assert uuid.UUID(res_413.headers["X-Request-ID"])
+
+        # 404 Not Found
+        res_404 = client.get("/nonexistent-endpoint")
+        assert res_404.status_code == 404
+        assert "X-Request-ID" in res_404.headers
+
+
+def test_x_request_id_is_logged_for_requests(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify middleware logs the request_id for every incoming request."""
+    custom_id = "trace-log-test-uuid-777"
+    with caplog.at_level(logging.INFO, logger="supportpilot.api.main"):
+        with TestClient(app) as client:
+            res = client.get("/health", headers={"X-Request-ID": custom_id})
+            assert res.status_code == 200
+
+    matching_records = [
+        r
+        for r in caplog.records
+        if r.name == "supportpilot.api.main"
+        and f"request_id={custom_id}" in r.getMessage()
+    ]
+    assert len(matching_records) >= 1
+    record = matching_records[0]
+    assert "method=GET" in record.getMessage()
+    assert "path=/health" in record.getMessage()
+    assert getattr(record, "request_id", None) == custom_id
+
+
+def test_x_request_id_logged_when_generated_automatically(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify automatically generated UUID request_id is logged properly."""
+    with caplog.at_level(logging.INFO, logger="supportpilot.api.main"):
+        with TestClient(app) as client:
+            res = client.post(
+                "/triage",
+                json={"ticket_id": "T-AUTO-ID", "body": "Where is my parcel?"},
+            )
+            assert res.status_code == 200
+
+    generated_id = res.headers["X-Request-ID"]
+    matching_records = [
+        r
+        for r in caplog.records
+        if r.name == "supportpilot.api.main"
+        and f"request_id={generated_id}" in r.getMessage()
+    ]
+    assert len(matching_records) >= 1

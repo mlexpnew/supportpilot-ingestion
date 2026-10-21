@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,6 +20,7 @@ from supportpilot.triage.model import (
 )
 
 MAX_BODY_BYTES: int = 10 * 1024  # 10 KB limit
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 EXCLUDED_METRIC_PATHS: set[str] = {
@@ -174,6 +176,44 @@ async def track_counters(request: Request, call_next: Any) -> Response:
     return response
 
 
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next: Any) -> Response:
+    incoming_id = request.headers.get("X-Request-ID")
+    request_id = (
+        incoming_id.strip()
+        if incoming_id and incoming_id.strip()
+        else str(uuid.uuid4())
+    )
+    request.state.request_id = request_id
+
+    logger.info(
+        "request_id=%s method=%s path=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+        },
+    )
+
+    try:
+        response: Response = await call_next(request)
+    except Exception:
+        logger.error(
+            "request_id=%s method=%s path=%s unhandled error",
+            request_id,
+            request.method,
+            request.url.path,
+            extra={"request_id": request_id},
+        )
+        raise
+
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
 @app.get("/health")
 def health(req: Request) -> dict[str, object]:
     model = getattr(req.app.state, "model", None)
@@ -225,12 +265,14 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
         counters["needs_review"] += 1
 
     # Never log the ticket body, only ticket_id, label and latency
+    request_id = getattr(req.state, "request_id", None)
     logger.info(
         "ticket_id=%s label=%s latency=%.4fs",
         request.ticket_id,
         result["label"],
         latency,
         extra={
+            "request_id": request_id,
             "ticket_id": request.ticket_id,
             "label": result["label"],
             "latency": latency,
