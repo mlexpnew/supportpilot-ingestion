@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -84,14 +85,39 @@ def get_api_keys() -> set[str]:
     return keys
 
 
+def validate_api_key(
+    api_key: str | None,
+    valid_keys: set[str] | None,
+) -> bool:
+    """Compare with secrets.compare_digest against each stored key (constant time)."""
+    if not valid_keys:
+        return False
+    candidate = api_key if isinstance(api_key, str) else ""
+    matched = False
+    for expected_key in valid_keys:
+        if secrets.compare_digest(candidate, expected_key):
+            matched = True
+    return matched and bool(api_key)
+
+
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 def get_api_key(
+    request: Request,
     api_key: str | None = Security(api_key_header),
-) -> str | None:
-    """FastAPI dependency that reads the X-API-Key header from the request."""
-    return api_key
+) -> str:
+    """FastAPI dependency that reads and validates the X-API-Key header."""
+    valid_keys: set[str] = getattr(request.app.state, "api_keys", set())
+    if not validate_api_key(api_key, valid_keys):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key",
+        )
+    return api_key  # type: ignore[return-value]
+
+
+verify_api_key = get_api_key
 
 
 class TriageRequest(BaseModel):

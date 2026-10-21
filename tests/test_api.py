@@ -812,33 +812,101 @@ def test_empty_api_keys_fails_fast_at_startup(
             pass
 
 
-def test_get_api_key_dependency_reads_header() -> None:
-    """Verify get_api_key dependency extracts X-API-Key header properly."""
+def test_validate_api_key_constant_time_comparison() -> None:
+    """Verify validate_api_key compares in constant time against each key."""
+    from supportpilot.api.main import validate_api_key
+
+    valid_keys = {"secret-alpha", "secret-beta", "secret-gamma"}
+
+    # Matches valid keys
+    assert validate_api_key("secret-alpha", valid_keys) is True
+    assert validate_api_key("secret-beta", valid_keys) is True
+    assert validate_api_key("secret-gamma", valid_keys) is True
+
+    # Rejects invalid or empty keys
+    assert validate_api_key("wrong-key", valid_keys) is False
+    assert validate_api_key("", valid_keys) is False
+    assert validate_api_key(None, valid_keys) is False
+    assert validate_api_key("secret-alph", valid_keys) is False
+    assert validate_api_key("secret-alphaa", valid_keys) is False
+    assert validate_api_key("secret-alpha", set()) is False
+    assert validate_api_key("secret-alpha", None) is False
+
+
+def test_validate_api_key_iterates_all_keys_without_short_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify validate_api_key does not short-circuit when a match is found."""
+    import secrets
+    from supportpilot.api.main import validate_api_key
+
+    calls: list[tuple[str, str]] = []
+    real_compare = secrets.compare_digest
+
+    def tracking_compare(a: str, b: str) -> bool:
+        calls.append((a, b))
+        return real_compare(a, b)
+
+    monkeypatch.setattr(secrets, "compare_digest", tracking_compare)
+
+    valid_keys = {"key-1", "key-2", "key-3"}
+
+    # Even though key-1 matches first, all 3 keys must be compared
+    assert validate_api_key("key-1", valid_keys) is True
+    assert len(calls) == 3
+
+    # For invalid key, all 3 keys are compared
+    calls.clear()
+    assert validate_api_key("wrong-key", valid_keys) is False
+    assert len(calls) == 3
+
+    # For None key, all 3 keys are compared
+    calls.clear()
+    assert validate_api_key(None, valid_keys) is False
+    assert len(calls) == 3
+
+
+def test_get_api_key_dependency_validation() -> None:
+    """Verify get_api_key dependency validates X-API-Key and raises 401."""
     from fastapi import Depends, FastAPI
-    from supportpilot.api.main import api_key_header, get_api_key
+    from supportpilot.api.main import (
+        api_key_header,
+        get_api_key,
+        verify_api_key,
+    )
 
     assert api_key_header.model.name == "X-API-Key"
+    assert verify_api_key is get_api_key
 
     test_sub_app = FastAPI()
+    test_sub_app.state.api_keys = {"secret-123", "secret-456"}
 
     @test_sub_app.get("/test-key")
     def _read_key(
-        key: str | None = Depends(get_api_key),
-    ) -> dict[str, str | None]:
+        key: str = Depends(get_api_key),
+    ) -> dict[str, str]:
         return {"key": key}
 
     with TestClient(test_sub_app) as client:
-        # Standard header
+        # Standard header with valid key
         res = client.get("/test-key", headers={"X-API-Key": "secret-123"})
         assert res.status_code == 200
         assert res.json() == {"key": "secret-123"}
 
-        # Case-insensitive header
+        # Case-insensitive header with valid key
         res_lower = client.get("/test-key", headers={"x-api-key": "secret-456"})
         assert res_lower.status_code == 200
         assert res_lower.json() == {"key": "secret-456"}
 
-        # Header omitted returns None
+        # Missing header returns 401
         res_none = client.get("/test-key")
-        assert res_none.status_code == 200
-        assert res_none.json() == {"key": None}
+        assert res_none.status_code == 401
+        assert res_none.json()["detail"] == "Invalid or missing API key"
+
+        # Invalid key returns 401
+        res_invalid = client.get(
+            "/test-key",
+            headers={"X-API-Key": "wrong-secret"},
+        )
+        assert res_invalid.status_code == 401
+        assert res_invalid.json()["detail"] == "Invalid or missing API key"
