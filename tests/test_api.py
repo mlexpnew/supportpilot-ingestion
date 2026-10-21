@@ -792,12 +792,21 @@ def test_triage_api_keys_startup_parsing(
         assert app.state.api_keys == {"key-one", "key-two", "key-three"}
 
 
-def test_triage_api_keys_empty_by_default(
+def test_missing_api_keys_fails_fast_at_startup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify app.state.api_keys defaults to an empty set when unset or empty."""
+    """Verify service fails fast at startup if TRIAGE_API_KEYS is missing."""
     monkeypatch.delenv("TRIAGE_API_KEYS", raising=False)
-    with TestClient(app) as client:
-        res = client.get("/health")
-        assert res.status_code == 200
-        assert app.state.api_keys == set()
+    with pytest.raises(ValueError, match="No API keys configured"):
+        with TestClient(app):
+            pass
+
+
+def test_empty_api_keys_fails_fast_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify service fails fast at startup if TRIAGE_API_KEYS contains no keys."""
+    monkeypatch.setenv("TRIAGE_API_KEYS", " , ,, ")
+    with pytest.raises(ValueError, match="No API keys configured"):
+        with TestClient(app):
+            pass

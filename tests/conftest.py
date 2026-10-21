@@ -17,3 +17,4 @@ def model_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(autouse=True)
 def _model_env(model_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRIAGE_MODEL_PATH", str(model_file))
+    monkeypatch.setenv("TRIAGE_API_KEYS", "test-key-1,test-key-2")

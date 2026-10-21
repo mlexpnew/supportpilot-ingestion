@@ -68,8 +68,19 @@ def get_threshold() -> float:
 
 
 def get_api_keys() -> set[str]:
-    raw_keys = os.getenv("TRIAGE_API_KEYS", "")
-    return {k.strip() for k in raw_keys.split(",") if k.strip()}
+    raw_keys = os.getenv("TRIAGE_API_KEYS")
+    if raw_keys is None or not raw_keys.strip():
+        raise ValueError(
+            "No API keys configured: TRIAGE_API_KEYS environment variable "
+            "is required."
+        )
+    keys = {k.strip() for k in raw_keys.split(",") if k.strip()}
+    if not keys:
+        raise ValueError(
+            "No API keys configured: TRIAGE_API_KEYS must contain at "
+            "least one valid key."
+        )
+    return keys
 
 
 class TriageRequest(BaseModel):
@@ -137,7 +148,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="SupportPilot Triage API", lifespan=lifespan)
 app.state.counters = Counters()
-app.state.api_keys = get_api_keys()
+app.state.api_keys = set()
 
 
 @app.middleware("http")
