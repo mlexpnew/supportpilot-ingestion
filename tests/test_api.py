@@ -465,6 +465,7 @@ def test_counters_initial_state() -> None:
         assert app.state.counters.errors_total == 0
         assert app.state.counters.total_latency_ms == 0.0
         assert app.state.counters.needs_review_total == 0
+        assert app.state.counters.rate_limited_total == 0
 
 
 def test_counters_increment_requests_and_latency_on_success() -> None:
@@ -1224,6 +1225,7 @@ def test_rate_limit_exceeded_returns_429_with_retry_after() -> None:
     with FastAPITestClient(app) as client:
         now = time.time()
         initial_errors = app.state.counters.errors_total
+        initial_rate_limited = app.state.counters.rate_limited_total
 
         # Oldest request was 45 seconds ago (expires in ~15 seconds)
         oldest_ts = now - 45.0
@@ -1255,6 +1257,8 @@ def test_rate_limit_exceeded_returns_429_with_retry_after() -> None:
 
         # 429 is a client error, not a 5xx server error
         assert app.state.counters.errors_total == initial_errors
+        # rate_limited_total counter is incremented on every 429
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 1
 
 
 def test_rate_limit_isolation_between_keys() -> None:
@@ -1294,3 +1298,58 @@ def test_rate_limit_isolation_between_keys() -> None:
         )
         assert res2.status_code == 200
         assert len(app.state.rate_limits[hash2]) == 1
+
+
+def test_rate_limited_total_increments_on_every_429() -> None:
+    """Verify rate_limited_total in-memory counter increments on every 429."""
+    import time
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        hash_api_key,
+    )
+
+    key1 = "test-key-1"
+    key2 = "test-key-2"
+    hash1 = hash_api_key(key1)
+
+    with FastAPITestClient(app) as client:
+        now = time.time()
+        initial_rate_limited = app.state.counters.rate_limited_total
+        initial_errors = app.state.counters.errors_total
+
+        # Key 1 has reached max requests in window
+        app.state.rate_limits[hash1] = [now - 5.0] * RATE_LIMIT_MAX_REQUESTS
+
+        payload = {"ticket_id": "T-RL-CTR-1", "body": "Need order help"}
+
+        # First 429 on /triage
+        res1 = client.post("/triage", headers={"X-API-Key": key1}, json=payload)
+        assert res1.status_code == 429
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 1
+
+        # Second 429 on /triage
+        res2 = client.post("/triage", headers={"X-API-Key": key1}, json=payload)
+        assert res2.status_code == 429
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 2
+
+        # Third 429 on /metrics (also protected by get_api_key)
+        res3 = client.get("/metrics", headers={"X-API-Key": key1})
+        assert res3.status_code == 429
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 3
+
+        # Successful request on key2 does NOT increment rate_limited_total
+        res_ok = client.post("/triage", headers={"X-API-Key": key2}, json=payload)
+        assert res_ok.status_code == 200
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 3
+
+        # Unauthorized request (401) does NOT increment rate_limited_total
+        res_unauth = client.post(
+            "/triage",
+            headers={"X-API-Key": "wrong-key"},
+            json=payload,
+        )
+        assert res_unauth.status_code == 401
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 3
+
+        # 429 client errors do NOT pollute errors_total
+        assert app.state.counters.errors_total == initial_errors

@@ -50,6 +50,7 @@ class Counters:
     errors_total: int = 0
     total_latency_ms: float = 0.0
     needs_review_total: int = 0
+    rate_limited_total: int = 0
 
 
 def get_model_path() -> Path:
@@ -174,6 +175,9 @@ def get_api_key(
         oldest = active_timestamps[0]
         retry_after = max(1, math.ceil((oldest + RATE_LIMIT_WINDOW_SECONDS) - now))
         rate_limits[key_hash] = active_timestamps
+        counters: Counters | None = getattr(request.app.state, "counters", None)
+        if counters is not None:
+            counters.rate_limited_total += 1
         logger.warning(
             "api_key_hash=%s rate limit exceeded retry_after=%ds",
             key_hash,
