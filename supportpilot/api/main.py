@@ -25,6 +25,7 @@ from supportpilot.triage.model import (
 )
 
 MAX_BODY_BYTES: int = 10 * 1024  # 10 KB limit
+RATE_LIMIT_WINDOW_SECONDS: float = 60.0  # 60 second sliding window
 logger = logging.getLogger(__name__)
 
 REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9-]{1,64}$")
@@ -110,6 +111,16 @@ def hash_api_key(api_key: str | None) -> str:
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:8]
 
 
+def prune_old_timestamps(
+    timestamps: list[float],
+    now: float,
+    window_seconds: float = RATE_LIMIT_WINDOW_SECONDS,
+) -> list[float]:
+    """Drop timestamps older than window_seconds (60s)."""
+    cutoff = now - window_seconds
+    return [ts for ts in timestamps if ts > cutoff]
+
+
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
@@ -145,7 +156,16 @@ def get_api_key(
         rate_limits = {}
         request.app.state.rate_limits = rate_limits
         request.app.state.request_timestamps = rate_limits
-    rate_limits.setdefault(key_hash, []).append(time.time())
+
+    now = time.time()
+    # On each request, drop timestamps older than 60 seconds
+    active_timestamps = prune_old_timestamps(
+        rate_limits.get(key_hash, []),
+        now=now,
+        window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+    )
+    active_timestamps.append(now)
+    rate_limits[key_hash] = active_timestamps
 
     return api_key  # type: ignore[return-value]
 

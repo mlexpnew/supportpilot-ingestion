@@ -1150,3 +1150,61 @@ def test_rate_limiting_tracks_request_timestamps_by_key_hash() -> None:
 
         # 5. Check alias
         assert app.state.request_timestamps is app.state.rate_limits
+
+
+def test_drop_timestamps_older_than_60_seconds() -> None:
+    """Verify timestamps older than 60 seconds are dropped on each request."""
+    import time
+    from supportpilot.api.main import (
+        RATE_LIMIT_WINDOW_SECONDS,
+        hash_api_key,
+        prune_old_timestamps,
+    )
+
+    assert RATE_LIMIT_WINDOW_SECONDS == 60.0
+
+    # 1. Direct unit test of prune_old_timestamps
+    t_ref = 10_000.0
+    stale_ts = [
+        t_ref - 120.0,  # 120s old -> drop
+        t_ref - 60.1,  # 60.1s old -> drop
+        t_ref - 60.0,  # exactly 60s old -> drop
+    ]
+    fresh_ts = [
+        t_ref - 59.9,  # 59.9s old -> keep
+        t_ref - 30.0,  # 30s old -> keep
+        t_ref - 5.0,  # 5s old -> keep
+    ]
+    all_ts = stale_ts + fresh_ts
+    pruned = prune_old_timestamps(all_ts, now=t_ref, window_seconds=60.0)
+    assert pruned == fresh_ts
+
+    # 2. End-to-end integration test via API request
+    key = "test-key-1"
+    key_hash = hash_api_key(key)
+    now = time.time()
+
+    with FastAPITestClient(app) as client:
+        # Pre-seed history with both stale and fresh timestamps
+        old_1 = now - 150.0
+        old_2 = now - 75.0
+        fresh_1 = now - 25.0
+        fresh_2 = now - 10.0
+        app.state.rate_limits[key_hash] = [old_1, old_2, fresh_1, fresh_2]
+
+        # Make an authenticated request
+        res = client.post(
+            "/triage",
+            headers={"X-API-Key": key},
+            json={"ticket_id": "T-PRUNE-1", "body": "Need delivery status"},
+        )
+        assert res.status_code == 200
+
+        # Verify old timestamps were dropped and new one appended
+        current_history = app.state.rate_limits[key_hash]
+        assert old_1 not in current_history
+        assert old_2 not in current_history
+        assert fresh_1 in current_history
+        assert fresh_2 in current_history
+        assert len(current_history) == 3
+        assert current_history[-1] >= now
