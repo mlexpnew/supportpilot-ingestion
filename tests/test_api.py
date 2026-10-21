@@ -1208,3 +1208,89 @@ def test_drop_timestamps_older_than_60_seconds() -> None:
         assert fresh_2 in current_history
         assert len(current_history) == 3
         assert current_history[-1] >= now
+
+
+def test_rate_limit_exceeded_returns_429_with_retry_after() -> None:
+    """Verify 60 or more requests in 60s return 429 + Retry-After header."""
+    import time
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        hash_api_key,
+    )
+
+    key = "test-key-1"
+    key_hash = hash_api_key(key)
+
+    with FastAPITestClient(app) as client:
+        now = time.time()
+        initial_errors = app.state.counters.errors_total
+
+        # Oldest request was 45 seconds ago (expires in ~15 seconds)
+        oldest_ts = now - 45.0
+        # Seed exactly 60 active timestamps within the 60s sliding window
+        seeded_timestamps = [oldest_ts] + [
+            now - (40.0 - i * 0.5) for i in range(RATE_LIMIT_MAX_REQUESTS - 1)
+        ]
+        assert len(seeded_timestamps) == RATE_LIMIT_MAX_REQUESTS
+        app.state.rate_limits[key_hash] = list(seeded_timestamps)
+
+        # 61st request arrives while 60 remain -> rejected with 429
+        payload = {"ticket_id": "T-RL-LIMIT", "body": "Where is my item?"}
+        res = client.post(
+            "/triage",
+            headers={"X-API-Key": key},
+            json=payload,
+        )
+        assert res.status_code == 429
+        assert res.json()["detail"] == "Too Many Requests"
+
+        # Verify Retry-After header
+        assert "Retry-After" in res.headers
+        retry_after = int(res.headers["Retry-After"])
+        # Expected expiry: oldest_ts + 60.0 - now = 60 - 45 = ~15s
+        assert 14 <= retry_after <= 16
+
+        # History should still contain 60 timestamps (rejected request is not added)
+        assert len(app.state.rate_limits[key_hash]) == RATE_LIMIT_MAX_REQUESTS
+
+        # 429 is a client error, not a 5xx server error
+        assert app.state.counters.errors_total == initial_errors
+
+
+def test_rate_limit_isolation_between_keys() -> None:
+    """Verify rate limits are tracked independently per API key."""
+    import time
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        hash_api_key,
+    )
+
+    key1 = "test-key-1"
+    key2 = "test-key-2"
+    hash1 = hash_api_key(key1)
+    hash2 = hash_api_key(key2)
+
+    with FastAPITestClient(app) as client:
+        now = time.time()
+        # Key 1 has exhausted its 60 requests
+        app.state.rate_limits[hash1] = [now - 10.0] * RATE_LIMIT_MAX_REQUESTS
+        app.state.rate_limits[hash2] = []
+
+        payload = {"ticket_id": "T-ISO-1", "body": "Need delivery check"}
+
+        # Key 1 gets 429
+        res1 = client.post(
+            "/triage",
+            headers={"X-API-Key": key1},
+            json=payload,
+        )
+        assert res1.status_code == 429
+
+        # Key 2 still succeeds with 200
+        res2 = client.post(
+            "/triage",
+            headers={"X-API-Key": key2},
+            json=payload,
+        )
+        assert res2.status_code == 200
+        assert len(app.state.rate_limits[hash2]) == 1

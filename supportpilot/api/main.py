@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import re
 import secrets
@@ -26,6 +27,7 @@ from supportpilot.triage.model import (
 
 MAX_BODY_BYTES: int = 10 * 1024  # 10 KB limit
 RATE_LIMIT_WINDOW_SECONDS: float = 60.0  # 60 second sliding window
+RATE_LIMIT_MAX_REQUESTS: int = 60  # Maximum requests allowed per sliding window
 logger = logging.getLogger(__name__)
 
 REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9-]{1,64}$")
@@ -164,6 +166,26 @@ def get_api_key(
         now=now,
         window_seconds=RATE_LIMIT_WINDOW_SECONDS,
     )
+
+    max_requests = getattr(
+        request.app.state, "rate_limit_max_requests", RATE_LIMIT_MAX_REQUESTS
+    )
+    if len(active_timestamps) >= max_requests:
+        oldest = active_timestamps[0]
+        retry_after = max(1, math.ceil((oldest + RATE_LIMIT_WINDOW_SECONDS) - now))
+        rate_limits[key_hash] = active_timestamps
+        logger.warning(
+            "api_key_hash=%s rate limit exceeded retry_after=%ds",
+            key_hash,
+            retry_after,
+            extra={"api_key_hash": key_hash, "retry_after": retry_after},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Too Many Requests",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     active_timestamps.append(now)
     rate_limits[key_hash] = active_timestamps
 
