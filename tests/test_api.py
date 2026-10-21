@@ -742,3 +742,101 @@ def test_get_metrics_endpoint_stable_key_names() -> None:
         assert after_data["errors"] == 1
         assert after_data["latency"] > 0.0
         assert isinstance(after_data["needs_review"], int)
+
+
+# =====================================================================
+# 11. Specific Tests: metric keys, request ID header, no ticket text in metrics
+# =====================================================================
+
+
+def test_metric_keys() -> None:
+    """Verify GET /metrics returns exactly the stable metric keys."""
+    with TestClient(app) as client:
+        response = client.get("/metrics")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Exact stable metric keys contract
+        assert set(data.keys()) == {
+            "requests",
+            "errors",
+            "latency",
+            "needs_review",
+        }
+        assert isinstance(data["requests"], int)
+        assert isinstance(data["errors"], int)
+        assert isinstance(data["latency"], float)
+        assert isinstance(data["needs_review"], int)
+
+
+def test_request_id_header() -> None:
+    """Verify X-Request-ID header generation, propagation, and format."""
+    with TestClient(app) as client:
+        # Generated UUID when header omitted
+        res_auto = client.get("/health")
+        assert "X-Request-ID" in res_auto.headers
+        generated_id = res_auto.headers["X-Request-ID"]
+        parsed_uuid = uuid.UUID(generated_id)
+        assert str(parsed_uuid) == generated_id
+
+        # Preserved when header provided by client
+        custom_id = "client-trace-req-456"
+        res_custom = client.post(
+            "/triage",
+            headers={"X-Request-ID": custom_id},
+            json={"ticket_id": "T-HDR-1", "body": "Where is my parcel?"},
+        )
+        assert res_custom.status_code == 200
+        assert res_custom.headers.get("X-Request-ID") == custom_id
+
+        # Present on error responses
+        res_err = client.post(
+            "/triage",
+            headers={"X-Request-ID": "err-trace-789"},
+            json={"ticket_id": "T-HDR-ERR", "body": ""},
+        )
+        assert res_err.status_code == 422
+        assert res_err.headers.get("X-Request-ID") == "err-trace-789"
+
+
+def test_no_ticket_text_in_metrics() -> None:
+    """Verify GET /metrics never leaks ticket body, subject, ticket_id, or PII."""
+    secret_body = (
+        "CONFIDENTIAL_CUSTOMER_BODY_SECRET_54321: customer email "
+        "john.sensitive@corporation.com, phone 555-0199, card 4111222233334444"
+    )
+    secret_subject = "CRITICAL_PAYLOAD_ACCOUNT_INQUIRY_99999"
+    secret_ticket_id = "TICKET_ID_CLASSIFIED_777"
+
+    with TestClient(app) as client:
+        # Submit confidential ticket to triage
+        res_triage = client.post(
+            "/triage",
+            json={
+                "ticket_id": secret_ticket_id,
+                "subject": secret_subject,
+                "body": secret_body,
+            },
+        )
+        assert res_triage.status_code == 200
+
+        # Query metrics endpoint
+        res_metrics = client.get("/metrics")
+        assert res_metrics.status_code == 200
+        raw_metrics_text = res_metrics.text
+        metrics_data = res_metrics.json()
+
+        # Zero leakage check across the raw response text
+        assert secret_body not in raw_metrics_text
+        assert secret_subject not in raw_metrics_text
+        assert secret_ticket_id not in raw_metrics_text
+        assert "CONFIDENTIAL" not in raw_metrics_text
+        assert "CRITICAL" not in raw_metrics_text
+        assert "john.sensitive" not in raw_metrics_text
+        assert "corporation.com" not in raw_metrics_text
+        assert "4111222233334444" not in raw_metrics_text
+        assert "555-0199" not in raw_metrics_text
+
+        # Zero leakage check in values (strictly numeric operational telemetry)
+        for val in metrics_data.values():
+            assert isinstance(val, (int, float))
