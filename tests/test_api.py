@@ -1086,3 +1086,67 @@ def test_no_key_with_invalid_body_returns_401_not_422() -> None:
         )
         assert res_oversized.status_code == 401
         assert res_oversized.json()["detail"] == "Unauthorized"
+
+
+def test_rate_limiting_tracks_request_timestamps_by_key_hash() -> None:
+    """Verify rate limiter keeps a dictionary: key hash -> list of timestamps."""
+    from supportpilot.api.main import hash_api_key
+
+    with FastAPITestClient(app) as client:
+        # Reset state for test isolation
+        app.state.rate_limits.clear()
+
+        key1 = "test-key-1"
+        key2 = "test-key-2"
+        hash1 = hash_api_key(key1)
+        hash2 = hash_api_key(key2)
+
+        payload1 = {"ticket_id": "T-RL-1", "body": "Where is my item?"}
+        payload2 = {"ticket_id": "T-RL-2", "body": "Need billing help"}
+
+        # 1. First request with key1
+        res1 = client.post(
+            "/triage",
+            headers={"X-API-Key": key1},
+            json=payload1,
+        )
+        assert res1.status_code == 200
+
+        assert hash1 in app.state.rate_limits
+        timestamps1 = app.state.rate_limits[hash1]
+        assert len(timestamps1) == 1
+        assert isinstance(timestamps1[0], float)
+
+        # 2. Second request with key1
+        res2 = client.post(
+            "/triage",
+            headers={"X-API-Key": key1},
+            json=payload2,
+        )
+        assert res2.status_code == 200
+        assert len(app.state.rate_limits[hash1]) == 2
+        assert app.state.rate_limits[hash1][1] >= app.state.rate_limits[hash1][0]
+
+        # 3. Request with key2
+        res3 = client.post(
+            "/triage",
+            headers={"X-API-Key": key2},
+            json=payload1,
+        )
+        assert res3.status_code == 200
+        assert hash2 in app.state.rate_limits
+        assert len(app.state.rate_limits[hash2]) == 1
+        assert len(app.state.rate_limits[hash1]) == 2
+
+        # 4. Failed request with invalid key does not record valid timestamp
+        bad_hash = hash_api_key("invalid-token")
+        res_bad = client.post(
+            "/triage",
+            headers={"X-API-Key": "invalid-token"},
+            json=payload1,
+        )
+        assert res_bad.status_code == 401
+        assert bad_hash not in app.state.rate_limits
+
+        # 5. Check alias
+        assert app.state.request_timestamps is app.state.rate_limits

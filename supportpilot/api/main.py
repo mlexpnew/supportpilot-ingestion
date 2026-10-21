@@ -136,7 +136,24 @@ def get_api_key(
         key_hash,
         extra={"api_key_hash": key_hash},
     )
+
+    # Rate limiting: key hash -> list of request timestamps
+    rate_limits: dict[str, list[float]] | None = getattr(
+        request.app.state, "rate_limits", None
+    )
+    if rate_limits is None:
+        rate_limits = {}
+        request.app.state.rate_limits = rate_limits
+        request.app.state.request_timestamps = rate_limits
+    rate_limits.setdefault(key_hash, []).append(time.time())
+
     return api_key  # type: ignore[return-value]
+
+
+def get_request_timestamps(request: Request, key_hash: str) -> list[float]:
+    """Return the list of request timestamps for a key hash."""
+    rate_limits: dict[str, list[float]] = getattr(request.app.state, "rate_limits", {})
+    return rate_limits.get(key_hash, [])
 
 
 class TriageRequest(BaseModel):
@@ -196,15 +213,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.threshold = threshold
     app.state.counters = Counters()
     app.state.api_keys = get_api_keys()
+    app.state.rate_limits = {}
+    app.state.request_timestamps = app.state.rate_limits
     yield
     app.state.model = None
     app.state.threshold = None
     app.state.api_keys = set()
+    app.state.rate_limits = {}
+    app.state.request_timestamps = app.state.rate_limits
 
 
 app = FastAPI(title="SupportPilot Triage API", lifespan=lifespan)
 app.state.counters = Counters()
 app.state.api_keys = set()
+app.state.rate_limits = {}
+app.state.request_timestamps = app.state.rate_limits
 
 
 @app.middleware("http")
