@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -100,6 +101,13 @@ def validate_api_key(
     return matched and bool(api_key)
 
 
+def hash_api_key(api_key: str | None) -> str:
+    """Return a short SHA-256 hash (first 8 chars) of the API key, or 'none'."""
+    if not api_key:
+        return "none"
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:8]
+
+
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
@@ -108,12 +116,24 @@ def get_api_key(
     api_key: str | None = Security(api_key_header),
 ) -> str:
     """FastAPI dependency that reads and validates the X-API-Key header."""
+    key_hash = hash_api_key(api_key)
+    request.state.api_key_hash = key_hash
     valid_keys: set[str] = getattr(request.app.state, "api_keys", set())
     if not validate_api_key(api_key, valid_keys):
+        logger.warning(
+            "api_key_hash=%s authentication failed",
+            key_hash,
+            extra={"api_key_hash": key_hash},
+        )
         raise HTTPException(
             status_code=401,
             detail="Unauthorized",
         )
+    logger.info(
+        "api_key_hash=%s authenticated",
+        key_hash,
+        extra={"api_key_hash": key_hash},
+    )
     return api_key  # type: ignore[return-value]
 
 
@@ -323,18 +343,21 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
         if result["needs_review"]:
             counters.needs_review_total += 1
 
-    # Never log the ticket body, only ticket_id, label and latency
+    # Never log the ticket body, only ticket_id, label, latency, and api_key_hash
     request_id = getattr(req.state, "request_id", None)
+    key_hash = getattr(req.state, "api_key_hash", None)
     logger.info(
-        "ticket_id=%s label=%s latency=%.4fs",
+        "ticket_id=%s label=%s latency=%.4fs api_key_hash=%s",
         request.ticket_id,
         result["label"],
         latency,
+        key_hash,
         extra={
             "request_id": request_id,
             "ticket_id": request.ticket_id,
             "label": result["label"],
             "latency": latency,
+            "api_key_hash": key_hash,
         },
     )
 

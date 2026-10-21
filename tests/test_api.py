@@ -970,3 +970,55 @@ def test_endpoint_api_key_protection_routes() -> None:
         )
         assert res_triage_auth.status_code == 200
         assert res_triage_auth.json()["ticket_id"] == "T-SEC-1"
+
+
+def test_api_key_logging_short_hash_and_never_raw_key(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify logger records 8-char SHA-256 hash and never the raw API key."""
+    import hashlib
+    from supportpilot.api.main import hash_api_key
+
+    # Unit test hash_api_key
+    raw_key = "super-secret-key-99999"
+    key_hash = hash_api_key(raw_key)
+    assert len(key_hash) == 8
+    assert key_hash == hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:8]
+    assert hash_api_key("") == "none"
+    assert hash_api_key(None) == "none"
+
+    # Integration test with successful triage request
+    expected_valid_hash = hashlib.sha256(b"test-key-1").hexdigest()[:8]
+    with caplog.at_level(logging.INFO, logger="supportpilot.api.main"):
+        with FastAPITestClient(app) as client:
+            res = client.post(
+                "/triage",
+                headers={"X-API-Key": "test-key-1"},
+                json={"ticket_id": "T-HASH-1", "body": "Where is my parcel?"},
+            )
+            assert res.status_code == 200
+
+    api_records = [r for r in caplog.records if r.name == "supportpilot.api.main"]
+    messages = [r.getMessage() for r in api_records]
+    assert any(f"api_key_hash={expected_valid_hash}" in msg for msg in messages)
+    for msg in messages:
+        assert "test-key-1" not in msg
+
+    # Test with failed key
+    caplog.clear()
+    secret_bad_key = "unauthorized-token-secret-77777"
+    expected_bad_hash = hashlib.sha256(secret_bad_key.encode("utf-8")).hexdigest()[:8]
+    with caplog.at_level(logging.INFO, logger="supportpilot.api.main"):
+        with FastAPITestClient(app) as client:
+            res_bad = client.post(
+                "/triage",
+                headers={"X-API-Key": secret_bad_key},
+                json={"ticket_id": "T-HASH-2", "body": "Where is my parcel?"},
+            )
+            assert res_bad.status_code == 401
+
+    api_records_bad = [r for r in caplog.records if r.name == "supportpilot.api.main"]
+    messages_bad = [r.getMessage() for r in api_records_bad]
+    assert any(f"api_key_hash={expected_bad_hash}" in msg for msg in messages_bad)
+    for msg in messages_bad:
+        assert secret_bad_key not in msg
