@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,50 +22,27 @@ from supportpilot.triage.model import (
 )
 
 MAX_BODY_BYTES: int = 10 * 1024  # 10 KB limit
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 EXCLUDED_METRIC_PATHS: set[str] = {
     "/health",
     "/metrics",
-    "/stats",
     "/docs",
     "/openapi.json",
     "/redoc",
 }
 
 
-class Counters(dict[str, Any]):
-    """In-memory counters tracking requests, errors, latency, and needs_review."""
+@dataclass
+class Counters:
+    """In-memory operational counters tracking triage traffic and outcomes."""
 
-    def __init__(
-        self,
-        requests: int = 0,
-        errors: int = 0,
-        latency: float = 0.0,
-        needs_review: int = 0,
-    ) -> None:
-        super().__init__(
-            requests=requests,
-            errors=errors,
-            latency=latency,
-            needs_review=needs_review,
-        )
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(
-                f"'{self.__class__.__name__}' object has no attribute '{name}'"
-            )
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        self[name] = value
-
-
-def init_counters() -> Counters:
-    return Counters(requests=0, errors=0, latency=0.0, needs_review=0)
+    requests_total: int = 0
+    errors_total: int = 0
+    total_latency_ms: float = 0.0
+    needs_review_total: int = 0
 
 
 def get_model_path() -> Path:
@@ -120,10 +99,10 @@ class TriageResponse(BaseModel):
 
 
 class MetricsResponse(BaseModel):
-    requests: int
-    errors: int
-    latency: float
-    needs_review: int
+    requests_total: int
+    errors_total: int
+    avg_latency_ms: float
+    needs_review_rate: float
 
 
 @asynccontextmanager
@@ -141,18 +120,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.model = loaded_model
     app.state.threshold = threshold
-    counters = init_counters()
-    app.state.counters = counters
-    app.state.metrics = counters
+    app.state.counters = Counters()
     yield
     app.state.model = None
     app.state.threshold = None
 
 
 app = FastAPI(title="SupportPilot Triage API", lifespan=lifespan)
-_initial_counters = init_counters()
-app.state.counters = _initial_counters
-app.state.metrics = _initial_counters
+app.state.counters = Counters()
 
 
 @app.middleware("http")
@@ -163,22 +138,21 @@ async def track_counters(request: Request, call_next: Any) -> Response:
     t0 = time.perf_counter()
     counters: Counters | None = getattr(request.app.state, "counters", None)
     if counters is not None:
-        counters["requests"] += 1
+        counters.requests_total += 1
 
     try:
         response: Response = await call_next(request)
     except Exception:
         if counters is not None:
-            counters["errors"] += 1
-            counters["latency"] = round(
-                counters["latency"] + (time.perf_counter() - t0), 4
-            )
+            counters.errors_total += 1
+            counters.total_latency_ms += (time.perf_counter() - t0) * 1000.0
         raise
 
     if counters is not None:
-        if response.status_code >= 400:
-            counters["errors"] += 1
-        counters["latency"] = round(counters["latency"] + (time.perf_counter() - t0), 4)
+        # Only count 5xx server failures as errors; 4xx are client errors
+        if response.status_code >= 500:
+            counters.errors_total += 1
+        counters.total_latency_ms += (time.perf_counter() - t0) * 1000.0
 
     return response
 
@@ -186,11 +160,11 @@ async def track_counters(request: Request, call_next: Any) -> Response:
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next: Any) -> Response:
     incoming_id = request.headers.get("X-Request-ID")
-    request_id = (
-        incoming_id.strip()
-        if incoming_id and incoming_id.strip()
-        else str(uuid.uuid4())
-    )
+    # Allow only [A-Za-z0-9-] up to 64 chars to prevent log injection
+    if incoming_id and REQUEST_ID_REGEX.fullmatch(incoming_id):
+        request_id = incoming_id
+    else:
+        request_id = str(uuid.uuid4())
     request.state.request_id = request_id
 
     logger.info(
@@ -230,19 +204,23 @@ def health(req: Request) -> dict[str, object]:
 @app.get("/metrics", response_model=MetricsResponse)
 def get_metrics(req: Request) -> MetricsResponse:
     counters: Counters | None = getattr(req.app.state, "counters", None)
-    if counters is None:
-        return MetricsResponse(requests=0, errors=0, latency=0.0, needs_review=0)
+    if counters is None or counters.requests_total == 0:
+        return MetricsResponse(
+            requests_total=0 if counters is None else counters.requests_total,
+            errors_total=0 if counters is None else counters.errors_total,
+            avg_latency_ms=0.0,
+            needs_review_rate=0.0,
+        )
+
+    avg_latency = round(counters.total_latency_ms / counters.requests_total, 2)
+    review_rate = round(counters.needs_review_total / counters.requests_total, 4)
+
     return MetricsResponse(
-        requests=counters["requests"],
-        errors=counters["errors"],
-        latency=counters["latency"],
-        needs_review=counters["needs_review"],
+        requests_total=counters.requests_total,
+        errors_total=counters.errors_total,
+        avg_latency_ms=avg_latency,
+        needs_review_rate=review_rate,
     )
-
-
-@app.get("/stats", response_model=MetricsResponse)
-def get_stats(req: Request) -> MetricsResponse:
-    return get_metrics(req)
 
 
 @app.post("/triage", response_model=TriageResponse)
@@ -269,7 +247,7 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
 
     counters: Counters | None = getattr(req.app.state, "counters", None)
     if counters is not None and result["needs_review"]:
-        counters["needs_review"] += 1
+        counters.needs_review_total += 1
 
     # Never log the ticket body, only ticket_id, label and latency
     request_id = getattr(req.state, "request_id", None)

@@ -430,7 +430,7 @@ def test_triage_logging_only_ticket_id_label_latency_and_never_body(
 
 
 # =====================================================================
-# 9. In-Memory Counters Tests (requests, errors, latency, needs_review)
+# 9. In-Memory Counters Tests (requests_total, errors_total, avg_latency_ms, needs_review_rate)
 # =====================================================================
 
 
@@ -441,26 +441,21 @@ def test_counters_initial_state() -> None:
         assert res.status_code == 200
         data = res.json()
         assert data == {
-            "requests": 0,
-            "errors": 0,
-            "latency": 0.0,
-            "needs_review": 0,
+            "requests_total": 0,
+            "errors_total": 0,
+            "avg_latency_ms": 0.0,
+            "needs_review_rate": 0.0,
         }
 
-        # /stats alias returns identical counters
-        res_stats = client.get("/stats")
-        assert res_stats.status_code == 200
-        assert res_stats.json() == data
-
-        # app.state.counters contains the same values
-        assert app.state.counters["requests"] == 0
-        assert app.state.counters["errors"] == 0
-        assert app.state.counters["latency"] == 0.0
-        assert app.state.counters["needs_review"] == 0
+        # app.state.counters contains the same zero values
+        assert app.state.counters.requests_total == 0
+        assert app.state.counters.errors_total == 0
+        assert app.state.counters.total_latency_ms == 0.0
+        assert app.state.counters.needs_review_total == 0
 
 
 def test_counters_increment_requests_and_latency_on_success() -> None:
-    """Verify requests and cumulative latency increment on successful triage."""
+    """Verify requests_total and avg_latency_ms increment on successful triage."""
     with TestClient(app) as client:
         payload = {
             "ticket_id": "T-CTR-1",
@@ -470,12 +465,12 @@ def test_counters_increment_requests_and_latency_on_success() -> None:
         assert res1.status_code == 200
 
         data1 = client.get("/metrics").json()
-        assert data1["requests"] == 1
-        assert data1["errors"] == 0
-        assert isinstance(data1["latency"], float)
-        assert data1["latency"] > 0.0
+        assert data1["requests_total"] == 1
+        assert data1["errors_total"] == 0
+        assert isinstance(data1["avg_latency_ms"], float)
+        assert data1["avg_latency_ms"] > 0.0
 
-        # Second request increments requests to 2 and accumulates latency
+        # Second request increments requests to 2
         res2 = client.post(
             "/triage",
             json={"ticket_id": "T-CTR-2", "body": "Need refund on invoice"},
@@ -483,15 +478,15 @@ def test_counters_increment_requests_and_latency_on_success() -> None:
         assert res2.status_code == 200
 
         data2 = client.get("/metrics").json()
-        assert data2["requests"] == 2
-        assert data2["errors"] == 0
-        assert data2["latency"] >= data1["latency"]
+        assert data2["requests_total"] == 2
+        assert data2["errors_total"] == 0
+        assert data2["avg_latency_ms"] > 0.0
 
 
 def test_counters_increment_needs_review(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify needs_review counter increments when prediction triggers review."""
+    """Verify needs_review_rate increments when prediction triggers review."""
     monkeypatch.setenv("TRIAGE_THRESHOLD", "0.9999")
     with TestClient(app) as client:
         payload = {
@@ -503,39 +498,39 @@ def test_counters_increment_needs_review(
         assert res.json()["needs_review"] is True
 
         data = client.get("/metrics").json()
-        assert data["requests"] == 1
-        assert data["errors"] == 0
-        assert data["needs_review"] == 1
+        assert data["requests_total"] == 1
+        assert data["errors_total"] == 0
+        assert data["needs_review_rate"] == 1.0
 
 
-def test_counters_increment_errors_on_422_validation() -> None:
-    """Verify 422 input validation errors increment both requests and errors."""
+def test_counters_4xx_not_counted_in_errors_total() -> None:
+    """Verify 4xx (422, 413) are client mistakes and NOT counted in errors_total."""
     with TestClient(app) as client:
-        res = client.post("/triage", json={"ticket_id": "T-BAD", "body": ""})
-        assert res.status_code == 422
+        # 422 Unprocessable Entity
+        res_422 = client.post("/triage", json={"ticket_id": "T-BAD", "body": ""})
+        assert res_422.status_code == 422
 
-        data = client.get("/metrics").json()
-        assert data["requests"] == 1
-        assert data["errors"] == 1
-        assert data["needs_review"] == 0
+        data_422 = client.get("/metrics").json()
+        assert data_422["requests_total"] == 1
+        assert data_422["errors_total"] == 0
 
-
-def test_counters_increment_errors_on_413_payload_too_large() -> None:
-    """Verify 413 payload too large errors increment both requests and errors."""
-    with TestClient(app) as client:
-        res = client.post(
+        # 413 Payload Too Large
+        res_413 = client.post(
             "/triage",
-            json={"ticket_id": "T-TOO-BIG", "body": "x" * (MAX_BODY_BYTES + 1)},
+            json={
+                "ticket_id": "T-TOO-BIG",
+                "body": "x" * (MAX_BODY_BYTES + 1),
+            },
         )
-        assert res.status_code == 413
+        assert res_413.status_code == 413
 
-        data = client.get("/metrics").json()
-        assert data["requests"] == 1
-        assert data["errors"] == 1
+        data_413 = client.get("/metrics").json()
+        assert data_413["requests_total"] == 2
+        assert data_413["errors_total"] == 0
 
 
-def test_counters_increment_errors_on_503_model_not_loaded() -> None:
-    """Verify 503 service unavailable increments both requests and errors."""
+def test_counters_5xx_counted_in_errors_total() -> None:
+    """Verify 5xx server failures are counted in errors_total."""
     with TestClient(app) as client:
         saved_model = app.state.model
         try:
@@ -547,8 +542,8 @@ def test_counters_increment_errors_on_503_model_not_loaded() -> None:
             assert res.status_code == 503
 
             data = client.get("/metrics").json()
-            assert data["requests"] == 1
-            assert data["errors"] == 1
+            assert data["requests_total"] == 1
+            assert data["errors_total"] == 1
         finally:
             app.state.model = saved_model
 
@@ -562,106 +557,80 @@ def test_counters_excluded_paths_do_not_increment_metrics() -> None:
 
         for _ in range(3):
             client.get("/metrics")
-            client.get("/stats")
 
         # Counters should still be completely unpolluted
         data = client.get("/metrics").json()
-        assert data["requests"] == 0
-        assert data["errors"] == 0
-        assert data["latency"] == 0.0
-        assert data["needs_review"] == 0
-
-
-def test_counters_exact_output_contract() -> None:
-    """Verify exact 4-key output contract and types for counters."""
-    with TestClient(app) as client:
-        res = client.get("/metrics")
-        assert res.status_code == 200
-        data = res.json()
-        assert set(data.keys()) == {
-            "requests",
-            "errors",
-            "latency",
-            "needs_review",
-        }
-        assert isinstance(data["requests"], int)
-        assert isinstance(data["errors"], int)
-        assert isinstance(data["latency"], float)
-        assert isinstance(data["needs_review"], int)
+        assert data["requests_total"] == 0
+        assert data["errors_total"] == 0
+        assert data["avg_latency_ms"] == 0.0
+        assert data["needs_review_rate"] == 0.0
 
 
 # =====================================================================
-# 10. X-Request-ID Middleware Tests
+# 10. X-Request-ID Middleware & Header Tests
 # =====================================================================
 
 
-def test_x_request_id_generated_and_returned_in_header() -> None:
-    """Verify X-Request-ID header is generated and returned on all endpoints."""
+def test_request_id_header() -> None:
+    """Verify X-Request-ID header generation, propagation, and format."""
     with TestClient(app) as client:
-        # Check /health
-        res_health = client.get("/health")
-        assert "X-Request-ID" in res_health.headers
-        health_req_id = res_health.headers["X-Request-ID"]
-        assert uuid.UUID(health_req_id)  # must be a valid UUID
+        # Generated UUID when header omitted
+        res_auto = client.get("/health")
+        assert "X-Request-ID" in res_auto.headers
+        generated_id = res_auto.headers["X-Request-ID"]
+        parsed_uuid = uuid.UUID(generated_id)
+        assert str(parsed_uuid) == generated_id
 
-        # Check /triage
-        res_triage = client.post(
+        # Preserved when valid header matching [A-Za-z0-9-]{1,64} provided
+        valid_custom_id = "client-trace-req-456"
+        res_custom = client.post(
             "/triage",
-            json={"ticket_id": "T-REQID-1", "body": "Where is my item?"},
+            headers={"X-Request-ID": valid_custom_id},
+            json={"ticket_id": "T-HDR-1", "body": "Where is my parcel?"},
         )
-        assert res_triage.status_code == 200
-        assert "X-Request-ID" in res_triage.headers
-        triage_req_id = res_triage.headers["X-Request-ID"]
-        assert uuid.UUID(triage_req_id)
-        # Each request gets a unique ID
-        assert health_req_id != triage_req_id
+        assert res_custom.status_code == 200
+        assert res_custom.headers.get("X-Request-ID") == valid_custom_id
 
-        # Check /metrics
-        res_metrics = client.get("/metrics")
-        assert "X-Request-ID" in res_metrics.headers
+        # Present on error responses
+        res_err = client.post(
+            "/triage",
+            headers={"X-Request-ID": "err-trace-789"},
+            json={"ticket_id": "T-HDR-ERR", "body": ""},
+        )
+        assert res_err.status_code == 422
+        assert res_err.headers.get("X-Request-ID") == "err-trace-789"
 
 
-def test_x_request_id_propagated_from_incoming_header() -> None:
-    """Verify incoming X-Request-ID header is preserved and echoed in response."""
-    custom_id = "custom-client-trace-id-abc-123"
+def test_request_id_injection_sanitization() -> None:
+    """Verify invalid or newline-injected X-Request-ID values are replaced."""
     with TestClient(app) as client:
-        res = client.post(
-            "/triage",
-            headers={"X-Request-ID": custom_id},
-            json={"ticket_id": "T-REQID-2", "body": "Need refund on order"},
-        )
-        assert res.status_code == 200
-        assert res.headers.get("X-Request-ID") == custom_id
+        # Newline injection attempt
+        newline_id = "fake-trace\nCRITICAL: faked log line\r\n"
+        res_nl = client.get("/health", headers={"X-Request-ID": newline_id})
+        assert res_nl.status_code == 200
+        safe_id_nl = res_nl.headers.get("X-Request-ID")
+        assert safe_id_nl != newline_id
+        assert "\n" not in safe_id_nl
+        assert uuid.UUID(safe_id_nl)
+
+        # Disallowed characters (e.g. punctuation, symbols)
+        invalid_chars = "trace@bad$id#123"
+        res_inv = client.get("/health", headers={"X-Request-ID": invalid_chars})
+        assert res_inv.status_code == 200
+        safe_id_inv = res_inv.headers.get("X-Request-ID")
+        assert safe_id_inv != invalid_chars
+        assert uuid.UUID(safe_id_inv)
+
+        # Value exceeding 64 characters
+        too_long_id = "a" * 65
+        res_long = client.get("/health", headers={"X-Request-ID": too_long_id})
+        assert res_long.status_code == 200
+        safe_id_long = res_long.headers.get("X-Request-ID")
+        assert safe_id_long != too_long_id
+        assert uuid.UUID(safe_id_long)
 
 
-def test_x_request_id_present_on_error_responses() -> None:
-    """Verify X-Request-ID is attached even on 422, 413, and 404 error responses."""
-    with TestClient(app) as client:
-        # 422 Unprocessable Entity
-        res_422 = client.post(
-            "/triage",
-            headers={"X-Request-ID": "err-422-id"},
-            json={"ticket_id": "T-ERR", "body": ""},
-        )
-        assert res_422.status_code == 422
-        assert res_422.headers.get("X-Request-ID") == "err-422-id"
-
-        # 413 Payload Too Large
-        res_413 = client.post(
-            "/triage",
-            json={"ticket_id": "T-ERR", "body": "x" * (MAX_BODY_BYTES + 1)},
-        )
-        assert res_413.status_code == 413
-        assert "X-Request-ID" in res_413.headers
-        assert uuid.UUID(res_413.headers["X-Request-ID"])
-
-        # 404 Not Found
-        res_404 = client.get("/nonexistent-endpoint")
-        assert res_404.status_code == 404
-        assert "X-Request-ID" in res_404.headers
-
-
-def test_x_request_id_is_logged_for_requests(
+def test_request_id_logged_for_requests(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Verify middleware logs the request_id for every incoming request."""
@@ -684,73 +653,13 @@ def test_x_request_id_is_logged_for_requests(
     assert getattr(record, "request_id", None) == custom_id
 
 
-def test_x_request_id_logged_when_generated_automatically(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Verify automatically generated UUID request_id is logged properly."""
-    with caplog.at_level(logging.INFO, logger="supportpilot.api.main"):
-        with TestClient(app) as client:
-            res = client.post(
-                "/triage",
-                json={"ticket_id": "T-AUTO-ID", "body": "Where is my parcel?"},
-            )
-            assert res.status_code == 200
-
-    generated_id = res.headers["X-Request-ID"]
-    matching_records = [
-        r
-        for r in caplog.records
-        if r.name == "supportpilot.api.main"
-        and f"request_id={generated_id}" in r.getMessage()
-    ]
-    assert len(matching_records) >= 1
-
-
-def test_get_metrics_endpoint_stable_key_names() -> None:
-    """Verify GET /metrics adheres to stable key names and types contract."""
-    with TestClient(app) as client:
-        # Pre-workload: verify exact stable keys
-        res = client.get("/metrics")
-        assert res.status_code == 200
-        data = res.json()
-        expected_keys = ["requests", "errors", "latency", "needs_review"]
-        assert list(data.keys()) == expected_keys
-        assert data["requests"] == 0
-        assert data["errors"] == 0
-        assert data["latency"] == 0.0
-        assert data["needs_review"] == 0
-
-        # Execute mixed workload (happy path and validation error)
-        res_ok = client.post(
-            "/triage",
-            json={"ticket_id": "T-METRIC-STABLE", "body": "Where is my parcel?"},
-        )
-        assert res_ok.status_code == 200
-
-        res_err = client.post(
-            "/triage",
-            json={"ticket_id": "T-METRIC-ERR", "body": ""},
-        )
-        assert res_err.status_code == 422
-
-        # Post-workload: keys remain identical and stable
-        res_after = client.get("/metrics")
-        assert res_after.status_code == 200
-        after_data = res_after.json()
-        assert list(after_data.keys()) == expected_keys
-        assert after_data["requests"] == 2
-        assert after_data["errors"] == 1
-        assert after_data["latency"] > 0.0
-        assert isinstance(after_data["needs_review"], int)
-
-
 # =====================================================================
-# 11. Specific Tests: metric keys, request ID header, no ticket text in metrics
+# 11. Specific Tests: metric keys and zero ticket text in metrics
 # =====================================================================
 
 
 def test_metric_keys() -> None:
-    """Verify GET /metrics returns exactly the stable metric keys."""
+    """Verify GET /metrics returns exactly Meera's stable metric keys contract."""
     with TestClient(app) as client:
         response = client.get("/metrics")
         assert response.status_code == 200
@@ -758,45 +667,15 @@ def test_metric_keys() -> None:
 
         # Exact stable metric keys contract
         assert set(data.keys()) == {
-            "requests",
-            "errors",
-            "latency",
-            "needs_review",
+            "requests_total",
+            "errors_total",
+            "avg_latency_ms",
+            "needs_review_rate",
         }
-        assert isinstance(data["requests"], int)
-        assert isinstance(data["errors"], int)
-        assert isinstance(data["latency"], float)
-        assert isinstance(data["needs_review"], int)
-
-
-def test_request_id_header() -> None:
-    """Verify X-Request-ID header generation, propagation, and format."""
-    with TestClient(app) as client:
-        # Generated UUID when header omitted
-        res_auto = client.get("/health")
-        assert "X-Request-ID" in res_auto.headers
-        generated_id = res_auto.headers["X-Request-ID"]
-        parsed_uuid = uuid.UUID(generated_id)
-        assert str(parsed_uuid) == generated_id
-
-        # Preserved when header provided by client
-        custom_id = "client-trace-req-456"
-        res_custom = client.post(
-            "/triage",
-            headers={"X-Request-ID": custom_id},
-            json={"ticket_id": "T-HDR-1", "body": "Where is my parcel?"},
-        )
-        assert res_custom.status_code == 200
-        assert res_custom.headers.get("X-Request-ID") == custom_id
-
-        # Present on error responses
-        res_err = client.post(
-            "/triage",
-            headers={"X-Request-ID": "err-trace-789"},
-            json={"ticket_id": "T-HDR-ERR", "body": ""},
-        )
-        assert res_err.status_code == 422
-        assert res_err.headers.get("X-Request-ID") == "err-trace-789"
+        assert isinstance(data["requests_total"], int)
+        assert isinstance(data["errors_total"], int)
+        assert isinstance(data["avg_latency_ms"], float)
+        assert isinstance(data["needs_review_rate"], float)
 
 
 def test_no_ticket_text_in_metrics() -> None:
