@@ -41,3 +41,56 @@ jobs:
 
       - name: Run linting
         run: python -m ruff check .
+
+  docker:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build Docker image
+        run: docker build -t supportpilot-api:latest .
+
+      - name: Verify image size under 400 MB
+        run: |
+          size_bytes=$(docker inspect supportpilot-api:latest --format='{{.Size}}')
+          size_mb=$(( size_bytes / 1000 / 1000 ))
+          echo "Docker image size: ${size_mb} MB (${size_bytes} bytes)"
+          if [ "$size_mb" -ge 400 ]; then
+            echo "Error: Docker image size (${size_mb} MB) exceeds 400 MB limit"
+            exit 1
+          fi
+
+      - name: Run container
+        run: |
+          docker run -d --name supportpilot-api -p 8000:8000 supportpilot-api:latest
+
+      - name: Verify /health endpoint
+        run: |
+          for i in {1..30}; do
+            if response=$(curl -s -f http://localhost:8000/health); then
+              echo "Health response: $response"
+              echo "$response" | grep -q '"status":"ok"'
+              echo "$response" | grep -q '"model_loaded":true'
+              echo "Healthcheck passed: model_loaded is true"
+              break
+            fi
+            echo "Waiting for /health endpoint... ($i/30)"
+            sleep 1
+          done
+
+      - name: Verify container healthcheck status
+        run: |
+          for i in {1..15}; do
+            health_status=$(docker inspect --format='{{.State.Health.Status}}' supportpilot-api)
+            echo "Container health status: $health_status ($i/15)"
+            if [ "$health_status" = "healthy" ]; then
+              echo "Container healthcheck verified healthy!"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Container failed to become healthy"
+          docker logs supportpilot-api
+          exit 1
