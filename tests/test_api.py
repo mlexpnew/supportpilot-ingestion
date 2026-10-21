@@ -901,7 +901,7 @@ def test_get_api_key_dependency_validation() -> None:
         # Missing header returns 401
         res_none = client.get("/test-key")
         assert res_none.status_code == 401
-        assert res_none.json()["detail"] == "Invalid or missing API key"
+        assert res_none.json()["detail"] == "Unauthorized"
 
         # Invalid key returns 401
         res_invalid = client.get(
@@ -909,4 +909,4 @@ def test_get_api_key_dependency_validation() -> None:
             headers={"X-API-Key": "wrong-secret"},
         )
         assert res_invalid.status_code == 401
-        assert res_invalid.json()["detail"] == "Invalid or missing API key"
+        assert res_invalid.json()["detail"] == "Unauthorized"

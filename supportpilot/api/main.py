@@ -112,7 +112,7 @@ def get_api_key(
     if not validate_api_key(api_key, valid_keys):
         raise HTTPException(
             status_code=401,
-            detail="Invalid or missing API key",
+            detail="Unauthorized",
         )
     return api_key  # type: ignore[return-value]
 
