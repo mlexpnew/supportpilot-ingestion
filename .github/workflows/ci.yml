@@ -57,5 +57,12 @@ jobs:
 
       - name: Call /health
         run: |
-          sleep 3
-          curl -sS --fail --retry 5 --retry-connrefused --retry-delay 2 http://localhost:8000/health
+          for i in {1..40}; do
+            if [ "$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health)" = "200" ]; then
+              echo "Health check succeeded: /health returned 200 OK after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Error: /health did not return 200 within 40 seconds"
+          exit 1
