@@ -430,7 +430,7 @@ def test_triage_logging_only_ticket_id_label_latency_and_never_body(
 
 
 # =====================================================================
-# 9. In-Memory Counters Tests (requests_total, errors_total, avg_latency_ms, needs_review_rate)
+# 9. In-Memory Counters Tests (requests, triage, errors, latency, rate)
 # =====================================================================
 
 
@@ -442,6 +442,7 @@ def test_counters_initial_state() -> None:
         data = res.json()
         assert data == {
             "requests_total": 0,
+            "triage_total": 0,
             "errors_total": 0,
             "avg_latency_ms": 0.0,
             "needs_review_rate": 0.0,
@@ -449,6 +450,7 @@ def test_counters_initial_state() -> None:
 
         # app.state.counters contains the same zero values
         assert app.state.counters.requests_total == 0
+        assert app.state.counters.triage_total == 0
         assert app.state.counters.errors_total == 0
         assert app.state.counters.total_latency_ms == 0.0
         assert app.state.counters.needs_review_total == 0
@@ -466,6 +468,7 @@ def test_counters_increment_requests_and_latency_on_success() -> None:
 
         data1 = client.get("/metrics").json()
         assert data1["requests_total"] == 1
+        assert data1["triage_total"] == 1
         assert data1["errors_total"] == 0
         assert isinstance(data1["avg_latency_ms"], float)
         assert data1["avg_latency_ms"] > 0.0
@@ -479,6 +482,7 @@ def test_counters_increment_requests_and_latency_on_success() -> None:
 
         data2 = client.get("/metrics").json()
         assert data2["requests_total"] == 2
+        assert data2["triage_total"] == 2
         assert data2["errors_total"] == 0
         assert data2["avg_latency_ms"] > 0.0
 
@@ -499,6 +503,7 @@ def test_counters_increment_needs_review(
 
         data = client.get("/metrics").json()
         assert data["requests_total"] == 1
+        assert data["triage_total"] == 1
         assert data["errors_total"] == 0
         assert data["needs_review_rate"] == 1.0
 
@@ -512,6 +517,7 @@ def test_counters_4xx_not_counted_in_errors_total() -> None:
 
         data_422 = client.get("/metrics").json()
         assert data_422["requests_total"] == 1
+        assert data_422["triage_total"] == 0
         assert data_422["errors_total"] == 0
 
         # 413 Payload Too Large
@@ -526,6 +532,7 @@ def test_counters_4xx_not_counted_in_errors_total() -> None:
 
         data_413 = client.get("/metrics").json()
         assert data_413["requests_total"] == 2
+        assert data_413["triage_total"] == 0
         assert data_413["errors_total"] == 0
 
 
@@ -543,6 +550,7 @@ def test_counters_5xx_counted_in_errors_total() -> None:
 
             data = client.get("/metrics").json()
             assert data["requests_total"] == 1
+            assert data["triage_total"] == 0
             assert data["errors_total"] == 1
         finally:
             app.state.model = saved_model
@@ -561,9 +569,54 @@ def test_counters_excluded_paths_do_not_increment_metrics() -> None:
         # Counters should still be completely unpolluted
         data = client.get("/metrics").json()
         assert data["requests_total"] == 0
+        assert data["triage_total"] == 0
         assert data["errors_total"] == 0
         assert data["avg_latency_ms"] == 0.0
         assert data["needs_review_rate"] == 0.0
+
+
+def test_needs_review_rate_divides_by_successful_triage_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify needs_review_rate divides only by triage_total, not requests_total."""
+    with TestClient(app) as client:
+        # 1. Successful triage that does not require review
+        res_ok = client.post(
+            "/triage",
+            json={"ticket_id": "T-OK-1", "body": "Where is my ordered parcel?"},
+        )
+        assert res_ok.status_code == 200
+        assert res_ok.json()["needs_review"] is False
+
+        # 2. Successful triage that requires review
+        monkeypatch.setenv("TRIAGE_THRESHOLD", "0.9999")
+        res_nr = client.post(
+            "/triage",
+            json={"ticket_id": "T-NR-1", "body": "Ambiguous support complaint"},
+        )
+        assert res_nr.status_code == 200
+        assert res_nr.json()["needs_review"] is True
+
+        # At this point: requests_total=2, triage_total=2, review_total=1 -> rate=0.5
+        mid = client.get("/metrics").json()
+        assert mid["requests_total"] == 2
+        assert mid["triage_total"] == 2
+        assert mid["needs_review_rate"] == 0.5
+
+        # 3. Send 3 client validation errors (422)
+        for i in range(3):
+            res_err = client.post(
+                "/triage",
+                json={"ticket_id": f"T-ERR-{i}", "body": ""},
+            )
+            assert res_err.status_code == 422
+
+        # Rate must divide by triage_total (1/2 = 0.5), NOT requests_total (1/5 = 0.2)
+        final = client.get("/metrics").json()
+        assert final["requests_total"] == 5
+        assert final["triage_total"] == 2
+        assert final["errors_total"] == 0
+        assert final["needs_review_rate"] == 0.5
 
 
 # =====================================================================
@@ -668,11 +721,13 @@ def test_metric_keys() -> None:
         # Exact stable metric keys contract
         assert set(data.keys()) == {
             "requests_total",
+            "triage_total",
             "errors_total",
             "avg_latency_ms",
             "needs_review_rate",
         }
         assert isinstance(data["requests_total"], int)
+        assert isinstance(data["triage_total"], int)
         assert isinstance(data["errors_total"], int)
         assert isinstance(data["avg_latency_ms"], float)
         assert isinstance(data["needs_review_rate"], float)

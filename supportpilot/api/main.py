@@ -40,6 +40,7 @@ class Counters:
     """In-memory operational counters tracking triage traffic and outcomes."""
 
     requests_total: int = 0
+    triage_total: int = 0
     errors_total: int = 0
     total_latency_ms: float = 0.0
     needs_review_total: int = 0
@@ -100,6 +101,7 @@ class TriageResponse(BaseModel):
 
 class MetricsResponse(BaseModel):
     requests_total: int
+    triage_total: int
     errors_total: int
     avg_latency_ms: float
     needs_review_rate: float
@@ -207,16 +209,22 @@ def get_metrics(req: Request) -> MetricsResponse:
     if counters is None or counters.requests_total == 0:
         return MetricsResponse(
             requests_total=0 if counters is None else counters.requests_total,
+            triage_total=0 if counters is None else counters.triage_total,
             errors_total=0 if counters is None else counters.errors_total,
             avg_latency_ms=0.0,
             needs_review_rate=0.0,
         )
 
     avg_latency = round(counters.total_latency_ms / counters.requests_total, 2)
-    review_rate = round(counters.needs_review_total / counters.requests_total, 4)
+    review_rate = (
+        round(counters.needs_review_total / counters.triage_total, 4)
+        if counters.triage_total > 0
+        else 0.0
+    )
 
     return MetricsResponse(
         requests_total=counters.requests_total,
+        triage_total=counters.triage_total,
         errors_total=counters.errors_total,
         avg_latency_ms=avg_latency,
         needs_review_rate=review_rate,
@@ -246,8 +254,10 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
     latency = time.perf_counter() - start_time
 
     counters: Counters | None = getattr(req.app.state, "counters", None)
-    if counters is not None and result["needs_review"]:
-        counters.needs_review_total += 1
+    if counters is not None:
+        counters.triage_total += 1
+        if result["needs_review"]:
+            counters.needs_review_total += 1
 
     # Never log the ticket body, only ticket_id, label and latency
     request_id = getattr(req.state, "request_id", None)
