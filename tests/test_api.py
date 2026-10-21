@@ -704,3 +704,41 @@ def test_x_request_id_logged_when_generated_automatically(
         and f"request_id={generated_id}" in r.getMessage()
     ]
     assert len(matching_records) >= 1
+
+
+def test_get_metrics_endpoint_stable_key_names() -> None:
+    """Verify GET /metrics adheres to stable key names and types contract."""
+    with TestClient(app) as client:
+        # Pre-workload: verify exact stable keys
+        res = client.get("/metrics")
+        assert res.status_code == 200
+        data = res.json()
+        expected_keys = ["requests", "errors", "latency", "needs_review"]
+        assert list(data.keys()) == expected_keys
+        assert data["requests"] == 0
+        assert data["errors"] == 0
+        assert data["latency"] == 0.0
+        assert data["needs_review"] == 0
+
+        # Execute mixed workload (happy path and validation error)
+        res_ok = client.post(
+            "/triage",
+            json={"ticket_id": "T-METRIC-STABLE", "body": "Where is my parcel?"},
+        )
+        assert res_ok.status_code == 200
+
+        res_err = client.post(
+            "/triage",
+            json={"ticket_id": "T-METRIC-ERR", "body": ""},
+        )
+        assert res_err.status_code == 422
+
+        # Post-workload: keys remain identical and stable
+        res_after = client.get("/metrics")
+        assert res_after.status_code == 200
+        after_data = res_after.json()
+        assert list(after_data.keys()) == expected_keys
+        assert after_data["requests"] == 2
+        assert after_data["errors"] == 1
+        assert after_data["latency"] > 0.0
+        assert isinstance(after_data["needs_review"], int)

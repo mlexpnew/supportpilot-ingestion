@@ -119,6 +119,13 @@ class TriageResponse(BaseModel):
     needs_review: bool
 
 
+class MetricsResponse(BaseModel):
+    requests: int
+    errors: int
+    latency: float
+    needs_review: int
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     model_file = get_model_path()
@@ -220,21 +227,21 @@ def health(req: Request) -> dict[str, object]:
     return {"status": "ok", "model_loaded": model is not None}
 
 
-@app.get("/metrics")
-def get_metrics(req: Request) -> dict[str, object]:
+@app.get("/metrics", response_model=MetricsResponse)
+def get_metrics(req: Request) -> MetricsResponse:
     counters: Counters | None = getattr(req.app.state, "counters", None)
     if counters is None:
-        return {"requests": 0, "errors": 0, "latency": 0.0, "needs_review": 0}
-    return {
-        "requests": counters["requests"],
-        "errors": counters["errors"],
-        "latency": counters["latency"],
-        "needs_review": counters["needs_review"],
-    }
+        return MetricsResponse(requests=0, errors=0, latency=0.0, needs_review=0)
+    return MetricsResponse(
+        requests=counters["requests"],
+        errors=counters["errors"],
+        latency=counters["latency"],
+        needs_review=counters["needs_review"],
+    )
 
 
-@app.get("/stats")
-def get_stats(req: Request) -> dict[str, object]:
+@app.get("/stats", response_model=MetricsResponse)
+def get_stats(req: Request) -> MetricsResponse:
     return get_metrics(req)
 
 
