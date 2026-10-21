@@ -810,3 +810,35 @@ def test_empty_api_keys_fails_fast_at_startup(
     with pytest.raises(ValueError, match="No API keys configured"):
         with TestClient(app):
             pass
+
+
+def test_get_api_key_dependency_reads_header() -> None:
+    """Verify get_api_key dependency extracts X-API-Key header properly."""
+    from fastapi import Depends, FastAPI
+    from supportpilot.api.main import api_key_header, get_api_key
+
+    assert api_key_header.model.name == "X-API-Key"
+
+    test_sub_app = FastAPI()
+
+    @test_sub_app.get("/test-key")
+    def _read_key(
+        key: str | None = Depends(get_api_key),
+    ) -> dict[str, str | None]:
+        return {"key": key}
+
+    with TestClient(test_sub_app) as client:
+        # Standard header
+        res = client.get("/test-key", headers={"X-API-Key": "secret-123"})
+        assert res.status_code == 200
+        assert res.json() == {"key": "secret-123"}
+
+        # Case-insensitive header
+        res_lower = client.get("/test-key", headers={"x-api-key": "secret-456"})
+        assert res_lower.status_code == 200
+        assert res_lower.json() == {"key": "secret-456"}
+
+        # Header omitted returns None
+        res_none = client.get("/test-key")
+        assert res_none.status_code == 200
+        assert res_none.json() == {"key": None}

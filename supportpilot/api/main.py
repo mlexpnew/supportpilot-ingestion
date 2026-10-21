@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, field_validator
 
 from supportpilot.preprocessing.redact import redact_text
@@ -81,6 +82,16 @@ def get_api_keys() -> set[str]:
             "least one valid key."
         )
     return keys
+
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def get_api_key(
+    api_key: str | None = Security(api_key_header),
+) -> str | None:
+    """FastAPI dependency that reads the X-API-Key header from the request."""
+    return api_key
 
 
 class TriageRequest(BaseModel):
