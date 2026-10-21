@@ -67,6 +67,11 @@ def get_threshold() -> float:
     return DEFAULT_CONFIDENCE_THRESHOLD
 
 
+def get_api_keys() -> set[str]:
+    raw_keys = os.getenv("TRIAGE_API_KEYS", "")
+    return {k.strip() for k in raw_keys.split(",") if k.strip()}
+
+
 class TriageRequest(BaseModel):
     ticket_id: str
     subject: str | None = None
@@ -123,13 +128,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.model = loaded_model
     app.state.threshold = threshold
     app.state.counters = Counters()
+    app.state.api_keys = get_api_keys()
     yield
     app.state.model = None
     app.state.threshold = None
+    app.state.api_keys = set()
 
 
 app = FastAPI(title="SupportPilot Triage API", lifespan=lifespan)
 app.state.counters = Counters()
+app.state.api_keys = get_api_keys()
 
 
 @app.middleware("http")

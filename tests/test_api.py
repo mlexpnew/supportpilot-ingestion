@@ -774,3 +774,30 @@ def test_no_ticket_text_in_metrics() -> None:
         # Zero leakage check in values (strictly numeric operational telemetry)
         for val in metrics_data.values():
             assert isinstance(val, (int, float))
+
+
+# =====================================================================
+# 12. API Key Authentication Configuration Tests
+# =====================================================================
+
+
+def test_triage_api_keys_startup_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify TRIAGE_API_KEYS is split by comma and stored as set in app.state."""
+    monkeypatch.setenv("TRIAGE_API_KEYS", "key-one, key-two , key-three,,")
+    with TestClient(app) as client:
+        res = client.get("/health")
+        assert res.status_code == 200
+        assert app.state.api_keys == {"key-one", "key-two", "key-three"}
+
+
+def test_triage_api_keys_empty_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify app.state.api_keys defaults to an empty set when unset or empty."""
+    monkeypatch.delenv("TRIAGE_API_KEYS", raising=False)
+    with TestClient(app) as client:
+        res = client.get("/health")
+        assert res.status_code == 200
+        assert app.state.api_keys == set()
