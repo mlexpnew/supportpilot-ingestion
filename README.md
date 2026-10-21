@@ -19,6 +19,33 @@ For development and test tooling:
 pip install -r requirements-dev.txt
 ```
 
+## Run with Docker
+
+Build and run the ticket triage FastAPI container locally:
+
+```bash
+# 1. Build the production multi-stage image (size < 400 MB)
+docker build -t supportpilot-api:latest .
+
+# 2. Run the container exposing port 8000
+docker run -d --name supportpilot-api -p 8000:8000 supportpilot-api:latest
+
+# 3. Verify the healthcheck endpoint
+curl http://localhost:8000/health
+# {"status":"ok","model_loaded":true}
+
+# 4. Classify an inbound support ticket
+curl -X POST http://localhost:8000/triage \
+  -H "Content-Type: application/json" \
+  -d '{"ticket_id":"T-001","body":"Where is my order? Scheduled delivery was today."}'
+
+# 5. Inspect operational telemetry
+curl http://localhost:8000/metrics
+```
+
+Interactive OpenAPI documentation is available at `http://localhost:8000/docs`.  
+For environment variables, cloud deployment, and rollback guides, see [docs/deployment.md](docs/deployment.md).
+
 ## CLI Usage
 
 ### Ingestion & Validation (SP-101 / SP-104)
