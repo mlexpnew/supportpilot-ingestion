@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
 from supportpilot.preprocessing.redact import redact_text
@@ -19,6 +23,27 @@ from supportpilot.triage.model import (
 
 MAX_BODY_BYTES: int = 10 * 1024  # 10 KB limit
 logger = logging.getLogger(__name__)
+
+REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+EXCLUDED_METRIC_PATHS: set[str] = {
+    "/health",
+    "/metrics",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+}
+
+
+@dataclass
+class Counters:
+    """In-memory operational counters tracking triage traffic and outcomes."""
+
+    requests_total: int = 0
+    triage_total: int = 0
+    errors_total: int = 0
+    total_latency_ms: float = 0.0
+    needs_review_total: int = 0
 
 
 def get_model_path() -> Path:
@@ -74,6 +99,14 @@ class TriageResponse(BaseModel):
     needs_review: bool
 
 
+class MetricsResponse(BaseModel):
+    requests_total: int
+    triage_total: int
+    errors_total: int
+    avg_latency_ms: float
+    needs_review_rate: float
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     model_file = get_model_path()
@@ -89,18 +122,113 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.model = loaded_model
     app.state.threshold = threshold
+    app.state.counters = Counters()
     yield
     app.state.model = None
     app.state.threshold = None
 
 
 app = FastAPI(title="SupportPilot Triage API", lifespan=lifespan)
+app.state.counters = Counters()
+
+
+@app.middleware("http")
+async def track_counters(request: Request, call_next: Any) -> Response:
+    if request.url.path in EXCLUDED_METRIC_PATHS:
+        return await call_next(request)
+
+    t0 = time.perf_counter()
+    counters: Counters | None = getattr(request.app.state, "counters", None)
+    if counters is not None:
+        counters.requests_total += 1
+
+    try:
+        response: Response = await call_next(request)
+    except Exception:
+        if counters is not None:
+            counters.errors_total += 1
+            counters.total_latency_ms += (time.perf_counter() - t0) * 1000.0
+        raise
+
+    if counters is not None:
+        # Only count 5xx server failures as errors; 4xx are client errors
+        if response.status_code >= 500:
+            counters.errors_total += 1
+        counters.total_latency_ms += (time.perf_counter() - t0) * 1000.0
+
+    return response
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next: Any) -> Response:
+    incoming_id = request.headers.get("X-Request-ID")
+    # Allow only [A-Za-z0-9-] up to 64 chars to prevent log injection
+    if incoming_id and REQUEST_ID_REGEX.fullmatch(incoming_id):
+        request_id = incoming_id
+    else:
+        request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
+
+    logger.info(
+        "request_id=%s method=%s path=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+        },
+    )
+
+    try:
+        response: Response = await call_next(request)
+    except Exception:
+        logger.error(
+            "request_id=%s method=%s path=%s unhandled error",
+            request_id,
+            request.method,
+            request.url.path,
+            extra={"request_id": request_id},
+        )
+        raise
+
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 @app.get("/health")
 def health(req: Request) -> dict[str, object]:
     model = getattr(req.app.state, "model", None)
     return {"status": "ok", "model_loaded": model is not None}
+
+
+@app.get("/metrics", response_model=MetricsResponse)
+def get_metrics(req: Request) -> MetricsResponse:
+    counters: Counters | None = getattr(req.app.state, "counters", None)
+    if counters is None or counters.requests_total == 0:
+        return MetricsResponse(
+            requests_total=0 if counters is None else counters.requests_total,
+            triage_total=0 if counters is None else counters.triage_total,
+            errors_total=0 if counters is None else counters.errors_total,
+            avg_latency_ms=0.0,
+            needs_review_rate=0.0,
+        )
+
+    avg_latency = round(counters.total_latency_ms / counters.requests_total, 2)
+    review_rate = (
+        round(counters.needs_review_total / counters.triage_total, 4)
+        if counters.triage_total > 0
+        else 0.0
+    )
+
+    return MetricsResponse(
+        requests_total=counters.requests_total,
+        triage_total=counters.triage_total,
+        errors_total=counters.errors_total,
+        avg_latency_ms=avg_latency,
+        needs_review_rate=review_rate,
+    )
 
 
 @app.post("/triage", response_model=TriageResponse)
@@ -125,13 +253,21 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
     result = model.predict_one(text_to_classify, threshold=threshold)
     latency = time.perf_counter() - start_time
 
+    counters: Counters | None = getattr(req.app.state, "counters", None)
+    if counters is not None:
+        counters.triage_total += 1
+        if result["needs_review"]:
+            counters.needs_review_total += 1
+
     # Never log the ticket body, only ticket_id, label and latency
+    request_id = getattr(req.state, "request_id", None)
     logger.info(
         "ticket_id=%s label=%s latency=%.4fs",
         request.ticket_id,
         result["label"],
         latency,
         extra={
+            "request_id": request_id,
             "ticket_id": request.ticket_id,
             "label": result["label"],
             "latency": latency,

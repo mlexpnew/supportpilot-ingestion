@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import uuid
 import pytest
 from fastapi.testclient import TestClient
 
@@ -426,3 +427,350 @@ def test_triage_logging_only_ticket_id_label_latency_and_never_body(
     assert "Help with shipping" not in msg
     for record in api_records:
         assert secret_body_text not in record.getMessage()
+
+
+# =====================================================================
+# 9. In-Memory Counters Tests (requests, triage, errors, latency, rate)
+# =====================================================================
+
+
+def test_counters_initial_state() -> None:
+    """Verify in-memory counters start at zero upon service startup."""
+    with TestClient(app) as client:
+        res = client.get("/metrics")
+        assert res.status_code == 200
+        data = res.json()
+        assert data == {
+            "requests_total": 0,
+            "triage_total": 0,
+            "errors_total": 0,
+            "avg_latency_ms": 0.0,
+            "needs_review_rate": 0.0,
+        }
+
+        # app.state.counters contains the same zero values
+        assert app.state.counters.requests_total == 0
+        assert app.state.counters.triage_total == 0
+        assert app.state.counters.errors_total == 0
+        assert app.state.counters.total_latency_ms == 0.0
+        assert app.state.counters.needs_review_total == 0
+
+
+def test_counters_increment_requests_and_latency_on_success() -> None:
+    """Verify requests_total and avg_latency_ms increment on successful triage."""
+    with TestClient(app) as client:
+        payload = {
+            "ticket_id": "T-CTR-1",
+            "body": "Where is my ordered parcel?",
+        }
+        res1 = client.post("/triage", json=payload)
+        assert res1.status_code == 200
+
+        data1 = client.get("/metrics").json()
+        assert data1["requests_total"] == 1
+        assert data1["triage_total"] == 1
+        assert data1["errors_total"] == 0
+        assert isinstance(data1["avg_latency_ms"], float)
+        assert data1["avg_latency_ms"] > 0.0
+
+        # Second request increments requests to 2
+        res2 = client.post(
+            "/triage",
+            json={"ticket_id": "T-CTR-2", "body": "Need refund on invoice"},
+        )
+        assert res2.status_code == 200
+
+        data2 = client.get("/metrics").json()
+        assert data2["requests_total"] == 2
+        assert data2["triage_total"] == 2
+        assert data2["errors_total"] == 0
+        assert data2["avg_latency_ms"] > 0.0
+
+
+def test_counters_increment_needs_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify needs_review_rate increments when prediction triggers review."""
+    monkeypatch.setenv("TRIAGE_THRESHOLD", "0.9999")
+    with TestClient(app) as client:
+        payload = {
+            "ticket_id": "T-CTR-NR",
+            "body": "Ambiguous support inquiry about multiple things",
+        }
+        res = client.post("/triage", json=payload)
+        assert res.status_code == 200
+        assert res.json()["needs_review"] is True
+
+        data = client.get("/metrics").json()
+        assert data["requests_total"] == 1
+        assert data["triage_total"] == 1
+        assert data["errors_total"] == 0
+        assert data["needs_review_rate"] == 1.0
+
+
+def test_counters_4xx_not_counted_in_errors_total() -> None:
+    """Verify 4xx (422, 413) are client mistakes and NOT counted in errors_total."""
+    with TestClient(app) as client:
+        # 422 Unprocessable Entity
+        res_422 = client.post("/triage", json={"ticket_id": "T-BAD", "body": ""})
+        assert res_422.status_code == 422
+
+        data_422 = client.get("/metrics").json()
+        assert data_422["requests_total"] == 1
+        assert data_422["triage_total"] == 0
+        assert data_422["errors_total"] == 0
+
+        # 413 Payload Too Large
+        res_413 = client.post(
+            "/triage",
+            json={
+                "ticket_id": "T-TOO-BIG",
+                "body": "x" * (MAX_BODY_BYTES + 1),
+            },
+        )
+        assert res_413.status_code == 413
+
+        data_413 = client.get("/metrics").json()
+        assert data_413["requests_total"] == 2
+        assert data_413["triage_total"] == 0
+        assert data_413["errors_total"] == 0
+
+
+def test_counters_5xx_counted_in_errors_total() -> None:
+    """Verify 5xx server failures are counted in errors_total."""
+    with TestClient(app) as client:
+        saved_model = app.state.model
+        try:
+            app.state.model = None
+            res = client.post(
+                "/triage",
+                json={"ticket_id": "T-UNAVAIL", "body": "Where is my item?"},
+            )
+            assert res.status_code == 503
+
+            data = client.get("/metrics").json()
+            assert data["requests_total"] == 1
+            assert data["triage_total"] == 0
+            assert data["errors_total"] == 1
+        finally:
+            app.state.model = saved_model
+
+
+def test_counters_excluded_paths_do_not_increment_metrics() -> None:
+    """Verify health and metric probe requests do not pollute counters."""
+    with TestClient(app) as client:
+        for _ in range(5):
+            res_health = client.get("/health")
+            assert res_health.status_code == 200
+
+        for _ in range(3):
+            client.get("/metrics")
+
+        # Counters should still be completely unpolluted
+        data = client.get("/metrics").json()
+        assert data["requests_total"] == 0
+        assert data["triage_total"] == 0
+        assert data["errors_total"] == 0
+        assert data["avg_latency_ms"] == 0.0
+        assert data["needs_review_rate"] == 0.0
+
+
+def test_needs_review_rate_divides_by_successful_triage_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify needs_review_rate divides only by triage_total, not requests_total."""
+    with TestClient(app) as client:
+        # 1. Successful triage that does not require review
+        res_ok = client.post(
+            "/triage",
+            json={"ticket_id": "T-OK-1", "body": "Where is my ordered parcel?"},
+        )
+        assert res_ok.status_code == 200
+        assert res_ok.json()["needs_review"] is False
+
+        # 2. Successful triage that requires review
+        monkeypatch.setenv("TRIAGE_THRESHOLD", "0.9999")
+        res_nr = client.post(
+            "/triage",
+            json={"ticket_id": "T-NR-1", "body": "Ambiguous support complaint"},
+        )
+        assert res_nr.status_code == 200
+        assert res_nr.json()["needs_review"] is True
+
+        # At this point: requests_total=2, triage_total=2, review_total=1 -> rate=0.5
+        mid = client.get("/metrics").json()
+        assert mid["requests_total"] == 2
+        assert mid["triage_total"] == 2
+        assert mid["needs_review_rate"] == 0.5
+
+        # 3. Send 3 client validation errors (422)
+        for i in range(3):
+            res_err = client.post(
+                "/triage",
+                json={"ticket_id": f"T-ERR-{i}", "body": ""},
+            )
+            assert res_err.status_code == 422
+
+        # Rate must divide by triage_total (1/2 = 0.5), NOT requests_total (1/5 = 0.2)
+        final = client.get("/metrics").json()
+        assert final["requests_total"] == 5
+        assert final["triage_total"] == 2
+        assert final["errors_total"] == 0
+        assert final["needs_review_rate"] == 0.5
+
+
+# =====================================================================
+# 10. X-Request-ID Middleware & Header Tests
+# =====================================================================
+
+
+def test_request_id_header() -> None:
+    """Verify X-Request-ID header generation, propagation, and format."""
+    with TestClient(app) as client:
+        # Generated UUID when header omitted
+        res_auto = client.get("/health")
+        assert "X-Request-ID" in res_auto.headers
+        generated_id = res_auto.headers["X-Request-ID"]
+        parsed_uuid = uuid.UUID(generated_id)
+        assert str(parsed_uuid) == generated_id
+
+        # Preserved when valid header matching [A-Za-z0-9-]{1,64} provided
+        valid_custom_id = "client-trace-req-456"
+        res_custom = client.post(
+            "/triage",
+            headers={"X-Request-ID": valid_custom_id},
+            json={"ticket_id": "T-HDR-1", "body": "Where is my parcel?"},
+        )
+        assert res_custom.status_code == 200
+        assert res_custom.headers.get("X-Request-ID") == valid_custom_id
+
+        # Present on error responses
+        res_err = client.post(
+            "/triage",
+            headers={"X-Request-ID": "err-trace-789"},
+            json={"ticket_id": "T-HDR-ERR", "body": ""},
+        )
+        assert res_err.status_code == 422
+        assert res_err.headers.get("X-Request-ID") == "err-trace-789"
+
+
+def test_request_id_injection_sanitization() -> None:
+    """Verify invalid or newline-injected X-Request-ID values are replaced."""
+    with TestClient(app) as client:
+        # Newline injection attempt
+        newline_id = "fake-trace\nCRITICAL: faked log line\r\n"
+        res_nl = client.get("/health", headers={"X-Request-ID": newline_id})
+        assert res_nl.status_code == 200
+        safe_id_nl = res_nl.headers.get("X-Request-ID")
+        assert safe_id_nl != newline_id
+        assert "\n" not in safe_id_nl
+        assert uuid.UUID(safe_id_nl)
+
+        # Disallowed characters (e.g. punctuation, symbols)
+        invalid_chars = "trace@bad$id#123"
+        res_inv = client.get("/health", headers={"X-Request-ID": invalid_chars})
+        assert res_inv.status_code == 200
+        safe_id_inv = res_inv.headers.get("X-Request-ID")
+        assert safe_id_inv != invalid_chars
+        assert uuid.UUID(safe_id_inv)
+
+        # Value exceeding 64 characters
+        too_long_id = "a" * 65
+        res_long = client.get("/health", headers={"X-Request-ID": too_long_id})
+        assert res_long.status_code == 200
+        safe_id_long = res_long.headers.get("X-Request-ID")
+        assert safe_id_long != too_long_id
+        assert uuid.UUID(safe_id_long)
+
+
+def test_request_id_logged_for_requests(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify middleware logs the request_id for every incoming request."""
+    custom_id = "trace-log-test-uuid-777"
+    with caplog.at_level(logging.INFO, logger="supportpilot.api.main"):
+        with TestClient(app) as client:
+            res = client.get("/health", headers={"X-Request-ID": custom_id})
+            assert res.status_code == 200
+
+    matching_records = [
+        r
+        for r in caplog.records
+        if r.name == "supportpilot.api.main"
+        and f"request_id={custom_id}" in r.getMessage()
+    ]
+    assert len(matching_records) >= 1
+    record = matching_records[0]
+    assert "method=GET" in record.getMessage()
+    assert "path=/health" in record.getMessage()
+    assert getattr(record, "request_id", None) == custom_id
+
+
+# =====================================================================
+# 11. Specific Tests: metric keys and zero ticket text in metrics
+# =====================================================================
+
+
+def test_metric_keys() -> None:
+    """Verify GET /metrics returns exactly Meera's stable metric keys contract."""
+    with TestClient(app) as client:
+        response = client.get("/metrics")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Exact stable metric keys contract
+        assert set(data.keys()) == {
+            "requests_total",
+            "triage_total",
+            "errors_total",
+            "avg_latency_ms",
+            "needs_review_rate",
+        }
+        assert isinstance(data["requests_total"], int)
+        assert isinstance(data["triage_total"], int)
+        assert isinstance(data["errors_total"], int)
+        assert isinstance(data["avg_latency_ms"], float)
+        assert isinstance(data["needs_review_rate"], float)
+
+
+def test_no_ticket_text_in_metrics() -> None:
+    """Verify GET /metrics never leaks ticket body, subject, ticket_id, or PII."""
+    secret_body = (
+        "CONFIDENTIAL_CUSTOMER_BODY_SECRET_54321: customer email "
+        "john.sensitive@corporation.com, phone 555-0199, card 4111222233334444"
+    )
+    secret_subject = "CRITICAL_PAYLOAD_ACCOUNT_INQUIRY_99999"
+    secret_ticket_id = "TICKET_ID_CLASSIFIED_777"
+
+    with TestClient(app) as client:
+        # Submit confidential ticket to triage
+        res_triage = client.post(
+            "/triage",
+            json={
+                "ticket_id": secret_ticket_id,
+                "subject": secret_subject,
+                "body": secret_body,
+            },
+        )
+        assert res_triage.status_code == 200
+
+        # Query metrics endpoint
+        res_metrics = client.get("/metrics")
+        assert res_metrics.status_code == 200
+        raw_metrics_text = res_metrics.text
+        metrics_data = res_metrics.json()
+
+        # Zero leakage check across the raw response text
+        assert secret_body not in raw_metrics_text
+        assert secret_subject not in raw_metrics_text
+        assert secret_ticket_id not in raw_metrics_text
+        assert "CONFIDENTIAL" not in raw_metrics_text
+        assert "CRITICAL" not in raw_metrics_text
+        assert "john.sensitive" not in raw_metrics_text
+        assert "corporation.com" not in raw_metrics_text
+        assert "4111222233334444" not in raw_metrics_text
+        assert "555-0199" not in raw_metrics_text
+
+        # Zero leakage check in values (strictly numeric operational telemetry)
+        for val in metrics_data.values():
+            assert isinstance(val, (int, float))

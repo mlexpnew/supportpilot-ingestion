@@ -41,3 +41,42 @@ jobs:
 
       - name: Run linting
         run: python -m ruff check .
+
+  docker:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build Docker image
+        run: docker build -t supportpilot-api .
+
+      - name: Verify image size under 400 MB
+        run: |
+          size_bytes=$(docker inspect supportpilot-api --format='{{.Size}}')
+          size_mb=$(( size_bytes / 1000 / 1000 ))
+          echo "Docker image size: ${size_mb} MB (${size_bytes} bytes)"
+          if [ "$size_mb" -ge 400 ]; then
+            echo "Error: Docker image size (${size_mb} MB) exceeds 400 MB limit"
+            exit 1
+          fi
+
+      - name: Run container
+        run: docker run -d --name api -p 8000:8000 supportpilot-api
+
+      - name: Call /health
+        run: |
+          for i in {1..40}; do
+            if [ "$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health)" = "200" ]; then
+              echo "Health check succeeded: /health returned 200 OK after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Error: /health did not return 200 within 40 seconds"
+          exit 1
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs api
