@@ -842,6 +842,9 @@ def test_validate_api_key_constant_time_comparison() -> None:
     assert validate_api_key("secret-alphaa", valid_keys) is False
     assert validate_api_key("secret-alpha", set()) is False
     assert validate_api_key("secret-alpha", None) is False
+    # Non-ASCII keys do not raise TypeError
+    assert validate_api_key("é", valid_keys) is False
+    assert validate_api_key("secret-🔑", valid_keys) is False
 
 
 def test_validate_api_key_iterates_all_keys_without_short_circuit(
@@ -851,10 +854,10 @@ def test_validate_api_key_iterates_all_keys_without_short_circuit(
     import secrets
     from supportpilot.api.main import validate_api_key
 
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[bytes, bytes]] = []
     real_compare = secrets.compare_digest
 
-    def tracking_compare(a: str, b: str) -> bool:
+    def tracking_compare(a: bytes, b: bytes) -> bool:
         calls.append((a, b))
         return real_compare(a, b)
 
@@ -862,9 +865,11 @@ def test_validate_api_key_iterates_all_keys_without_short_circuit(
 
     valid_keys = {"key-1", "key-2", "key-3"}
 
-    # Even though key-1 matches first, all 3 keys must be compared
+    # Even though key-1 matches first, all 3 keys must be compared as bytes
     assert validate_api_key("key-1", valid_keys) is True
     assert len(calls) == 3
+    assert isinstance(calls[0][0], bytes)
+    assert isinstance(calls[0][1], bytes)
 
     # For invalid key, all 3 keys are compared
     calls.clear()
@@ -880,14 +885,9 @@ def test_validate_api_key_iterates_all_keys_without_short_circuit(
 def test_get_api_key_dependency_validation() -> None:
     """Verify get_api_key dependency validates X-API-Key and raises 401."""
     from fastapi import Depends, FastAPI
-    from supportpilot.api.main import (
-        api_key_header,
-        get_api_key,
-        verify_api_key,
-    )
+    from supportpilot.api.main import api_key_header, get_api_key
 
     assert api_key_header.model.name == "X-API-Key"
-    assert verify_api_key is get_api_key
 
     test_sub_app = FastAPI()
     test_sub_app.state.api_keys = {"secret-123", "secret-456"}
@@ -1022,3 +1022,67 @@ def test_api_key_logging_short_hash_and_never_raw_key(
     assert any(f"api_key_hash={expected_bad_hash}" in msg for msg in messages_bad)
     for msg in messages_bad:
         assert secret_bad_key not in msg
+
+
+def test_non_ascii_api_key_returns_401_not_500() -> None:
+    """Verify non-ASCII key (e.g. 'é') returns 401 instead of crashing with 500 TypeError."""
+    from supportpilot.api.main import validate_api_key
+
+    # Direct unit validation test does not raise TypeError
+    valid_keys = {"test-key-1", "test-key-2"}
+    assert validate_api_key("é", valid_keys) is False
+    assert validate_api_key("secret-🔑", valid_keys) is False
+    assert validate_api_key("triage-üñîçødé", valid_keys) is False
+
+    # HTTP endpoint test via TestClient with raw byte header
+    with FastAPITestClient(app) as client:
+        initial_errors = app.state.counters.errors_total
+
+        # Non-ASCII key 'é' returns 401 Unauthorized, never 500
+        res = client.post(
+            "/triage",
+            headers=[(b"x-api-key", "é".encode("utf-8"))],
+            json={"ticket_id": "T-NONASCII-1", "body": "Need refund please"},
+        )
+        assert res.status_code == 401
+        assert res.json()["detail"] == "Unauthorized"
+
+        # Unicode emoji key returns 401 Unauthorized
+        res_emoji = client.post(
+            "/triage",
+            headers=[(b"x-api-key", "key-🔑".encode("utf-8"))],
+            json={"ticket_id": "T-NONASCII-2", "body": "Need refund please"},
+        )
+        assert res_emoji.status_code == 401
+        assert res_emoji.json()["detail"] == "Unauthorized"
+
+        # Verify errors_total was NOT incremented (401 is not a 5xx server crash)
+        assert app.state.counters.errors_total == initial_errors
+
+
+def test_no_key_with_invalid_body_returns_401_not_422() -> None:
+    """Verify unauthenticated request with invalid body returns 401, not 422.
+
+    Unauthenticated users must not learn validation rules before authenticating.
+    """
+    with FastAPITestClient(app) as unauth_client:
+        # Empty JSON payload
+        res_empty = unauth_client.post("/triage", json={})
+        assert res_empty.status_code == 401
+        assert res_empty.json()["detail"] == "Unauthorized"
+
+        # Invalid field types / empty required fields
+        res_bad_fields = unauth_client.post(
+            "/triage",
+            json={"ticket_id": "", "body": ""},
+        )
+        assert res_bad_fields.status_code == 401
+        assert res_bad_fields.json()["detail"] == "Unauthorized"
+
+        # Payload exceeding 10 KB limit
+        res_oversized = unauth_client.post(
+            "/triage",
+            json={"ticket_id": "T-1", "body": "a" * (MAX_BODY_BYTES + 100)},
+        )
+        assert res_oversized.status_code == 401
+        assert res_oversized.json()["detail"] == "Unauthorized"

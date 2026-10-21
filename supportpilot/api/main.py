@@ -94,9 +94,11 @@ def validate_api_key(
     if not valid_keys:
         return False
     candidate = api_key if isinstance(api_key, str) else ""
+    candidate_bytes = candidate.encode("utf-8")
     matched = False
     for expected_key in valid_keys:
-        if secrets.compare_digest(candidate, expected_key):
+        expected_bytes = expected_key.encode("utf-8")
+        if secrets.compare_digest(candidate_bytes, expected_bytes):
             matched = True
     return matched and bool(api_key)
 
@@ -135,9 +137,6 @@ def get_api_key(
         extra={"api_key_hash": key_hash},
     )
     return api_key  # type: ignore[return-value]
-
-
-verify_api_key = get_api_key
 
 
 class TriageRequest(BaseModel):
