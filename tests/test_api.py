@@ -19,11 +19,22 @@ import logging
 from pathlib import Path
 import uuid
 import pytest
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient as FastAPITestClient
 
 from supportpilot.api.main import MAX_BODY_BYTES, app
 from supportpilot.triage import LABELS
 from supportpilot.triage.model import train_model
+
+DEFAULT_AUTH_HEADERS = {"X-API-Key": "test-key-1"}
+
+
+class TestClient(FastAPITestClient):
+    """TestClient that includes default authentication headers for the app."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        if "headers" not in kwargs:
+            kwargs["headers"] = dict(DEFAULT_AUTH_HEADERS)
+        super().__init__(*args, **kwargs)
 
 
 # =====================================================================
@@ -910,3 +921,52 @@ def test_get_api_key_dependency_validation() -> None:
         )
         assert res_invalid.status_code == 401
         assert res_invalid.json()["detail"] == "Unauthorized"
+
+
+def test_endpoint_api_key_protection_routes() -> None:
+    """Verify API key protection is attached to /triage and /metrics only."""
+    with FastAPITestClient(app) as unauth_client:
+        # /health is public - works without API key
+        res_health = unauth_client.get("/health")
+        assert res_health.status_code == 200
+        assert res_health.json()["status"] == "ok"
+
+        # /metrics requires API key
+        res_metrics_unauth = unauth_client.get("/metrics")
+        assert res_metrics_unauth.status_code == 401
+        assert res_metrics_unauth.json()["detail"] == "Unauthorized"
+
+        res_metrics_bad_key = unauth_client.get(
+            "/metrics",
+            headers={"X-API-Key": "invalid-key-xyz"},
+        )
+        assert res_metrics_bad_key.status_code == 401
+        assert res_metrics_bad_key.json()["detail"] == "Unauthorized"
+
+        res_metrics_auth = unauth_client.get(
+            "/metrics",
+            headers={"X-API-Key": "test-key-1"},
+        )
+        assert res_metrics_auth.status_code == 200
+
+        # /triage requires API key
+        payload = {"ticket_id": "T-SEC-1", "body": "Where is my package?"}
+        res_triage_unauth = unauth_client.post("/triage", json=payload)
+        assert res_triage_unauth.status_code == 401
+        assert res_triage_unauth.json()["detail"] == "Unauthorized"
+
+        res_triage_bad_key = unauth_client.post(
+            "/triage",
+            headers={"X-API-Key": "invalid-key-xyz"},
+            json=payload,
+        )
+        assert res_triage_bad_key.status_code == 401
+        assert res_triage_bad_key.json()["detail"] == "Unauthorized"
+
+        res_triage_auth = unauth_client.post(
+            "/triage",
+            headers={"X-API-Key": "test-key-2"},
+            json=payload,
+        )
+        assert res_triage_auth.status_code == 200
+        assert res_triage_auth.json()["ticket_id"] == "T-SEC-1"

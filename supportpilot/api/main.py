@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response, Security
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, field_validator
 
@@ -259,7 +259,11 @@ def health(req: Request) -> dict[str, object]:
     return {"status": "ok", "model_loaded": model is not None}
 
 
-@app.get("/metrics", response_model=MetricsResponse)
+@app.get(
+    "/metrics",
+    response_model=MetricsResponse,
+    dependencies=[Depends(get_api_key)],
+)
 def get_metrics(req: Request) -> MetricsResponse:
     counters: Counters | None = getattr(req.app.state, "counters", None)
     if counters is None or counters.requests_total == 0:
@@ -287,7 +291,11 @@ def get_metrics(req: Request) -> MetricsResponse:
     )
 
 
-@app.post("/triage", response_model=TriageResponse)
+@app.post(
+    "/triage",
+    response_model=TriageResponse,
+    dependencies=[Depends(get_api_key)],
+)
 def triage(request: TriageRequest, req: Request) -> TriageResponse:
     start_time = time.perf_counter()
 
