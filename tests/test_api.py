@@ -426,3 +426,164 @@ def test_triage_logging_only_ticket_id_label_latency_and_never_body(
     assert "Help with shipping" not in msg
     for record in api_records:
         assert secret_body_text not in record.getMessage()
+
+
+# =====================================================================
+# 9. In-Memory Counters Tests (requests, errors, latency, needs_review)
+# =====================================================================
+
+
+def test_counters_initial_state() -> None:
+    """Verify in-memory counters start at zero upon service startup."""
+    with TestClient(app) as client:
+        res = client.get("/metrics")
+        assert res.status_code == 200
+        data = res.json()
+        assert data == {
+            "requests": 0,
+            "errors": 0,
+            "latency": 0.0,
+            "needs_review": 0,
+        }
+
+        # /stats alias returns identical counters
+        res_stats = client.get("/stats")
+        assert res_stats.status_code == 200
+        assert res_stats.json() == data
+
+        # app.state.counters contains the same values
+        assert app.state.counters["requests"] == 0
+        assert app.state.counters["errors"] == 0
+        assert app.state.counters["latency"] == 0.0
+        assert app.state.counters["needs_review"] == 0
+
+
+def test_counters_increment_requests_and_latency_on_success() -> None:
+    """Verify requests and cumulative latency increment on successful triage."""
+    with TestClient(app) as client:
+        payload = {
+            "ticket_id": "T-CTR-1",
+            "body": "Where is my ordered parcel?",
+        }
+        res1 = client.post("/triage", json=payload)
+        assert res1.status_code == 200
+
+        data1 = client.get("/metrics").json()
+        assert data1["requests"] == 1
+        assert data1["errors"] == 0
+        assert isinstance(data1["latency"], float)
+        assert data1["latency"] > 0.0
+
+        # Second request increments requests to 2 and accumulates latency
+        res2 = client.post(
+            "/triage",
+            json={"ticket_id": "T-CTR-2", "body": "Need refund on invoice"},
+        )
+        assert res2.status_code == 200
+
+        data2 = client.get("/metrics").json()
+        assert data2["requests"] == 2
+        assert data2["errors"] == 0
+        assert data2["latency"] >= data1["latency"]
+
+
+def test_counters_increment_needs_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify needs_review counter increments when prediction triggers review."""
+    monkeypatch.setenv("TRIAGE_THRESHOLD", "0.9999")
+    with TestClient(app) as client:
+        payload = {
+            "ticket_id": "T-CTR-NR",
+            "body": "Ambiguous support inquiry about multiple things",
+        }
+        res = client.post("/triage", json=payload)
+        assert res.status_code == 200
+        assert res.json()["needs_review"] is True
+
+        data = client.get("/metrics").json()
+        assert data["requests"] == 1
+        assert data["errors"] == 0
+        assert data["needs_review"] == 1
+
+
+def test_counters_increment_errors_on_422_validation() -> None:
+    """Verify 422 input validation errors increment both requests and errors."""
+    with TestClient(app) as client:
+        res = client.post("/triage", json={"ticket_id": "T-BAD", "body": ""})
+        assert res.status_code == 422
+
+        data = client.get("/metrics").json()
+        assert data["requests"] == 1
+        assert data["errors"] == 1
+        assert data["needs_review"] == 0
+
+
+def test_counters_increment_errors_on_413_payload_too_large() -> None:
+    """Verify 413 payload too large errors increment both requests and errors."""
+    with TestClient(app) as client:
+        res = client.post(
+            "/triage",
+            json={"ticket_id": "T-TOO-BIG", "body": "x" * (MAX_BODY_BYTES + 1)},
+        )
+        assert res.status_code == 413
+
+        data = client.get("/metrics").json()
+        assert data["requests"] == 1
+        assert data["errors"] == 1
+
+
+def test_counters_increment_errors_on_503_model_not_loaded() -> None:
+    """Verify 503 service unavailable increments both requests and errors."""
+    with TestClient(app) as client:
+        saved_model = app.state.model
+        try:
+            app.state.model = None
+            res = client.post(
+                "/triage",
+                json={"ticket_id": "T-UNAVAIL", "body": "Where is my item?"},
+            )
+            assert res.status_code == 503
+
+            data = client.get("/metrics").json()
+            assert data["requests"] == 1
+            assert data["errors"] == 1
+        finally:
+            app.state.model = saved_model
+
+
+def test_counters_excluded_paths_do_not_increment_metrics() -> None:
+    """Verify health and metric probe requests do not pollute counters."""
+    with TestClient(app) as client:
+        for _ in range(5):
+            res_health = client.get("/health")
+            assert res_health.status_code == 200
+
+        for _ in range(3):
+            client.get("/metrics")
+            client.get("/stats")
+
+        # Counters should still be completely unpolluted
+        data = client.get("/metrics").json()
+        assert data["requests"] == 0
+        assert data["errors"] == 0
+        assert data["latency"] == 0.0
+        assert data["needs_review"] == 0
+
+
+def test_counters_exact_output_contract() -> None:
+    """Verify exact 4-key output contract and types for counters."""
+    with TestClient(app) as client:
+        res = client.get("/metrics")
+        assert res.status_code == 200
+        data = res.json()
+        assert set(data.keys()) == {
+            "requests",
+            "errors",
+            "latency",
+            "needs_review",
+        }
+        assert isinstance(data["requests"], int)
+        assert isinstance(data["errors"], int)
+        assert isinstance(data["latency"], float)
+        assert isinstance(data["needs_review"], int)
