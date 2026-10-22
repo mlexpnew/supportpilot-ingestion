@@ -843,6 +843,11 @@ def test_live_accuracy_null_when_empty(tmp_path: Path) -> None:
     total, live_acc = store.get_live_accuracy()
     assert total == 0
     assert live_acc is None
+    assert live_acc != 0
+    # Serializes to JSON null, not 0
+    serialized = json.dumps({"feedback_total": total, "live_accuracy": live_acc})
+    assert json.loads(serialized) == {"feedback_total": 0, "live_accuracy": None}
+    assert serialized == '{"feedback_total": 0, "live_accuracy": null}'
 
 
 def test_zero_ticket_body_in_db(tmp_path: Path, auth_headers: dict[str, str]) -> None:
