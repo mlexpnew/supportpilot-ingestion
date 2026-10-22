@@ -672,6 +672,51 @@ def test_max_length_64_validation_for_ticket_and_agent_id(
         assert res_fb_ok.status_code == 200
 
 
+def test_numeric_ticket_and_agent_id_returns_422(
+    auth_headers: dict[str, str],
+) -> None:
+    """Verify numeric/non-string ticket_id and agent_id raise ValueError and return 422 (not 500) on both endpoints."""
+    # 1. Helper functions directly raise ValueError (not TypeError)
+    for bad_input in [123, 45.67, True, [1, 2], {"id": 1}]:
+        with pytest.raises(ValueError, match="ticket_id must be a string"):
+            normalize_ticket_id(bad_input)
+        with pytest.raises(ValueError, match="agent_id must be a string"):
+            normalize_agent_id(bad_input)
+
+    with TestClient(app) as client:
+        # 2. /triage with numeric ticket_id -> 422 (not 500)
+        res_triage_num = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": 123, "body": "Where is my parcel?"},
+        )
+        assert res_triage_num.status_code == 422
+
+        # 3. /feedback with numeric ticket_id -> 422 (not 500)
+        res_fb_num_tid = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": 123,
+                "correct_label": "delivery",
+                "agent_id": "AG-101",
+            },
+        )
+        assert res_fb_num_tid.status_code == 422
+
+        # 4. /feedback with numeric agent_id -> 422 (not 500)
+        res_fb_num_aid = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": "T-NUM-TEST",
+                "correct_label": "delivery",
+                "agent_id": 456,
+            },
+        )
+        assert res_fb_num_aid.status_code == 422
+
+
 def test_accuracy_math_known_numbers(tmp_path: Path) -> None:
     """Verify live accuracy calculation against exact known numbers."""
     db_file = tmp_path / "acc_math.db"

@@ -135,6 +135,12 @@ def test_triage_422_validation_errors() -> None:
         )
         assert res.status_code == 422
 
+        # Numeric ticket_id -> 422 (must be string; ValueError caught by Pydantic)
+        res = client.post(
+            "/triage", json={"ticket_id": 123, "body": "Where is my refund?"}
+        )
+        assert res.status_code == 422
+
         # Empty HTTP request payload -> 422
         res = client.post("/triage", content=b"")
         assert res.status_code == 422

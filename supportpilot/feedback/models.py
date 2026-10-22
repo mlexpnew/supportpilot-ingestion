@@ -12,7 +12,7 @@ MAX_ID_LENGTH: int = 64
 def normalize_ticket_id(v: object, max_length: int = MAX_ID_LENGTH) -> str:
     """Normalize and validate ticket_id: strip whitespace and enforce 1-64 char limits."""
     if not isinstance(v, str):
-        raise TypeError("ticket_id must be a string")
+        raise ValueError("ticket_id must be a string")  # noqa: TRY004
     s = v.strip()
     if not s:
         raise ValueError("ticket_id cannot be empty")
@@ -24,7 +24,7 @@ def normalize_ticket_id(v: object, max_length: int = MAX_ID_LENGTH) -> str:
 def normalize_agent_id(v: object, max_length: int = MAX_ID_LENGTH) -> str:
     """Normalize and validate agent_id: strip whitespace and enforce 1-64 char limits."""
     if not isinstance(v, str):
-        raise TypeError("agent_id must be a string")
+        raise ValueError("agent_id must be a string")  # noqa: TRY004
     s = v.strip()
     if not s:
         raise ValueError("agent_id cannot be empty")
