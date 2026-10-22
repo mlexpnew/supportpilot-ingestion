@@ -1679,3 +1679,53 @@ def test_rate_limit_triage_send_61_requests_last_gets_429() -> None:
         assert res_61.status_code == 429
         assert "Retry-After" in res_61.headers
         assert int(res_61.headers["Retry-After"]) >= 1
+
+
+# =====================================================================
+# Versioning Tests: model_version in both responses
+# =====================================================================
+
+
+def test_versioning_model_version_in_both_responses() -> None:
+    """Verify model_version is returned in both /health and /triage responses."""
+    with FastAPITestClient(app) as client:
+        # 1. /health response contains model_version
+        res_health = client.get("/health")
+        assert res_health.status_code == 200
+        health_data = res_health.json()
+        assert "model_version" in health_data
+        assert isinstance(health_data["model_version"], str)
+        assert re.match(
+            r"^triage-v\d+\.\d+\.\d+-\d{8}$", health_data["model_version"]
+        )
+
+        # 2. /triage response contains model_version
+        res_triage = client.post(
+            "/triage",
+            headers={"X-API-Key": "test-key-1"},
+            json={
+                "ticket_id": "T-VER-BOTH-1",
+                "subject": "Delivery tracking query",
+                "body": "Where is my delivery package?",
+            },
+        )
+        assert res_triage.status_code == 200
+        triage_data = res_triage.json()
+        assert "model_version" in triage_data
+        assert isinstance(triage_data["model_version"], str)
+        assert re.match(
+            r"^triage-v\d+\.\d+\.\d+-\d{8}$", triage_data["model_version"]
+        )
+
+        # 3. Both responses return identical model_version matching loaded model
+        assert health_data["model_version"] == triage_data["model_version"]
+        assert triage_data["model_version"] == app.state.model.version
+
+        # 4. /triage without subject also includes model_version
+        res_body_only = client.post(
+            "/triage",
+            headers={"X-API-Key": "test-key-2"},
+            json={"ticket_id": "T-VER-BOTH-2", "body": "Need refund status."},
+        )
+        assert res_body_only.status_code == 200
+        assert res_body_only.json()["model_version"] == health_data["model_version"]
