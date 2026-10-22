@@ -6,6 +6,7 @@ import math
 import os
 import re
 import secrets
+import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -18,6 +19,11 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, field_validator
 
+from supportpilot.feedback import (
+    FeedbackStore,
+    get_feedback_db_path,
+    init_db,
+)
 from supportpilot.preprocessing.redact import redact_text
 from supportpilot.triage.model import (
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -270,16 +276,38 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "Expected format triage-v<semver>-<YYYYMMDD>."
         )
 
+    feedback_db_path = get_feedback_db_path()
+    feedback_db_path.parent.mkdir(parents=True, exist_ok=True)
+    init_db(feedback_db_path)
+    db_conn = sqlite3.connect(
+        str(feedback_db_path),
+        timeout=10.0,
+        check_same_thread=False,
+    )
+    db_conn.row_factory = sqlite3.Row
+
+    app.state.feedback_db_path = feedback_db_path
+    app.state.db_path = feedback_db_path
+    app.state.feedback_db = db_conn
+    app.state.db = db_conn
+    app.state.feedback_store = FeedbackStore(feedback_db_path)
+
     app.state.model = loaded_model
     app.state.threshold = threshold
     app.state.counters = Counters()
     app.state.api_keys = get_api_keys()
     app.state.rate_limits = {}
     yield
+    db_conn.close()
     app.state.model = None
     app.state.threshold = None
     app.state.api_keys = set()
     app.state.rate_limits = {}
+    app.state.feedback_store = None
+    app.state.feedback_db_path = None
+    app.state.db_path = None
+    app.state.feedback_db = None
+    app.state.db = None
 
 
 app = FastAPI(
@@ -293,6 +321,11 @@ app = FastAPI(
 app.state.counters = Counters()
 app.state.api_keys = set()
 app.state.rate_limits = {}
+app.state.db = None
+app.state.feedback_db = None
+app.state.feedback_store = None
+app.state.feedback_db_path = None
+app.state.db_path = None
 
 
 @app.middleware("http")
@@ -453,6 +486,21 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
             "latency": latency,
             "api_key_hash": key_hash,
         },
+    )
+
+    # Record prediction in feedback store (Part A: zero body stored)
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        feedback_store = FeedbackStore(get_feedback_db_path())
+        req.app.state.feedback_store = feedback_store
+
+    feedback_store.save_prediction(
+        ticket_id=request.ticket_id,
+        predicted_label=result["label"],
+        confidence=result["confidence"],
+        model_version=model.version,
     )
 
     return TriageResponse(
