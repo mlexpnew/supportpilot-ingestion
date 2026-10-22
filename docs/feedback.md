@@ -15,6 +15,9 @@ The feedback subsystem uses an embedded SQLite database configured in Write-Ahea
 
 The database path is configured via the `FEEDBACK_DB_PATH` environment variable, defaulting to `data/feedback.db`.
 
+> [!WARNING]
+> **Render free-tier warning**: The SQLite file is wiped on every redeploy, so feedback is lost until we move to Postgres (Dev's note). Local container filesystems on Render's free tier are ephemeral (`FEEDBACK_DB_PATH`, defaulting to `data/feedback.db`), resetting database state upon restart or redeployment until migrated to Postgres.
+
 ### Database Schema
 
 ```sql
@@ -158,14 +161,13 @@ Aggregates live model accuracy alongside operational counters.
 Per-category performance breakdown based on human agent corrections. Protected by API key authentication (`X-API-Key`) and rate limiting dependencies.
 
 > [!NOTE]
-> **Recall Semantics**: Because feedback records are grouped by human ground truth (`correct_label`), this metric represents per-class **Recall** ($\text{TP} \div (\text{TP} + \text{FN})$): "of all true tickets for this class, how many did the model predict correctly?". The primary metric field is named `recall` (with `accuracy` maintained as a backward-compatible alias).
+> **Recall Semantics**: Because feedback records are grouped by human ground truth (`correct_label`), this metric represents per-class **Recall** ($\text{TP} \div (\text{TP} + \text{FN})$): "of all true tickets for this class, how many did the model predict correctly?". The metric field is named `recall`.
 
 **Response Schema:**
 Maps category labels (`delivery`, `billing`, `refund`, `cancellation`, `account`, `other`) to:
 - `total` (`int`): Number of feedback items received for this true category.
 - `agreed` (`int`): Number of predictions that matched agent correction.
 - `recall` (`float | null`): `agreed / total`, or `null` if `total == 0`.
-- `accuracy` (`float | null`): Alias for `recall`.
 
 **Example Response:**
 ```json
@@ -173,38 +175,32 @@ Maps category labels (`delivery`, `billing`, `refund`, `cancellation`, `account`
   "delivery": {
     "total": 20,
     "agreed": 18,
-    "recall": 0.9,
-    "accuracy": 0.9
+    "recall": 0.9
   },
   "billing": {
     "total": 10,
     "agreed": 8,
-    "recall": 0.8,
-    "accuracy": 0.8
+    "recall": 0.8
   },
   "refund": {
     "total": 10,
     "agreed": 9,
-    "recall": 0.9,
-    "accuracy": 0.9
+    "recall": 0.9
   },
   "cancellation": {
     "total": 0,
     "agreed": 0,
-    "recall": null,
-    "accuracy": null
+    "recall": null
   },
   "account": {
     "total": 0,
     "agreed": 0,
-    "recall": null,
-    "accuracy": null
+    "recall": null
   },
   "other": {
     "total": 0,
     "agreed": 0,
-    "recall": null,
-    "accuracy": null
+    "recall": null
   }
 }
 ```
@@ -226,3 +222,65 @@ python -m supportpilot.feedback export --output data/feedback_export.jsonl
 ```
 
 Exports are written atomically using a temporary file and renamed on completion to avoid partial writes.
+
+---
+
+## Retraining Join: Combining Feedback with Original Tickets
+
+### Retraining join: how to combine feedback_export.jsonl with the original redacted tickets by ticket_id
+
+To retrain the triage classifier using human feedback corrections, combine the exported `data/feedback_export.jsonl` with the original redacted tickets (`data/triage_labeled.jsonl`) by `ticket_id`.
+
+### Join Logic
+1. **Load Corrections**: Parse `data/feedback_export.jsonl` into a dictionary mapping `ticket_id -> correct_label`.
+2. **Override Labels**: Scan the original redacted dataset (`data/triage_labeled.jsonl`). For each ticket, if its `ticket_id` exists in the feedback dictionary, override its `label` with the human-verified `correct_label`.
+3. **Preserve Untouched Tickets**: Tickets with no feedback keep their original label.
+4. **Zero PII Introduced**: Because `feedback_export.jsonl` contains only `ticket_id` and `correct_label`, the join preserves the existing PII redaction of the source dataset.
+
+### Example Retraining Join Script (`scripts/join_retraining.py`)
+
+```python
+import json
+from pathlib import Path
+
+
+def join_feedback_for_retraining(
+    original_dataset: Path | str,
+    feedback_export: Path | str,
+    output_dataset: Path | str,
+) -> int:
+    """Join feedback_export.jsonl with original dataset on ticket_id."""
+    # 1. Load feedback corrections
+    corrections: dict[str, str] = {}
+    with open(feedback_export, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                item = json.loads(line)
+                corrections[item["ticket_id"]] = item["correct_label"]
+
+    # 2. Join with original tickets and write updated dataset
+    updated = 0
+    with (
+        open(original_dataset, "r", encoding="utf-8") as src,
+        open(output_dataset, "w", encoding="utf-8") as dst,
+    ):
+        for line in src:
+            if not line.strip():
+                continue
+            ticket = json.loads(line)
+            tid = ticket["ticket_id"]
+            if tid in corrections:
+                ticket["label"] = corrections[tid]
+                updated += 1
+            dst.write(json.dumps(ticket, ensure_ascii=False) + "\n")
+
+    return updated
+```
+
+### Triggering Model Retraining
+After joining the dataset, retrain the classifier:
+```bash
+python -m supportpilot.triage --train
+```
+> [!TIP]
+> **Rohan's Retraining Guideline**: *"If live_accuracy drops below 80%, we retrain."*

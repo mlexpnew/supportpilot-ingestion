@@ -749,38 +749,32 @@ def test_accuracy_math_known_numbers(tmp_path: Path) -> None:
         "total": 1,
         "agreed": 1,
         "recall": 1.0,
-        "accuracy": 1.0,
     }
     assert label_metrics["billing"] == {
         "total": 1,
         "agreed": 1,
         "recall": 1.0,
-        "accuracy": 1.0,
     }
     assert label_metrics["cancellation"] == {
         "total": 1,
         "agreed": 0,
         "recall": 0.0,
-        "accuracy": 0.0,
     }
     assert label_metrics["other"] == {
         "total": 1,
         "agreed": 0,
         "recall": 0.0,
-        "accuracy": 0.0,
     }
-    # Unused labels have total 0, recall None, accuracy None
+    # Unused labels have total 0, recall None
     assert label_metrics["refund"] == {
         "total": 0,
         "agreed": 0,
         "recall": None,
-        "accuracy": None,
     }
     assert label_metrics["account"] == {
         "total": 0,
         "agreed": 0,
         "recall": None,
-        "accuracy": None,
     }
 
     # Updating T3 feedback to match prediction changes agreed from 2 to 3 (3/4 = 0.75)
@@ -964,7 +958,7 @@ def test_metrics_labels_endpoint_per_label_accuracy(
         res_bad_auth = client.get("/metrics/labels", headers={"X-API-Key": "wrong-key"})
         assert res_bad_auth.status_code == 401
 
-        # 3. Initial state with valid auth: 200 OK, all LABELS present with recall=null, accuracy=null
+        # 3. Initial state with valid auth: 200 OK, all LABELS present with recall=null
         res_init = client.get("/metrics/labels", headers=auth_headers)
         assert res_init.status_code == 200
         data_init = res_init.json()
@@ -974,7 +968,6 @@ def test_metrics_labels_endpoint_per_label_accuracy(
                 "total": 0,
                 "agreed": 0,
                 "recall": None,
-                "accuracy": None,
             }
 
         # 4. Save predictions & feedbacks
@@ -993,21 +986,18 @@ def test_metrics_labels_endpoint_per_label_accuracy(
             "total": 1,
             "agreed": 1,
             "recall": 1.0,
-            "accuracy": 1.0,
         }
         assert data_after["cancellation"] == {
             "total": 1,
             "agreed": 0,
             "recall": 0.0,
-            "accuracy": 0.0,
         }
-        # Unused labels have total 0, recall null, accuracy null
+        # Unused labels have total 0, recall null
         for unused in ["billing", "refund", "account", "other"]:
             assert data_after[unused] == {
                 "total": 0,
                 "agreed": 0,
                 "recall": None,
-                "accuracy": None,
             }
 
 

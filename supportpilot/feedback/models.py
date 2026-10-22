@@ -84,4 +84,3 @@ class LabelMetric(BaseModel):
     total: int
     agreed: int
     recall: float | None = None
-    accuracy: float | None = None
