@@ -6,7 +6,6 @@ import math
 import os
 import re
 import secrets
-import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -19,12 +18,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, field_validator
 
-from supportpilot.feedback import (
-    FeedbackStore,
-    get_feedback_db_path,
-    init_db,
-)
+from supportpilot.feedback import FeedbackStore, get_feedback_db_path
 from supportpilot.preprocessing.redact import redact_text
+from supportpilot.triage import LABELS
 from supportpilot.triage.model import (
     DEFAULT_CONFIDENCE_THRESHOLD,
     DEFAULT_MODEL_PATH,
@@ -254,6 +250,43 @@ class MetricsResponse(BaseModel):
     rate_limited_total: int
 
 
+class FeedbackRequest(BaseModel):
+    ticket_id: str
+    correct_label: str
+    agent_id: str
+
+    @field_validator("ticket_id")
+    @classmethod
+    def validate_ticket_id(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("ticket_id cannot be empty")
+        return s
+
+    @field_validator("correct_label")
+    @classmethod
+    def validate_correct_label(cls, v: str) -> str:
+        s = v.strip().lower()
+        if s not in LABELS:
+            raise ValueError(f"Invalid correct_label '{v}'. Must be one of {LABELS}")
+        return s
+
+    @field_validator("agent_id")
+    @classmethod
+    def validate_agent_id(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("agent_id cannot be empty")
+        return s
+
+
+class FeedbackResponse(BaseModel):
+    status: str
+    ticket_id: str
+    correct_label: str
+    agent_id: str
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     model_file = get_model_path()
@@ -277,20 +310,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     feedback_db_path = get_feedback_db_path()
-    feedback_db_path.parent.mkdir(parents=True, exist_ok=True)
-    init_db(feedback_db_path)
-    db_conn = sqlite3.connect(
-        str(feedback_db_path),
-        timeout=10.0,
-        check_same_thread=False,
-    )
-    db_conn.row_factory = sqlite3.Row
-
-    app.state.feedback_db_path = feedback_db_path
-    app.state.db_path = feedback_db_path
-    app.state.feedback_db = db_conn
-    app.state.db = db_conn
-    app.state.feedback_store = FeedbackStore(feedback_db_path)
+    try:
+        app.state.feedback_store = FeedbackStore(feedback_db_path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to initialize feedback database at '{feedback_db_path}': {exc}"
+        ) from exc
 
     app.state.model = loaded_model
     app.state.threshold = threshold
@@ -298,16 +323,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.api_keys = get_api_keys()
     app.state.rate_limits = {}
     yield
-    db_conn.close()
     app.state.model = None
     app.state.threshold = None
     app.state.api_keys = set()
     app.state.rate_limits = {}
     app.state.feedback_store = None
-    app.state.feedback_db_path = None
-    app.state.db_path = None
-    app.state.feedback_db = None
-    app.state.db = None
 
 
 app = FastAPI(
@@ -321,11 +341,7 @@ app = FastAPI(
 app.state.counters = Counters()
 app.state.api_keys = set()
 app.state.rate_limits = {}
-app.state.db = None
-app.state.feedback_db = None
 app.state.feedback_store = None
-app.state.feedback_db_path = None
-app.state.db_path = None
 
 
 @app.middleware("http")
@@ -488,20 +504,28 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
         },
     )
 
-    # Record prediction in feedback store (Part A: zero body stored)
+    # Record prediction in feedback store (fail fast if not initialized)
     feedback_store: FeedbackStore | None = getattr(
         req.app.state, "feedback_store", None
     )
     if feedback_store is None:
-        feedback_store = FeedbackStore(get_feedback_db_path())
-        req.app.state.feedback_store = feedback_store
+        raise RuntimeError(
+            "Feedback store is not initialized. Service startup invariant violated."
+        )
 
-    feedback_store.save_prediction(
-        ticket_id=request.ticket_id,
-        predicted_label=result["label"],
-        confidence=result["confidence"],
-        model_version=model.version,
-    )
+    try:
+        feedback_store.save_prediction(
+            ticket_id=request.ticket_id,
+            predicted_label=result["label"],
+            confidence=result["confidence"],
+            model_version=model.version,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to save prediction for ticket_id=%s",
+            request.ticket_id,
+            extra={"ticket_id": request.ticket_id},
+        )
 
     return TriageResponse(
         ticket_id=request.ticket_id,
@@ -509,4 +533,46 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
         confidence=result["confidence"],
         needs_review=result["needs_review"],
         model_version=model.version,
+    )
+
+
+@app.post(
+    "/feedback",
+    response_model=FeedbackResponse,
+    dependencies=[Depends(rate_limit)],
+)
+def submit_feedback(
+    request: FeedbackRequest,
+    req: Request,
+) -> FeedbackResponse:
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError(
+            "Feedback store is not initialized. Service startup invariant violated."
+        )
+
+    try:
+        feedback_store.save_feedback(
+            ticket_id=request.ticket_id,
+            correct_label=request.correct_label,
+            agent_id=request.agent_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Ticket '{request.ticket_id}' has not been triaged.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    return FeedbackResponse(
+        status="ok",
+        ticket_id=request.ticket_id,
+        correct_label=request.correct_label,
+        agent_id=request.agent_id,
     )

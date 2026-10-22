@@ -10,3 +10,6 @@ models/
 .env*
 .secrets*
 *.key
+*.db
+*.db-wal
+*.db-shm

@@ -56,7 +56,7 @@ def main() -> int:
             }
             print(json.dumps(summary, ensure_ascii=False))
             return 0
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             print(f"Error exporting feedback: {exc}", file=sys.stderr)
             return 1
 

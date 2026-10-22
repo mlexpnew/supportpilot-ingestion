@@ -12,10 +12,11 @@ import json
 import os
 import sqlite3
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from supportpilot.triage import LABELS
 
@@ -60,8 +61,7 @@ def init_db(path: Path | str | None = None) -> Path:
         # WAL mode allows concurrent readers and a writer
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 ticket_id TEXT PRIMARY KEY,
                 predicted_label TEXT NOT NULL,
@@ -69,16 +69,12 @@ def init_db(path: Path | str | None = None) -> Path:
                 model_version TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
-            """
-        )
-        conn.execute(
-            """
+            """)
+        conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_predictions_predicted_label
             ON predictions(predicted_label);
-            """
-        )
-        conn.execute(
-            """
+            """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS feedback (
                 ticket_id TEXT PRIMARY KEY,
                 correct_label TEXT NOT NULL,
@@ -86,14 +82,11 @@ def init_db(path: Path | str | None = None) -> Path:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (ticket_id) REFERENCES predictions(ticket_id)
             );
-            """
-        )
-        conn.execute(
-            """
+            """)
+        conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_feedback_correct_label
             ON feedback(correct_label);
-            """
-        )
+            """)
         conn.commit()
     finally:
         conn.close()
@@ -147,7 +140,7 @@ class FeedbackStore:
         Zero-PII guarantee: ticket body and customer text are never stored.
         Uses parameterized query to prevent SQL injection.
         """
-        ts = created_at or datetime.now(timezone.utc).isoformat()
+        ts = created_at or datetime.now(UTC).isoformat()
         with self._get_connection() as conn:
             conn.execute(
                 """
@@ -204,7 +197,7 @@ class FeedbackStore:
                 f"Invalid correct_label '{correct_label}'. Must be one of {LABELS}"
             )
 
-        ts = created_at or datetime.now(timezone.utc).isoformat()
+        ts = created_at or datetime.now(UTC).isoformat()
         with self._get_connection() as conn:
             # Check existence of prediction first (Part B constraint)
             cursor = conn.execute(
@@ -252,15 +245,13 @@ class FeedbackStore:
             or None if feedback_total == 0.
         """
         with self._get_connection() as conn:
-            cursor = conn.execute(
-                """
+            cursor = conn.execute("""
                 SELECT
                     COUNT(f.ticket_id) AS total,
                     SUM(CASE WHEN p.predicted_label = f.correct_label THEN 1 ELSE 0 END) AS agreed
                 FROM feedback f
                 JOIN predictions p ON f.ticket_id = p.ticket_id;
-                """
-            )
+                """)
             row = cursor.fetchone()
             total = int(row["total"]) if row and row["total"] is not None else 0
             agreed = int(row["agreed"]) if row and row["agreed"] is not None else 0
@@ -278,8 +269,7 @@ class FeedbackStore:
             lbl: {"total": 0, "agreed": 0, "accuracy": None} for lbl in LABELS
         }
         with self._get_connection() as conn:
-            cursor = conn.execute(
-                """
+            cursor = conn.execute("""
                 SELECT
                     f.correct_label,
                     COUNT(f.ticket_id) AS total,
@@ -287,8 +277,7 @@ class FeedbackStore:
                 FROM feedback f
                 JOIN predictions p ON f.ticket_id = p.ticket_id
                 GROUP BY f.correct_label;
-                """
-            )
+                """)
             for row in cursor.fetchall():
                 lbl = row["correct_label"]
                 total = int(row["total"])
@@ -315,22 +304,22 @@ class FeedbackStore:
             prefix=".feedback_export_", suffix=".tmp", dir=str(out.parent)
         )
         try:
-            with open(tmp_fd, "w", encoding="utf-8") as f:
-                with self._get_connection() as conn:
-                    cursor = conn.execute(
-                        """
-                        SELECT ticket_id, correct_label
-                        FROM feedback
-                        ORDER BY created_at ASC;
-                        """
-                    )
-                    for row in cursor.fetchall():
-                        record = {
-                            "ticket_id": row["ticket_id"],
-                            "correct_label": row["correct_label"],
-                        }
-                        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                        count += 1
+            with (
+                open(tmp_fd, "w", encoding="utf-8") as f,
+                self._get_connection() as conn,
+            ):
+                cursor = conn.execute("""
+                    SELECT ticket_id, correct_label
+                    FROM feedback
+                    ORDER BY created_at ASC;
+                    """)
+                for row in cursor.fetchall():
+                    record = {
+                        "ticket_id": row["ticket_id"],
+                        "correct_label": row["correct_label"],
+                    }
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    count += 1
             os.replace(tmp_file, out)
         except Exception:
             if os.path.exists(tmp_file):
