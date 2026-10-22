@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 import uuid
 import pytest
 from fastapi.testclient import TestClient as FastAPITestClient
@@ -49,7 +50,7 @@ def test_health() -> None:
         data = response.json()
         assert data["status"] == "ok"
         assert data["model_loaded"] is True
-        assert data["model_version"] == "1.0.0"
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
 
 
 # =====================================================================
@@ -79,7 +80,7 @@ def test_happy_path_with_subject_and_body() -> None:
         assert isinstance(data["confidence"], float)
         assert data["confidence"] > 0.0
         assert isinstance(data["needs_review"], bool)
-        assert data["model_version"] == "1.0.0"
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
 
 
 def test_happy_path_with_body_only() -> None:
@@ -102,7 +103,7 @@ def test_happy_path_with_body_only() -> None:
         assert data["label"] in LABELS
         assert isinstance(data["confidence"], float)
         assert isinstance(data["needs_review"], bool)
-        assert data["model_version"] == "1.0.0"
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
 
 
 # =====================================================================
@@ -188,7 +189,7 @@ def test_triage_email_in_body_never_echoed_back() -> None:
             "model_version",
         }
         assert data["ticket_id"] == "T-EMAIL-LEAK-TEST"
-        assert data["model_version"] == "1.0.0"
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
         assert sensitive_email not in response.text
         assert "customer.confidential" not in response.text
 
@@ -221,7 +222,7 @@ def test_triage_pii_never_echoed_back() -> None:
         }
         assert data["ticket_id"] == "T-PII-ZERO-LEAK"
         assert data["label"] in LABELS
-        assert data["model_version"] == "1.0.0"
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
 
         raw_text = response.text
         assert sensitive_email not in raw_text
@@ -1467,7 +1468,7 @@ def test_health_and_triage_model_version_contract() -> None:
         assert res_health.status_code == 200
         health_data = res_health.json()
         assert "model_version" in health_data
-        assert health_data["model_version"] == "1.0.0"
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", health_data["model_version"])
 
         # /triage contract
         res_triage = client.post(
@@ -1477,7 +1478,8 @@ def test_health_and_triage_model_version_contract() -> None:
         assert res_triage.status_code == 200
         triage_data = res_triage.json()
         assert "model_version" in triage_data
-        assert triage_data["model_version"] == "1.0.0"
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", triage_data["model_version"])
+        assert health_data["model_version"] == triage_data["model_version"]
         assert set(triage_data.keys()) == {
             "ticket_id",
             "label",
@@ -1485,3 +1487,47 @@ def test_health_and_triage_model_version_contract() -> None:
             "needs_review",
             "model_version",
         }
+
+
+def test_startup_fails_fast_on_broken_model_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Startup must fail if model version is broken or missing (no silent fallback)."""
+    import joblib
+    from supportpilot.triage.model import TriageClassifier
+
+    broken_model_path = tmp_path / "broken_model.joblib"
+    clf = TriageClassifier()
+    joblib.dump(
+        {
+            "pipeline": clf.pipeline,
+            "version": "1.0.0",  # Legacy format without triage-v prefix and date
+            "metadata": {
+                "version": "1.0.0",
+                "training_date": "2026-10-22",
+                "dataset_size": 180,
+                "macro_f1": 0.85,
+                "labels": list(LABELS),
+            },
+        },
+        broken_model_path,
+    )
+    monkeypatch.setenv("TRIAGE_MODEL_PATH", str(broken_model_path))
+    monkeypatch.setenv("TRIAGE_API_KEYS", "test-key-1")
+
+    with pytest.raises(ValueError, match="Broken or invalid model version"):
+        with TestClient(app):
+            pass
+
+
+def test_triage_fails_fast_if_model_version_missing() -> None:
+    """If model version is missing, /triage must fail fast and not lie."""
+    with TestClient(app) as client:
+        # Intentionally tamper with model version to None
+        client.app.state.model.version = None
+        res = client.post(
+            "/triage",
+            json={"ticket_id": "T-FAIL-1", "body": "Where is my parcel?"},
+        )
+        assert res.status_code == 500
+        assert "Model version is missing" in res.json()["detail"]

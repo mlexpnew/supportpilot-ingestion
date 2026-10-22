@@ -597,12 +597,14 @@ def test_cli_stdout_is_empty_or_one_json_line(tmp_path, capsys):
 
 
 def test_model_metadata_version_date_size_macro_f1(tmp_path):
-    """Verify metadata is saved and loaded with the model: version, date, size, macro F1."""
+    """Verify metadata is saved and loaded: version, date, size, F1, labels."""
     import re
+    from datetime import datetime, timezone
     from supportpilot.triage.model import (
         DEFAULT_MODEL_VERSION,
         TriageClassifier,
         train_model,
+        is_valid_model_version,
     )
 
     model_file = tmp_path / "versioned_model.joblib"
@@ -612,14 +614,24 @@ def test_model_metadata_version_date_size_macro_f1(tmp_path):
     assert model_file.exists()
     assert sidecar_json.exists()
 
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_compact = today_str.replace("-", "")
+    expected_version = f"triage-v2.1.0-{today_compact}"
+
     # 1. In-memory metadata
-    assert clf.version == "2.1.0"
+    assert clf.version == expected_version
+    assert is_valid_model_version(clf.version)
     meta = clf.metadata
-    assert meta["version"] == "2.1.0"
-    assert re.match(r"^\d{4}-\d{2}-\d{2}$", meta["training_date"])
+    assert meta["version"] == expected_version
+    assert meta["training_date"] == today_str
     assert meta["dataset_size"] == 180
     assert isinstance(meta["macro_f1"], float)
-    assert 0.0 <= meta["macro_f1"] <= 1.0
+    # Cross-validated macro F1 is around 0.8471, not inflated ~1.0 memorization
+    assert 0.80 <= meta["macro_f1"] <= 0.90
+    assert "labels" in meta
+    assert isinstance(meta["labels"], list)
+    for lbl in LABELS:
+        assert lbl in meta["labels"]
 
     # 2. Sidecar JSON content
     with open(sidecar_json, "r", encoding="utf-8") as f:
@@ -628,15 +640,75 @@ def test_model_metadata_version_date_size_macro_f1(tmp_path):
 
     # 3. Reloaded model from .joblib
     reloaded = TriageClassifier.load(model_file)
-    assert reloaded.version == "2.1.0"
+    assert reloaded.version == expected_version
     assert reloaded.metadata == meta
     assert reloaded.predict("Where is my parcel?") == "delivery"
 
-    # 4. Legacy model fallback (raw pipeline without metadata dict)
+    # 4. Fail-fast tests: missing metadata, missing version, broken format
     import joblib
 
-    legacy_file = tmp_path / "legacy_model.joblib"
-    joblib.dump(clf.pipeline, legacy_file)
-    legacy_loaded = TriageClassifier.load(legacy_file)
-    assert legacy_loaded.version == DEFAULT_MODEL_VERSION
-    assert legacy_loaded.predict("Where is my parcel?") == "delivery"
+    # Raw pipeline without metadata dictionary must fail fast
+    raw_pipeline_file = tmp_path / "raw_pipeline.joblib"
+    joblib.dump(clf.pipeline, raw_pipeline_file)
+    with pytest.raises(ValueError, match="expected serialized dictionary"):
+        TriageClassifier.load(raw_pipeline_file)
+
+    # Missing metadata dict must fail fast
+    no_meta_file = tmp_path / "no_meta.joblib"
+    joblib.dump({"pipeline": clf.pipeline}, no_meta_file)
+    with pytest.raises(ValueError, match="Missing or invalid 'metadata'"):
+        TriageClassifier.load(no_meta_file)
+
+    # Missing version in metadata must fail fast
+    no_version_file = tmp_path / "no_version.joblib"
+    joblib.dump(
+        {
+            "pipeline": clf.pipeline,
+            "metadata": {
+                "training_date": today_str,
+                "dataset_size": 180,
+                "macro_f1": 0.85,
+                "labels": list(LABELS),
+            },
+        },
+        no_version_file,
+    )
+    with pytest.raises(ValueError, match="Missing 'version'"):
+        TriageClassifier.load(no_version_file)
+
+    # Broken version format (e.g. legacy '1.0.0' without triage-v prefix and date)
+    broken_ver_file = tmp_path / "broken_ver.joblib"
+    joblib.dump(
+        {
+            "pipeline": clf.pipeline,
+            "version": "1.0.0",
+            "metadata": {
+                "version": "1.0.0",
+                "training_date": today_str,
+                "dataset_size": 180,
+                "macro_f1": 0.85,
+                "labels": list(LABELS),
+            },
+        },
+        broken_ver_file,
+    )
+    with pytest.raises(ValueError, match="Broken or invalid model version"):
+        TriageClassifier.load(broken_ver_file)
+
+    # Missing labels in metadata must fail fast
+    no_labels_file = tmp_path / "no_labels.joblib"
+    joblib.dump(
+        {
+            "pipeline": clf.pipeline,
+            "version": expected_version,
+            "metadata": {
+                "version": expected_version,
+                "training_date": today_str,
+                "dataset_size": 180,
+                "macro_f1": 0.85,
+            },
+        },
+        no_labels_file,
+    )
+    with pytest.raises(ValueError, match="Missing or invalid 'labels'"):
+        TriageClassifier.load(no_labels_file)

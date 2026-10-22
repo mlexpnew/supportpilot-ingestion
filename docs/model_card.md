@@ -4,7 +4,7 @@
 
 - **Model Name**: SupportPilot Ticket Triage Classifier
 - **Ticket**: SP-105
-- **Version**: 1.0.0
+- **Version**: triage-v1.0.0-YYYYMMDD (e.g. `triage-v1.0.0-20261022`)
 - **Model Type**: Supervised Multi-Class Text Classifier
 - **Architecture**: Scikit-learn Pipeline
   - **Feature Extraction**: `TfidfVectorizer(ngram_range=(1, 2), sublinear_tf=True, min_df=1, strip_accents="unicode")`

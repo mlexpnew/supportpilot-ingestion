@@ -48,7 +48,8 @@ def process_triage_file(
                 classifier = train_model(dataset_path, save_path=m_path)
             else:
                 raise FileNotFoundError(
-                    f"Model file not found at {m_path} and dataset data/triage_labeled.jsonl is missing."
+                    f"Model file not found at {m_path} and "
+                    "dataset data/triage_labeled.jsonl is missing."
                 )
 
     counts: dict[str, int] = {label: 0 for label in LABELS}
@@ -177,7 +178,10 @@ def main() -> int:
         "--data",
         type=Path,
         default=Path("data/triage_labeled.jsonl"),
-        help="Dataset path for training or evaluation (default: data/triage_labeled.jsonl).",
+        help=(
+            "Dataset path for training or evaluation "
+            "(default: data/triage_labeled.jsonl)."
+        ),
     )
     parser.add_argument(
         "--evaluate",
@@ -223,8 +227,10 @@ def main() -> int:
         )
         elapsed = round(time.monotonic() - start_time, 4)
         print(
-            f"Triage model (v{clf.version}) trained on {args.data} "
-            f"(size={clf.metadata.get('dataset_size')}, macro_f1={clf.metadata.get('macro_f1')}) "
+            f"Triage model ({clf.version}) trained on {args.data} "
+            f"(size={clf.metadata.get('dataset_size')}, "
+            f"macro_f1={clf.metadata.get('macro_f1')}, "
+            f"labels={clf.metadata.get('labels')}) "
             f"and saved to {args.model_path} in {elapsed}s."
         )
         return 0

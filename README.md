@@ -32,7 +32,7 @@ docker run -d --name supportpilot-api -p 8000:8000 supportpilot-api:latest
 
 # 3. Verify the healthcheck endpoint
 curl http://localhost:8000/health
-# {"status":"ok","model_loaded":true,"model_version":"1.0.0"}
+# {"status":"ok","model_loaded":true,"model_version":"triage-v1.0.0-20261022"}
 
 # 4. Classify an inbound support ticket
 curl -X POST http://localhost:8000/triage \

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import collections
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any, Sequence
 
 import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.pipeline import Pipeline
 
 from . import LABELS
@@ -18,6 +21,86 @@ from . import LABELS
 DEFAULT_MODEL_PATH = Path("models/triage_model.joblib")
 DEFAULT_CONFIDENCE_THRESHOLD: float = 0.35
 DEFAULT_MODEL_VERSION: str = "1.0.0"
+MODEL_VERSION_PATTERN = re.compile(r"^triage-v\d+\.\d+\.\d+-\d{8}$")
+
+
+def is_valid_model_version(version: str | None) -> bool:
+    """Validate model version string against format triage-v<semver>-<YYYYMMDD>."""
+    if not version or not isinstance(version, str):
+        return False
+    return bool(MODEL_VERSION_PATTERN.fullmatch(version.strip()))
+
+
+def format_model_version(version: str, training_date: str) -> str:
+    """Build model version adhering to format triage-v<semver>-<YYYYMMDD>.
+
+    Args:
+        version: Semantic or version string (e.g. '1.0.0', 'v1.0.0').
+        training_date: ISO date string 'YYYY-MM-DD' or compact 'YYYYMMDD'.
+
+    Returns:
+        Formatted version string 'triage-v<semver>-<YYYYMMDD>'.
+    """
+    cleaned_date = training_date.replace("-", "").strip()
+    if is_valid_model_version(version):
+        return version.strip()
+
+    v_str = version.strip()
+    if v_str.startswith("triage-"):
+        v_str = v_str[len("triage-") :]
+    if v_str.startswith("v"):
+        v_str = v_str[1:]
+
+    semver_match = re.match(r"^(\d+\.\d+\.\d+)", v_str)
+    semver = semver_match.group(1) if semver_match else "1.0.0"
+
+    return f"triage-v{semver}-{cleaned_date}"
+
+
+def compute_cv_macro_f1(
+    pipeline: Pipeline,
+    texts: Sequence[str],
+    labels: Sequence[str],
+    val_texts: Sequence[str] | None = None,
+    val_labels: Sequence[str] | None = None,
+    macro_f1: float | None = None,
+    n_splits: int = 5,
+) -> float:
+    """Compute held-out or cross-validated macro F1 score.
+
+    Avoids evaluating on training data to prevent memorization score inflation.
+    """
+    if macro_f1 is not None:
+        return round(float(macro_f1), 4)
+
+    if val_texts is not None and val_labels is not None:
+        if len(val_texts) == 0:
+            return 0.0
+        preds = pipeline.predict(val_texts)
+        return round(
+            float(f1_score(val_labels, preds, average="macro", zero_division=0)),
+            4,
+        )
+
+    counts = collections.Counter(labels)
+    min_samples = min(counts.values()) if counts else 0
+    splits = min(n_splits, min_samples)
+
+    if splits >= 2 and len(counts) >= 2:
+        cv = StratifiedKFold(n_splits=splits, shuffle=True, random_state=42)
+        scores = cross_val_score(
+            pipeline,
+            texts,
+            labels,
+            cv=cv,
+            scoring="f1_macro",
+        )
+        return round(float(scores.mean()), 4)
+
+    preds = pipeline.predict(texts)
+    return round(
+        float(f1_score(labels, preds, average="macro", zero_division=0)), 4
+    )
 
 
 def load_dataset(path: Path | str) -> tuple[list[str], list[str], list[str]]:
@@ -71,17 +154,18 @@ class TriageClassifier:
         else:
             self.pipeline = self._build_pipeline()
         self.confidence_threshold: float = confidence_threshold
-        self.version: str = version
-        self.metadata: dict[str, Any] = (
-            dict(metadata)
-            if metadata is not None
-            else {
+        if metadata is not None:
+            self.metadata: dict[str, Any] = dict(metadata)
+            self.version: str = metadata.get("version", version)
+        else:
+            self.version = version
+            self.metadata = {
                 "version": version,
                 "training_date": None,
                 "dataset_size": 0,
                 "macro_f1": 0.0,
+                "labels": [],
             }
-        )
         self._is_fitted: bool = False
 
     @staticmethod
@@ -114,27 +198,38 @@ class TriageClassifier:
         texts: Sequence[str],
         labels: Sequence[str],
         version: str | None = None,
+        val_texts: Sequence[str] | None = None,
+        val_labels: Sequence[str] | None = None,
+        macro_f1: float | None = None,
     ) -> TriageClassifier:
-        """Fit the pipeline on training texts and labels, computing metadata."""
+        """Fit pipeline on training data and compute held-out/CV metadata."""
         if not texts or not labels:
             raise ValueError("Training data cannot be empty.")
-        if version is not None:
-            self.version = version
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        base_version = version if version is not None else self.version
+        self.version = format_model_version(base_version, today_str)
 
         self.pipeline.fit(texts, labels)
         self._is_fitted = True
 
-        preds = self.predict_batch(texts)
-        macro_f1 = round(
-            float(f1_score(labels, preds, average="macro", zero_division=0)), 4
+        computed_f1 = compute_cv_macro_f1(
+            pipeline=self.pipeline,
+            texts=texts,
+            labels=labels,
+            val_texts=val_texts,
+            val_labels=val_labels,
+            macro_f1=macro_f1,
         )
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        trained_labels = [str(c) for c in self.pipeline.classes_]
 
         self.metadata = {
             "version": self.version,
             "training_date": today_str,
             "dataset_size": len(texts),
-            "macro_f1": macro_f1,
+            "macro_f1": computed_f1,
+            "labels": trained_labels,
         }
         return self
 
@@ -193,7 +288,8 @@ class TriageClassifier:
         Returns:
             Dictionary containing:
                 - 'label': predicted category string from LABELS
-                - 'confidence': predicted probability float (rounded to 4 decimal places)
+                - 'confidence': predicted probability float (rounded to
+                  4 decimal places)
                 - 'needs_review': boolean flag indicating low confidence
         """
         th = self.confidence_threshold if threshold is None else threshold
@@ -220,6 +316,15 @@ class TriageClassifier:
         """Serialize and save the trained pipeline and metadata to disk."""
         target_path = Path(path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not is_valid_model_version(self.version):
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            self.version = format_model_version(self.version, today_str)
+            self.metadata["version"] = self.version
+
+        if self._is_fitted and not self.metadata.get("labels"):
+            self.metadata["labels"] = [str(c) for c in self.pipeline.classes_]
+
         payload = {
             "pipeline": self.pipeline,
             "metadata": self.metadata,
@@ -227,44 +332,59 @@ class TriageClassifier:
         }
         joblib.dump(payload, target_path)
 
-        # Also write sidecar JSON metadata
+        # Also write sidecar JSON metadata (strict error propagation)
         meta_path = target_path.with_suffix(".json")
-        try:
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(self.metadata, f, indent=2)
-        except OSError:
-            pass
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(self.metadata, f, indent=2)
 
         return target_path
 
     @classmethod
     def load(cls, path: Path | str) -> TriageClassifier:
-        """Load a trained pipeline and metadata from disk."""
+        """Load a trained pipeline and metadata from disk.
+
+        Fails fast if file is missing, corrupted, or lacks metadata/version.
+        """
         source_path = Path(path)
         if not source_path.exists():
             raise FileNotFoundError(f"Model file not found: {source_path}")
+
         loaded = joblib.load(source_path)
 
-        if isinstance(loaded, dict) and "pipeline" in loaded:
-            pipeline = loaded["pipeline"]
-            metadata = loaded.get("metadata", {})
-            version = loaded.get("version") or metadata.get(
-                "version", DEFAULT_MODEL_VERSION
+        if not isinstance(loaded, dict) or "pipeline" not in loaded:
+            raise ValueError(
+                f"Invalid model file format in '{source_path}': "
+                "expected serialized dictionary containing 'pipeline' and 'metadata'."
             )
-        else:
-            pipeline = loaded
-            meta_path = source_path.with_suffix(".json")
-            if meta_path.exists():
-                try:
-                    with open(meta_path, "r", encoding="utf-8") as f:
-                        metadata = json.load(f)
-                except Exception:
-                    metadata = {}
-            else:
-                metadata = {}
-            version = metadata.get("version", DEFAULT_MODEL_VERSION)
 
-        classifier = cls(pipeline=pipeline, version=version, metadata=metadata)
+        metadata = loaded.get("metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError(
+                f"Missing or invalid 'metadata' in model file '{source_path}'."
+            )
+
+        version = loaded.get("version") or metadata.get("version")
+        if not version or not isinstance(version, str):
+            raise ValueError(
+                f"Missing 'version' in model file '{source_path}'."
+            )
+
+        if not is_valid_model_version(version):
+            raise ValueError(
+                f"Broken or invalid model version '{version}' in '{source_path}'. "
+                "Expected format 'triage-v<semver>-<YYYYMMDD>'."
+            )
+
+        if "labels" not in metadata or not isinstance(metadata["labels"], list):
+            raise ValueError(
+                f"Missing or invalid 'labels' in metadata of '{source_path}'."
+            )
+
+        classifier = cls(
+            pipeline=loaded["pipeline"],
+            version=version,
+            metadata=metadata,
+        )
         classifier._is_fitted = True
         return classifier
 
@@ -273,6 +393,9 @@ def train_model(
     data_path: Path | str = "data/triage_labeled.jsonl",
     save_path: Path | str | None = None,
     version: str = DEFAULT_MODEL_VERSION,
+    val_texts: Sequence[str] | None = None,
+    val_labels: Sequence[str] | None = None,
+    macro_f1: float | None = None,
 ) -> TriageClassifier:
     """Helper function to load dataset, train classifier, and optionally save.
 
@@ -280,13 +403,23 @@ def train_model(
         data_path: Path to training data JSONL.
         save_path: Optional path to save serialized model.
         version: Version string for the model (default: 1.0.0).
+        val_texts: Optional held-out validation texts.
+        val_labels: Optional held-out validation labels.
+        macro_f1: Optional pre-computed macro F1 score.
 
     Returns:
         Trained TriageClassifier instance.
     """
     _, texts, labels = load_dataset(data_path)
     classifier = TriageClassifier(version=version)
-    classifier.fit(texts, labels, version=version)
+    classifier.fit(
+        texts,
+        labels,
+        version=version,
+        val_texts=val_texts,
+        val_labels=val_labels,
+        macro_f1=macro_f1,
+    )
 
     if save_path:
         classifier.save(save_path)

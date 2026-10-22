@@ -23,6 +23,7 @@ from supportpilot.triage.model import (
     DEFAULT_CONFIDENCE_THRESHOLD,
     DEFAULT_MODEL_PATH,
     TriageClassifier,
+    is_valid_model_version,
 )
 
 MAX_BODY_BYTES: int = 10 * 1024  # 10 KB limit
@@ -260,6 +261,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     loaded_model = TriageClassifier.load(model_file)
     loaded_model.confidence_threshold = threshold
 
+    if not getattr(loaded_model, "version", None) or not is_valid_model_version(
+        loaded_model.version
+    ):
+        model_ver = getattr(loaded_model, "version", None)
+        raise ValueError(
+            f"Invalid or missing model version '{model_ver}' in {model_file}. "
+            "Expected format triage-v<semver>-<YYYYMMDD>."
+        )
+
     app.state.model = loaded_model
     app.state.threshold = threshold
     app.state.counters = Counters()
@@ -445,7 +455,10 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
         },
     )
 
-    model_version = getattr(model, "version", "1.0.0")
+    model_version = getattr(model, "version", None)
+    if not model_version:
+        raise HTTPException(status_code=500, detail="Model version is missing")
+
     return TriageResponse(
         ticket_id=request.ticket_id,
         label=result["label"],
