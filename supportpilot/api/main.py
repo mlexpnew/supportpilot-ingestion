@@ -537,6 +537,18 @@ def submit_feedback(
             detail=str(exc),
         ) from exc
 
+    logger.info(
+        "ticket_id=%s agent_id=%s agreed=%s",
+        request.ticket_id,
+        request.agent_id,
+        result["agreed"],
+        extra={
+            "ticket_id": request.ticket_id,
+            "agent_id": request.agent_id,
+            "agreed": result["agreed"],
+        },
+    )
+
     return FeedbackResponse(
         ticket_id=result["ticket_id"],
         correct_label=result["correct_label"],

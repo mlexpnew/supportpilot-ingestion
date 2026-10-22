@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import sys
 from pathlib import Path
@@ -238,6 +239,49 @@ def test_feedback_response_contract(auth_headers: dict[str, str]) -> None:
             "predicted_label": "delivery",
             "agreed": False,
         }
+
+
+def test_feedback_logging_ticket_id_agent_id_agreed_only(
+    auth_headers: dict[str, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify POST /feedback logs only ticket_id, agent_id, and agreed."""
+    with (
+        caplog.at_level(logging.INFO, logger="supportpilot.api.main"),
+        TestClient(app) as client,
+    ):
+        client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": "T-LOG-1", "body": "Where is my parcel delivery?"},
+        )
+
+        caplog.clear()
+
+        res = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": "T-LOG-1",
+                "correct_label": "delivery",
+                "agent_id": "agent-sana",
+            },
+        )
+        assert res.status_code == 200
+
+    feedback_records = [
+        r
+        for r in caplog.records
+        if r.name == "supportpilot.api.main" and "ticket_id=T-LOG-1" in r.getMessage()
+    ]
+    assert len(feedback_records) == 1
+    msg = feedback_records[0].getMessage()
+    assert "ticket_id=T-LOG-1" in msg
+    assert "agent_id=agent-sana" in msg
+    assert "agreed=True" in msg
+
+    # Verify no ticket body, PII, or raw labels leaked in this message
+    assert "Where is my parcel delivery?" not in msg
 
 
 def test_retriage_after_feedback_preserves_original_prediction(
