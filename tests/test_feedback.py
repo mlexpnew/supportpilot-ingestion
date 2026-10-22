@@ -36,6 +36,7 @@ from supportpilot.feedback import (
     normalize_ticket_id,
 )
 from supportpilot.feedback.__main__ import main as cli_main
+from supportpilot.triage import LABELS
 
 
 def test_init_db_creates_both_tables_and_indices(tmp_path: Path) -> None:
@@ -929,6 +930,63 @@ def test_metrics_endpoint_includes_feedback_total_and_live_accuracy(
         data2 = res_after_fb2.json()
         assert data2["feedback_total"] == 2
         assert data2["live_accuracy"] == 0.50
+
+
+def test_metrics_labels_endpoint_per_label_accuracy(
+    tmp_path: Path, auth_headers: dict[str, str]
+) -> None:
+    """Verify GET /metrics/labels returns per-label accuracy protected by API key."""
+    db_file = tmp_path / "metrics_labels_test.db"
+    store = FeedbackStore(db_file)
+
+    with TestClient(app) as client:
+        app.state.feedback_store = store
+
+        # 1. Auth protection: No key -> 401
+        res_no_auth = client.get("/metrics/labels", headers={})
+        assert res_no_auth.status_code == 401
+
+        # 2. Auth protection: Invalid key -> 401
+        res_bad_auth = client.get("/metrics/labels", headers={"X-API-Key": "wrong-key"})
+        assert res_bad_auth.status_code == 401
+
+        # 3. Initial state with valid auth: 200 OK, all LABELS present with accuracy=null
+        res_init = client.get("/metrics/labels", headers=auth_headers)
+        assert res_init.status_code == 200
+        data_init = res_init.json()
+        assert set(data_init.keys()) == set(LABELS)
+        for lbl in LABELS:
+            assert data_init[lbl] == {"total": 0, "agreed": 0, "accuracy": None}
+
+        # 4. Save predictions & feedbacks
+        # T1: predicted delivery, feedback delivery (agreed)
+        # T2: predicted billing, feedback cancellation (disagreed)
+        store.save_prediction("T1", "delivery", 0.9, "v1")
+        store.save_prediction("T2", "billing", 0.8, "v1")
+        store.save_feedback("T1", "delivery", "AG-101")
+        store.save_feedback("T2", "cancellation", "AG-102")
+
+        res_after = client.get("/metrics/labels", headers=auth_headers)
+        assert res_after.status_code == 200
+        data_after = res_after.json()
+
+        assert data_after["delivery"] == {
+            "total": 1,
+            "agreed": 1,
+            "accuracy": 1.0,
+        }
+        assert data_after["cancellation"] == {
+            "total": 1,
+            "agreed": 0,
+            "accuracy": 0.0,
+        }
+        # Unused labels have total 0, accuracy null
+        for unused in ["billing", "refund", "account", "other"]:
+            assert data_after[unused] == {
+                "total": 0,
+                "agreed": 0,
+                "accuracy": None,
+            }
 
 
 def test_zero_ticket_body_in_db(tmp_path: Path, auth_headers: dict[str, str]) -> None:

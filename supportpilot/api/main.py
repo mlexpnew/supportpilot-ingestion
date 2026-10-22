@@ -23,6 +23,7 @@ from supportpilot.feedback import (
     FeedbackRequest,
     FeedbackResponse,
     FeedbackStore,
+    LabelMetric,
     get_feedback_db_path,
     normalize_ticket_id,
 )
@@ -44,6 +45,7 @@ REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 EXCLUDED_METRIC_PATHS: set[str] = {
     "/health",
     "/metrics",
+    "/metrics/labels",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -432,6 +434,22 @@ def get_metrics(req: Request) -> MetricsResponse:
         feedback_total=feedback_total,
         live_accuracy=live_accuracy,
     )
+
+
+@app.get(
+    "/metrics/labels",
+    response_model=dict[str, LabelMetric],
+    dependencies=[Depends(get_api_key), Depends(rate_limit)],
+)
+def get_label_metrics(req: Request) -> dict[str, Any]:
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError(
+            "Feedback store is not initialized. Service startup invariant violated."
+        )
+    return feedback_store.get_label_metrics()
 
 
 @app.post(

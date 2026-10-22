@@ -4,6 +4,7 @@ from .models import (
     MAX_ID_LENGTH,
     FeedbackRequest,
     FeedbackResponse,
+    LabelMetric,
     normalize_agent_id,
     normalize_ticket_id,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "FeedbackRequest",
     "FeedbackResponse",
     "FeedbackStore",
+    "LabelMetric",
     "get_feedback_db_path",
     "get_feedback_store",
     "init_db",

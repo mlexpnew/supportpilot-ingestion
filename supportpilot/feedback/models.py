@@ -76,3 +76,11 @@ class FeedbackResponse(BaseModel):
     correct_label: str
     predicted_label: str
     agreed: bool
+
+
+class LabelMetric(BaseModel):
+    """Per-label accuracy metric model."""
+
+    total: int
+    agreed: int
+    accuracy: float | None = None
