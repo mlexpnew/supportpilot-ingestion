@@ -18,9 +18,13 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, field_validator
 
-from supportpilot.feedback import FeedbackStore, get_feedback_db_path
+from supportpilot.feedback import (
+    FeedbackRequest,
+    FeedbackResponse,
+    FeedbackStore,
+    get_feedback_db_path,
+)
 from supportpilot.preprocessing.redact import redact_text
-from supportpilot.triage import LABELS
 from supportpilot.triage.model import (
     DEFAULT_CONFIDENCE_THRESHOLD,
     DEFAULT_MODEL_PATH,
@@ -248,43 +252,6 @@ class MetricsResponse(BaseModel):
     avg_latency_ms: float
     needs_review_rate: float
     rate_limited_total: int
-
-
-class FeedbackRequest(BaseModel):
-    ticket_id: str
-    correct_label: str
-    agent_id: str
-
-    @field_validator("ticket_id")
-    @classmethod
-    def validate_ticket_id(cls, v: str) -> str:
-        s = v.strip()
-        if not s:
-            raise ValueError("ticket_id cannot be empty")
-        return s
-
-    @field_validator("correct_label")
-    @classmethod
-    def validate_correct_label(cls, v: str) -> str:
-        s = v.strip().lower()
-        if s not in LABELS:
-            raise ValueError(f"Invalid correct_label '{v}'. Must be one of {LABELS}")
-        return s
-
-    @field_validator("agent_id")
-    @classmethod
-    def validate_agent_id(cls, v: str) -> str:
-        s = v.strip()
-        if not s:
-            raise ValueError("agent_id cannot be empty")
-        return s
-
-
-class FeedbackResponse(BaseModel):
-    status: str
-    ticket_id: str
-    correct_label: str
-    agent_id: str
 
 
 @asynccontextmanager

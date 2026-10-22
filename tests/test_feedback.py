@@ -26,7 +26,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from supportpilot.api.main import app
-from supportpilot.feedback import FeedbackStore, init_db
+from supportpilot.feedback import FeedbackRequest, FeedbackStore, init_db
 from supportpilot.feedback.__main__ import main as cli_main
 
 
@@ -347,6 +347,38 @@ def test_feedback_invalid_label_422(
             },
         )
         assert res_empty_agent.status_code == 422
+
+
+def test_feedback_request_pydantic_model() -> None:
+    """Verify FeedbackRequest Pydantic model contract and field validation."""
+    req = FeedbackRequest(
+        ticket_id="T-999",
+        correct_label="delivery",
+        agent_id="agent-sana",
+    )
+    assert req.ticket_id == "T-999"
+    assert req.correct_label == "delivery"
+    assert req.agent_id == "agent-sana"
+
+    # Case normalization
+    req_upper = FeedbackRequest(
+        ticket_id="T-999",
+        correct_label="DELIVERY",
+        agent_id="agent-sana",
+    )
+    assert req_upper.correct_label == "delivery"
+
+    # Validation errors
+    with pytest.raises(ValueError, match="ticket_id cannot be empty"):
+        FeedbackRequest(ticket_id="   ", correct_label="delivery", agent_id="agent-1")
+
+    with pytest.raises(ValueError, match="agent_id cannot be empty"):
+        FeedbackRequest(ticket_id="T-1", correct_label="delivery", agent_id="   ")
+
+    with pytest.raises(ValueError, match="Invalid correct_label"):
+        FeedbackRequest(
+            ticket_id="T-1", correct_label="invalid_label", agent_id="agent-1"
+        )
 
 
 def test_accuracy_math_known_numbers(tmp_path: Path) -> None:
