@@ -1039,7 +1039,7 @@ def test_api_key_logging_short_hash_and_never_raw_key(
 
 
 def test_non_ascii_api_key_returns_401_not_500() -> None:
-    """Verify non-ASCII key (e.g. 'é') returns 401 instead of crashing with 500 TypeError."""
+    """Verify non-ASCII key (e.g. 'é') returns 401 instead of crashing with 500."""
     from supportpilot.api.main import validate_api_key
 
     # Direct unit validation test does not raise TypeError
@@ -1518,3 +1518,13 @@ def test_startup_fails_fast_on_broken_model_version(
     with pytest.raises(ValueError, match="Broken or invalid model version"):
         with TestClient(app):
             pass
+
+
+def test_conftest_fixture_sets_test_keys_via_env_var(test_keys: list[str]) -> None:
+    """Verify conftest fixture sets test keys via TRIAGE_API_KEYS env var (Part D)."""
+    import os
+
+    env_val = os.getenv("TRIAGE_API_KEYS")
+    assert env_val is not None
+    for key in test_keys:
+        assert key in env_val
