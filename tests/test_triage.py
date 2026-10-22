@@ -600,10 +600,8 @@ def test_cli_stdout_is_empty_or_one_json_line(tmp_path, capsys):
 
 def test_model_metadata_version_date_size_macro_f1(tmp_path):
     """Verify metadata is saved and loaded: version, date, size, F1, labels."""
-    import re
     from datetime import datetime, timezone
     from supportpilot.triage.model import (
-        DEFAULT_MODEL_VERSION,
         TriageClassifier,
         train_model,
         is_valid_model_version,

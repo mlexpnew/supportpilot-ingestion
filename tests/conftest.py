@@ -39,4 +39,3 @@ def test_keys() -> list[str]:
 def auth_headers() -> dict[str, str]:
     """Provide default authentication headers with a valid test key."""
     return {"X-API-Key": "test-key-1"}
-

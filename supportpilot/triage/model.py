@@ -370,9 +370,7 @@ class TriageClassifier:
 
         version = loaded.get("version") or metadata.get("version")
         if not version or not isinstance(version, str):
-            raise ValueError(
-                f"Missing 'version' in model file '{source_path}'."
-            )
+            raise ValueError(f"Missing 'version' in model file '{source_path}'.")
 
         if not is_valid_model_version(version):
             raise ValueError(

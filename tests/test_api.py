@@ -1695,9 +1695,7 @@ def test_versioning_model_version_in_both_responses() -> None:
         health_data = res_health.json()
         assert "model_version" in health_data
         assert isinstance(health_data["model_version"], str)
-        assert re.match(
-            r"^triage-v\d+\.\d+\.\d+-\d{8}$", health_data["model_version"]
-        )
+        assert re.match(r"^triage-v\d+\.\d+\.\d+-\d{8}$", health_data["model_version"])
 
         # 2. /triage response contains model_version
         res_triage = client.post(
@@ -1713,9 +1711,7 @@ def test_versioning_model_version_in_both_responses() -> None:
         triage_data = res_triage.json()
         assert "model_version" in triage_data
         assert isinstance(triage_data["model_version"], str)
-        assert re.match(
-            r"^triage-v\d+\.\d+\.\d+-\d{8}$", triage_data["model_version"]
-        )
+        assert re.match(r"^triage-v\d+\.\d+\.\d+-\d{8}$", triage_data["model_version"])
 
         # 3. Both responses return identical model_version matching loaded model
         assert health_data["model_version"] == triage_data["model_version"]
@@ -1728,9 +1724,7 @@ def test_versioning_model_version_in_both_responses() -> None:
             json={"ticket_id": "T-VER-BOTH-2", "body": "Need refund status."},
         )
         assert res_body_only.status_code == 200
-        assert (
-            res_body_only.json()["model_version"] == health_data["model_version"]
-        )
+        assert res_body_only.json()["model_version"] == health_data["model_version"]
 
 
 # =====================================================================
