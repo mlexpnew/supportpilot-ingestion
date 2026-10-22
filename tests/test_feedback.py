@@ -768,6 +768,27 @@ def test_accuracy_math_known_numbers(tmp_path: Path) -> None:
         "accuracy": None,
     }
 
+    # Updating T3 feedback to match prediction changes agreed from 2 to 3 (3/4 = 0.75)
+    store.save_feedback("T3", "refund", "a2")
+    total, live_acc = store.get_live_accuracy()
+    assert total == 4
+    assert live_acc == 0.75
+
+    # Updating T4 feedback to match prediction changes agreed to 4 (4/4 = 1.0)
+    store.save_feedback("T4", "account", "a2")
+    total, live_acc = store.get_live_accuracy()
+    assert total == 4
+    assert live_acc == 1.0
+
+    # Updating all feedback to disagree changes agreed to 0 (0/4 = 0.0)
+    store.save_feedback("T1", "billing", "a1")
+    store.save_feedback("T2", "delivery", "a1")
+    store.save_feedback("T3", "delivery", "a1")
+    store.save_feedback("T4", "delivery", "a1")
+    total, live_acc = store.get_live_accuracy()
+    assert total == 4
+    assert live_acc == 0.0
+
 
 def test_join_feedback_with_predictions_on_ticket_id(tmp_path: Path) -> None:
     """Verify join feedback with predictions on ticket_id (SP-110 Part C)."""
