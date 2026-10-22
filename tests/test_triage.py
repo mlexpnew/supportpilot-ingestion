@@ -594,3 +594,49 @@ def test_cli_stdout_is_empty_or_one_json_line(tmp_path, capsys):
     assert len(predict_stdout_lines) == 1
     predict_data = json.loads(predict_stdout_lines[0])
     assert predict_data["label"] == "delivery"
+
+
+def test_model_metadata_version_date_size_macro_f1(tmp_path):
+    """Verify metadata is saved and loaded with the model: version, date, size, macro F1."""
+    import re
+    from supportpilot.triage.model import (
+        DEFAULT_MODEL_VERSION,
+        TriageClassifier,
+        train_model,
+    )
+
+    model_file = tmp_path / "versioned_model.joblib"
+    sidecar_json = tmp_path / "versioned_model.json"
+
+    clf = train_model(DATASET_PATH, save_path=model_file, version="2.1.0")
+    assert model_file.exists()
+    assert sidecar_json.exists()
+
+    # 1. In-memory metadata
+    assert clf.version == "2.1.0"
+    meta = clf.metadata
+    assert meta["version"] == "2.1.0"
+    assert re.match(r"^\d{4}-\d{2}-\d{2}$", meta["training_date"])
+    assert meta["dataset_size"] == 180
+    assert isinstance(meta["macro_f1"], float)
+    assert 0.0 <= meta["macro_f1"] <= 1.0
+
+    # 2. Sidecar JSON content
+    with open(sidecar_json, "r", encoding="utf-8") as f:
+        json_meta = json.load(f)
+    assert json_meta == meta
+
+    # 3. Reloaded model from .joblib
+    reloaded = TriageClassifier.load(model_file)
+    assert reloaded.version == "2.1.0"
+    assert reloaded.metadata == meta
+    assert reloaded.predict("Where is my parcel?") == "delivery"
+
+    # 4. Legacy model fallback (raw pipeline without metadata dict)
+    import joblib
+
+    legacy_file = tmp_path / "legacy_model.joblib"
+    joblib.dump(clf.pipeline, legacy_file)
+    legacy_loaded = TriageClassifier.load(legacy_file)
+    assert legacy_loaded.version == DEFAULT_MODEL_VERSION
+    assert legacy_loaded.predict("Where is my parcel?") == "delivery"

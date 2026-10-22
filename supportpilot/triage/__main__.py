@@ -184,6 +184,12 @@ def main() -> int:
         action="store_true",
         help="Run benchmark evaluation comparing Rule vs ML classifiers.",
     )
+    parser.add_argument(
+        "--model-version",
+        type=str,
+        default="1.0.0",
+        help="Version string for the trained model (default: 1.0.0).",
+    )
 
     args = parser.parse_args()
 
@@ -210,10 +216,16 @@ def main() -> int:
     # Mode 2: Train model
     if args.train:
         start_time = time.monotonic()
-        train_model(args.data, save_path=args.model_path)
+        clf = train_model(
+            args.data,
+            save_path=args.model_path,
+            version=args.model_version,
+        )
         elapsed = round(time.monotonic() - start_time, 4)
         print(
-            f"Triage model trained on {args.data} and saved to {args.model_path} in {elapsed}s."
+            f"Triage model (v{clf.version}) trained on {args.data} "
+            f"(size={clf.metadata.get('dataset_size')}, macro_f1={clf.metadata.get('macro_f1')}) "
+            f"and saved to {args.model_path} in {elapsed}s."
         )
         return 0
 

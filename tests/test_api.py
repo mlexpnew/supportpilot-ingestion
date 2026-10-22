@@ -49,6 +49,7 @@ def test_health() -> None:
         data = response.json()
         assert data["status"] == "ok"
         assert data["model_loaded"] is True
+        assert data["model_version"] == "1.0.0"
 
 
 # =====================================================================
@@ -71,12 +72,14 @@ def test_happy_path_with_subject_and_body() -> None:
             "label",
             "confidence",
             "needs_review",
+            "model_version",
         }
         assert data["ticket_id"] == "T-1001"
         assert data["label"] in LABELS
         assert isinstance(data["confidence"], float)
         assert data["confidence"] > 0.0
         assert isinstance(data["needs_review"], bool)
+        assert data["model_version"] == "1.0.0"
 
 
 def test_happy_path_with_body_only() -> None:
@@ -93,11 +96,13 @@ def test_happy_path_with_body_only() -> None:
             "label",
             "confidence",
             "needs_review",
+            "model_version",
         }
         assert data["ticket_id"] == "T-1002"
         assert data["label"] in LABELS
         assert isinstance(data["confidence"], float)
         assert isinstance(data["needs_review"], bool)
+        assert data["model_version"] == "1.0.0"
 
 
 # =====================================================================
@@ -180,8 +185,10 @@ def test_triage_email_in_body_never_echoed_back() -> None:
             "label",
             "confidence",
             "needs_review",
+            "model_version",
         }
         assert data["ticket_id"] == "T-EMAIL-LEAK-TEST"
+        assert data["model_version"] == "1.0.0"
         assert sensitive_email not in response.text
         assert "customer.confidential" not in response.text
 
@@ -210,9 +217,11 @@ def test_triage_pii_never_echoed_back() -> None:
             "label",
             "confidence",
             "needs_review",
+            "model_version",
         }
         assert data["ticket_id"] == "T-PII-ZERO-LEAK"
         assert data["label"] in LABELS
+        assert data["model_version"] == "1.0.0"
 
         raw_text = response.text
         assert sensitive_email not in raw_text
@@ -1448,3 +1457,31 @@ def test_rate_limit_dependency_standalone() -> None:
         res3 = client.get("/guarded", headers={"X-API-Key": "sub-key-1"})
         assert res3.status_code == 429
         assert "Retry-After" in res3.headers
+
+
+def test_health_and_triage_model_version_contract() -> None:
+    """Verify model_version is returned in /health and every /triage response."""
+    with TestClient(app) as client:
+        # /health contract
+        res_health = client.get("/health")
+        assert res_health.status_code == 200
+        health_data = res_health.json()
+        assert "model_version" in health_data
+        assert health_data["model_version"] == "1.0.0"
+
+        # /triage contract
+        res_triage = client.post(
+            "/triage",
+            json={"ticket_id": "T-VER-1", "body": "Need delivery tracking info"},
+        )
+        assert res_triage.status_code == 200
+        triage_data = res_triage.json()
+        assert "model_version" in triage_data
+        assert triage_data["model_version"] == "1.0.0"
+        assert set(triage_data.keys()) == {
+            "ticket_id",
+            "label",
+            "confidence",
+            "needs_review",
+            "model_version",
+        }

@@ -235,6 +235,7 @@ class TriageResponse(BaseModel):
     label: str
     confidence: float
     needs_review: bool
+    model_version: str
 
 
 class MetricsResponse(BaseModel):
@@ -352,7 +353,12 @@ async def request_id_middleware(request: Request, call_next: Any) -> Response:
 @app.get("/health")
 def health(req: Request) -> dict[str, object]:
     model = getattr(req.app.state, "model", None)
-    return {"status": "ok", "model_loaded": model is not None}
+    version = getattr(model, "version", None) if model is not None else None
+    return {
+        "status": "ok",
+        "model_loaded": model is not None,
+        "model_version": version,
+    }
 
 
 @app.get(
@@ -439,9 +445,11 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
         },
     )
 
+    model_version = getattr(model, "version", "1.0.0")
     return TriageResponse(
         ticket_id=request.ticket_id,
         label=result["label"],
         confidence=result["confidence"],
         needs_review=result["needs_review"],
+        model_version=model_version,
     )

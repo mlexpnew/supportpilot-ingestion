@@ -70,7 +70,7 @@ curl -i http://localhost:8000/health
 ```
 Expected response (`HTTP 200 OK`):
 ```json
-{"status":"ok","model_loaded":true}
+{"status":"ok","model_loaded":true,"model_version":"1.0.0"}
 ```
 
 ### Testing Triage Prediction
@@ -85,7 +85,8 @@ Expected response:
   "ticket_id": "T-TEST-1",
   "label": "delivery",
   "confidence": 0.3172,
-  "needs_review": true
+  "needs_review": true,
+  "model_version": "1.0.0"
 }
 ```
 
