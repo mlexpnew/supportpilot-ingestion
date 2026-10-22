@@ -97,13 +97,17 @@ Submit or update human agent corrections for a triaged ticket.
 
 - **Authentication**: Requires valid API key via `X-API-Key` header (same as `/triage`).
 - **Rate Limiting**: Enforces the standard 60 req/min rolling window limit.
+- **Identifier Constraints**: `ticket_id` and `agent_id` are normalized by stripping whitespace and enforced with a `max_length=64` limit (consistent with ingestion).
+
+> [!NOTE]
+> `agent_id` must be an opaque ID (e.g. `AG-102`, a code with no personal info), not an email or a name, because it’s logged.
 
 **Request Body:**
 ```json
 {
   "ticket_id": "T-10492",
   "correct_label": "delivery",
-  "agent_id": "agent-sana"
+  "agent_id": "AG-102"
 }
 ```
 

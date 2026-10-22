@@ -16,13 +16,15 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from supportpilot.feedback import (
+    MAX_ID_LENGTH,
     FeedbackRequest,
     FeedbackResponse,
     FeedbackStore,
     get_feedback_db_path,
+    normalize_ticket_id,
 )
 from supportpilot.preprocessing.redact import redact_text
 from supportpilot.triage.model import (
@@ -213,16 +215,14 @@ def rate_limit(
 
 
 class TriageRequest(BaseModel):
-    ticket_id: str
+    ticket_id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
     subject: str | None = None
     body: str
 
-    @field_validator("ticket_id")
+    @field_validator("ticket_id", mode="before")
     @classmethod
-    def validate_ticket_id(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("ticket_id cannot be empty")
-        return v
+    def validate_ticket_id(cls, v: object) -> str:
+        return normalize_ticket_id(v)
 
     @field_validator("body")
     @classmethod

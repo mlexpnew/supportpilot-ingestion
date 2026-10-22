@@ -27,7 +27,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from supportpilot.api.main import app
-from supportpilot.feedback import FeedbackRequest, FeedbackStore, init_db
+from supportpilot.feedback import (
+    MAX_ID_LENGTH,
+    FeedbackRequest,
+    FeedbackStore,
+    init_db,
+    normalize_agent_id,
+    normalize_ticket_id,
+)
 from supportpilot.feedback.__main__ import main as cli_main
 
 
@@ -542,6 +549,127 @@ def test_feedback_request_pydantic_model() -> None:
         FeedbackRequest(
             ticket_id="T-1", correct_label="invalid_label", agent_id="agent-1"
         )
+
+
+def test_consistent_ticket_id_normalization_between_triage_and_feedback(
+    auth_headers: dict[str, str],
+) -> None:
+    """Verify triage strips ticket_id spaces consistently with feedback (no 404 on ' T1')."""
+    with TestClient(app) as client:
+        # Helpdesk sends ticket_id with leading/trailing spaces to triage
+        res_triage = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": "  T-SPACES-1  ", "body": "Where is my package?"},
+        )
+        assert res_triage.status_code == 200
+        # Response ticket_id is normalized/stripped
+        assert res_triage.json()["ticket_id"] == "T-SPACES-1"
+
+        # Stored prediction is normalized
+        stored = app.state.feedback_store.get_prediction("T-SPACES-1")
+        assert stored is not None
+        assert stored["ticket_id"] == "T-SPACES-1"
+
+        # Feedback looks up without spaces or with spaces -> both succeed!
+        res_fb1 = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": "T-SPACES-1",
+                "correct_label": "delivery",
+                "agent_id": "AG-101",
+            },
+        )
+        assert res_fb1.status_code == 200
+        assert res_fb1.json()["ticket_id"] == "T-SPACES-1"
+
+        # Feedback sent with extra spaces also resolves to the same ticket
+        res_fb2 = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": "   T-SPACES-1   ",
+                "correct_label": "delivery",
+                "agent_id": "AG-102",
+            },
+        )
+        assert res_fb2.status_code == 200
+        assert res_fb2.json()["ticket_id"] == "T-SPACES-1"
+
+
+def test_max_length_64_validation_for_ticket_and_agent_id(
+    auth_headers: dict[str, str],
+) -> None:
+    """Verify ticket_id and agent_id reject lengths over 64 characters with 422."""
+    valid_64_id = "T" + "x" * 63
+    too_long_65_id = "T" + "x" * 64
+    valid_64_agent = "A" + "y" * 63
+    too_long_65_agent = "A" + "y" * 64
+
+    # 1. Shared helper functions directly
+    assert MAX_ID_LENGTH == 64
+    assert len(normalize_ticket_id(valid_64_id)) == 64
+    assert len(normalize_agent_id(valid_64_agent)) == 64
+
+    with pytest.raises(ValueError, match="exceeds maximum length"):
+        normalize_ticket_id(too_long_65_id)
+
+    with pytest.raises(ValueError, match="exceeds maximum length"):
+        normalize_agent_id(too_long_65_agent)
+
+    with TestClient(app) as client:
+        # 2. /triage rejects ticket_id > 64 chars
+        res_triage_toolong = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": too_long_65_id, "body": "Need order help."},
+        )
+        assert res_triage_toolong.status_code == 422
+
+        # 3. /triage accepts 64-char ticket_id
+        res_triage_ok = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": valid_64_id, "body": "Need order help."},
+        )
+        assert res_triage_ok.status_code == 200
+
+        # 4. /feedback rejects ticket_id > 64 chars
+        res_fb_tid_toolong = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": too_long_65_id,
+                "correct_label": "delivery",
+                "agent_id": "AG-101",
+            },
+        )
+        assert res_fb_tid_toolong.status_code == 422
+
+        # 5. /feedback rejects agent_id > 64 chars
+        res_fb_agent_toolong = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": valid_64_id,
+                "correct_label": "delivery",
+                "agent_id": too_long_65_agent,
+            },
+        )
+        assert res_fb_agent_toolong.status_code == 422
+
+        # 6. /feedback accepts 64-char ticket_id and 64-char agent_id
+        res_fb_ok = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": valid_64_id,
+                "correct_label": "delivery",
+                "agent_id": valid_64_agent,
+            },
+        )
+        assert res_fb_ok.status_code == 200
 
 
 def test_accuracy_math_known_numbers(tmp_path: Path) -> None:

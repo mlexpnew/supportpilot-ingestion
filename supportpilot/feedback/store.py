@@ -20,6 +20,8 @@ from typing import Any
 
 from supportpilot.triage import LABELS
 
+from .models import normalize_agent_id, normalize_ticket_id
+
 DEFAULT_DB_PATH = Path("data/feedback.db")
 
 
@@ -140,6 +142,7 @@ class FeedbackStore:
         Zero-PII guarantee: ticket body and customer text are never stored.
         Uses parameterized query to prevent SQL injection.
         """
+        ticket_id = normalize_ticket_id(ticket_id)
         ts = created_at or datetime.now(UTC).isoformat()
         with self._get_connection() as conn:
             conn.execute(
@@ -160,6 +163,7 @@ class FeedbackStore:
 
     def get_prediction(self, ticket_id: str) -> dict[str, Any] | None:
         """Fetch prediction record by ticket_id."""
+        ticket_id = normalize_ticket_id(ticket_id)
         with self._get_connection() as conn:
             cursor = conn.execute(
                 """
@@ -176,6 +180,7 @@ class FeedbackStore:
 
     def has_prediction(self, ticket_id: str) -> bool:
         """Check whether a prediction exists for ticket_id."""
+        ticket_id = normalize_ticket_id(ticket_id)
         with self._get_connection() as conn:
             cursor = conn.execute(
                 "SELECT 1 FROM predictions WHERE ticket_id = ? LIMIT 1;",
@@ -189,12 +194,15 @@ class FeedbackStore:
         correct_label: str,
         agent_id: str,
         created_at: str | None = None,
-    ) -> bool:
+    ) -> dict[str, Any]:
         """Record or update human agent feedback for a triaged ticket.
 
         If ticket_id was never triaged, raises KeyError (maps to HTTP 404).
         Duplicate feedback for the same ticket_id updates the existing row.
         """
+        ticket_id = normalize_ticket_id(ticket_id)
+        agent_id = normalize_agent_id(agent_id)
+
         if correct_label not in LABELS:
             raise ValueError(
                 f"Invalid correct_label '{correct_label}'. Must be one of {LABELS}"
@@ -234,6 +242,7 @@ class FeedbackStore:
 
     def get_feedback(self, ticket_id: str) -> dict[str, Any] | None:
         """Fetch feedback record by ticket_id."""
+        ticket_id = normalize_ticket_id(ticket_id)
         with self._get_connection() as conn:
             cursor = conn.execute(
                 """
