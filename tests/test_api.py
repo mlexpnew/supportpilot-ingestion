@@ -1528,3 +1528,79 @@ def test_conftest_fixture_sets_test_keys_via_env_var(test_keys: list[str]) -> No
     assert env_val is not None
     for key in test_keys:
         assert key in env_val
+
+
+# =====================================================================
+# Auth Tests: no key, wrong key, valid key, and /health without a key
+# =====================================================================
+
+
+def test_auth_no_key_returns_401() -> None:
+    """Verify request with no API key returns 401 Unauthorized."""
+    with FastAPITestClient(app) as client:
+        # 1. /triage without key
+        res_triage = client.post(
+            "/triage",
+            json={"ticket_id": "T-NOKEY", "body": "Where is my parcel?"},
+        )
+        assert res_triage.status_code == 401
+        assert res_triage.json() == {"detail": "Unauthorized"}
+
+        # 2. /metrics without key
+        res_metrics = client.get("/metrics")
+        assert res_metrics.status_code == 401
+        assert res_metrics.json() == {"detail": "Unauthorized"}
+
+
+def test_auth_wrong_key_returns_401() -> None:
+    """Verify request with wrong API key returns 401 Unauthorized."""
+    with FastAPITestClient(app) as client:
+        # 1. /triage with invalid key
+        res_triage = client.post(
+            "/triage",
+            headers={"X-API-Key": "invalid-wrong-key-secret"},
+            json={"ticket_id": "T-WRONGKEY", "body": "Where is my parcel?"},
+        )
+        assert res_triage.status_code == 401
+        assert res_triage.json() == {"detail": "Unauthorized"}
+
+        # 2. /metrics with invalid key
+        res_metrics = client.get(
+            "/metrics",
+            headers={"X-API-Key": "invalid-wrong-key-secret"},
+        )
+        assert res_metrics.status_code == 401
+        assert res_metrics.json() == {"detail": "Unauthorized"}
+
+
+def test_auth_valid_key_returns_200(test_keys: list[str]) -> None:
+    """Verify request with valid API key returns 200 OK."""
+    with FastAPITestClient(app) as client:
+        # 1. /triage with valid key 1
+        res_triage = client.post(
+            "/triage",
+            headers={"X-API-Key": test_keys[0]},
+            json={"ticket_id": "T-VALIDKEY", "body": "Where is my parcel?"},
+        )
+        assert res_triage.status_code == 200
+        assert res_triage.json()["label"] == "delivery"
+
+        # 2. /metrics with valid key 2
+        res_metrics = client.get(
+            "/metrics",
+            headers={"X-API-Key": test_keys[1]},
+        )
+        assert res_metrics.status_code == 200
+        assert "requests_total" in res_metrics.json()
+
+
+def test_auth_health_without_key_returns_200() -> None:
+    """Verify /health is public and succeeds without an API key."""
+    with FastAPITestClient(app) as client:
+        # Request /health without any X-API-Key header
+        response = client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["model_loaded"] is True
+        assert "model_version" in data
