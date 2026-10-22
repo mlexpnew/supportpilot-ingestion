@@ -506,7 +506,7 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
 @app.post(
     "/feedback",
     response_model=FeedbackResponse,
-    dependencies=[Depends(rate_limit)],
+    dependencies=[Depends(get_api_key), Depends(rate_limit)],
 )
 def submit_feedback(
     request: FeedbackRequest,

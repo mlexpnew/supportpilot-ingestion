@@ -294,6 +294,63 @@ def test_feedback_unknown_ticket_404(
         assert "has not been triaged" in res.json()["detail"]
 
 
+def test_feedback_endpoint_auth_and_rate_limit(auth_headers: dict[str, str]) -> None:
+    """Verify POST /feedback enforces both authentication and rate limiting dependencies."""
+    from fastapi.testclient import TestClient as FastAPITestClient
+
+    with FastAPITestClient(app) as client:
+        payload = {
+            "ticket_id": "T-AUTH-1",
+            "correct_label": "delivery",
+            "agent_id": "agent-1",
+        }
+
+        # 1. Missing API key -> 401 Unauthorized
+        res_no_key = client.post("/feedback", json=payload)
+        assert res_no_key.status_code == 401
+        assert res_no_key.json()["detail"] == "Unauthorized"
+
+        # 2. Invalid API key -> 401 Unauthorized
+        res_bad_key = client.post(
+            "/feedback",
+            headers={"X-API-Key": "invalid-key-xyz"},
+            json=payload,
+        )
+        assert res_bad_key.status_code == 401
+        assert res_bad_key.json()["detail"] == "Unauthorized"
+
+        # 3. Valid key with triaged ticket -> 200 OK
+        client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": "T-AUTH-1", "body": "Where is my parcel?"},
+        )
+        res_ok = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json=payload,
+        )
+        assert res_ok.status_code == 200
+
+        # 4. Rate limiting: set limit to 2 and verify 429
+        orig_max = getattr(app.state, "rate_limit_max_requests", 60)
+        app.state.rate_limit_max_requests = 2
+        try:
+            # Under limit
+            res_rl_1 = client.post("/feedback", headers=auth_headers, json=payload)
+            assert res_rl_1.status_code in (200, 429)
+
+            res_rl_2 = client.post("/feedback", headers=auth_headers, json=payload)
+            assert res_rl_2.status_code in (200, 429)
+
+            # Exceeding limit -> 429
+            res_rl_3 = client.post("/feedback", headers=auth_headers, json=payload)
+            assert res_rl_3.status_code == 429
+            assert "Retry-After" in res_rl_3.headers
+        finally:
+            app.state.rate_limit_max_requests = orig_max
+
+
 def test_feedback_invalid_label_422(
     tmp_path: Path, auth_headers: dict[str, str]
 ) -> None:
