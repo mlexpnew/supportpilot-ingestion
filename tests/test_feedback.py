@@ -1234,10 +1234,12 @@ def test_export_feedback_cli(
     assert rec2 == {"ticket_id": "T-EXP-2", "correct_label": "refund"}
 
 
-def test_join_feedback_for_retraining(tmp_path: Path) -> None:
-    """Verify joining feedback_export.jsonl with original dataset on ticket_id."""
-    # 1. Original dataset
-    orig_file = tmp_path / "original.jsonl"
+def test_join_feedback_for_retraining_pilot_appends_and_unmatched(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify join relabels original tickets, appends pilot tickets, and reports unmatched rows."""
+    # 1. Original synthetic dataset (T1, T2)
+    orig_file = tmp_path / "triage_labeled.jsonl"
     orig_tickets = [
         {"ticket_id": "T1", "body": "Where is my delivery?", "label": "delivery"},
         {
@@ -1245,49 +1247,169 @@ def test_join_feedback_for_retraining(tmp_path: Path) -> None:
             "body": "Overcharged subscription fee.",
             "label": "billing",
         },
-        {"ticket_id": "T3", "body": "I want to delete my account.", "label": "account"},
     ]
     with open(orig_file, "w", encoding="utf-8") as f:
         f.writelines(json.dumps(t) + "\n" for t in orig_tickets)
 
-    # 2. Feedback export (T2 was corrected to 'refund')
+    # 2. Redacted pilot tickets from helpdesk (T-5021, T-5022) - no initial label
+    pilot_file = tmp_path / "redacted.jsonl"
+    pilot_tickets = [
+        {
+            "ticket_id": "T-5021",
+            "customer_id": "C-1",
+            "body": "Need a refund for damaged item.",
+        },
+        {
+            "ticket_id": "T-5022",
+            "customer_id": "C-2",
+            "body": "Cancel my order please.",
+        },
+    ]
+    with open(pilot_file, "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(t) + "\n" for t in pilot_tickets)
+
+    # 3. Feedback export containing:
+    #    - T2 -> refund (relabels existing synthetic ticket)
+    #    - T-5021 -> refund (matches pilot ticket -> appends new training row)
+    #    - T-9999 -> delivery (no ticket text anywhere -> unmatched)
     fb_export_file = tmp_path / "feedback_export.jsonl"
     fb_records = [
         {"ticket_id": "T2", "correct_label": "refund"},
-        {
-            "ticket_id": "T99",
-            "correct_label": "other",
-        },  # Feedback on ticket not in original
+        {"ticket_id": "T-5021", "correct_label": "refund"},
+        {"ticket_id": "T-9999", "correct_label": "delivery"},
     ]
     with open(fb_export_file, "w", encoding="utf-8") as f:
         f.writelines(json.dumps(r) + "\n" for r in fb_records)
 
-    # 3. Perform join
+    # 4. Perform join
     out_file = tmp_path / "retrain_dataset.jsonl"
-    updated_count = join_feedback_for_retraining(
+    report = join_feedback_for_retraining(
         original_dataset=orig_file,
         feedback_export=fb_export_file,
         output_dataset=out_file,
+        redacted_tickets=pilot_file,
     )
 
-    assert updated_count == 1
-    assert out_file.exists()
+    # Verify counts
+    assert report.matched == 1
+    assert report["matched"] == 1
+    assert report.appended == 1
+    assert report["appended"] == 1
+    assert report.unmatched == 1
+    assert report["unmatched"] == 1
+    assert report.total_feedback == 3
 
+    # Check stderr report
+    captured = capsys.readouterr()
+    assert "1 matched, 1 appended, 1 unmatched" in captured.err
+    assert "Warning: 1 feedback record(s) had no matching ticket text" in captured.err
+
+    # Check output dataset
+    assert out_file.exists()
     joined_lines = [
         json.loads(line) for line in out_file.read_text().splitlines() if line.strip()
     ]
     assert len(joined_lines) == 3
 
-    # T1 untouched
+    # Row 0: T1 untouched
     assert joined_lines[0]["ticket_id"] == "T1"
     assert joined_lines[0]["label"] == "delivery"
     assert joined_lines[0]["body"] == "Where is my delivery?"
 
-    # T2 updated from billing -> refund
+    # Row 1: T2 updated from billing -> refund
     assert joined_lines[1]["ticket_id"] == "T2"
     assert joined_lines[1]["label"] == "refund"
     assert joined_lines[1]["body"] == "Overcharged subscription fee."
 
-    # T3 untouched
-    assert joined_lines[2]["ticket_id"] == "T3"
-    assert joined_lines[2]["label"] == "account"
+    # Row 2: T-5021 appended as new training row (ticket_id, body, label)
+    assert joined_lines[2]["ticket_id"] == "T-5021"
+    assert joined_lines[2]["label"] == "refund"
+    assert joined_lines[2]["body"] == "Need a refund for damaged item."
+
+
+def test_join_feedback_fail_fast_missing_files(tmp_path: Path) -> None:
+    """Verify join fails fast with FileNotFoundError when required input files are missing."""
+    valid_orig = tmp_path / "orig.jsonl"
+    valid_orig.write_text('{"ticket_id": "T1", "body": "...", "label": "other"}\n')
+
+    valid_fb = tmp_path / "fb.jsonl"
+    valid_fb.write_text('{"ticket_id": "T1", "correct_label": "delivery"}\n')
+
+    # Missing feedback export
+    with pytest.raises(FileNotFoundError, match="Feedback export file not found"):
+        join_feedback_for_retraining(
+            original_dataset=valid_orig,
+            feedback_export=tmp_path / "missing_fb.jsonl",
+            output_dataset=tmp_path / "out.jsonl",
+        )
+
+    # Missing original dataset
+    with pytest.raises(FileNotFoundError, match="Original dataset file not found"):
+        join_feedback_for_retraining(
+            original_dataset=tmp_path / "missing_orig.jsonl",
+            feedback_export=valid_fb,
+            output_dataset=tmp_path / "out.jsonl",
+        )
+
+    # Missing explicitly provided redacted pilot tickets
+    with pytest.raises(
+        FileNotFoundError, match="Redacted pilot tickets file not found"
+    ):
+        join_feedback_for_retraining(
+            original_dataset=valid_orig,
+            feedback_export=valid_fb,
+            output_dataset=tmp_path / "out.jsonl",
+            redacted_tickets=tmp_path / "missing_pilot.jsonl",
+        )
+
+
+def test_join_feedback_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify CLI join command processes feedback, original, and pilot tickets."""
+    orig_file = tmp_path / "orig.jsonl"
+    orig_file.write_text('{"ticket_id": "T1", "body": "Hi", "label": "delivery"}\n')
+
+    pilot_file = tmp_path / "pilot.jsonl"
+    pilot_file.write_text('{"ticket_id": "T-PILOT-1", "body": "Billing question"}\n')
+
+    fb_file = tmp_path / "fb.jsonl"
+    fb_lines = [
+        {"ticket_id": "T1", "correct_label": "delivery"},
+        {"ticket_id": "T-PILOT-1", "correct_label": "billing"},
+        {"ticket_id": "T-LOST", "correct_label": "other"},
+    ]
+    with open(fb_file, "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(r) + "\n" for r in fb_lines)
+
+    out_file = tmp_path / "cli_joined.jsonl"
+    argv = [
+        "__main__.py",
+        "join",
+        "--feedback",
+        str(fb_file),
+        "--original",
+        str(orig_file),
+        "--redacted",
+        str(pilot_file),
+        "--output",
+        str(out_file),
+    ]
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = argv
+        exit_code = cli_main()
+        assert exit_code == 0
+    finally:
+        sys.argv = orig_argv
+
+    captured = capsys.readouterr()
+    assert "1 matched, 1 appended, 1 unmatched" in captured.err
+
+    assert out_file.exists()
+    lines = [
+        json.loads(line) for line in out_file.read_text().splitlines() if line.strip()
+    ]
+    assert len(lines) == 2
+    assert lines[0]["ticket_id"] == "T1"
+    assert lines[1]["ticket_id"] == "T-PILOT-1"
+    assert lines[1]["label"] == "billing"

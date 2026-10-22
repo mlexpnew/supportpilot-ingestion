@@ -253,72 +253,47 @@ Exports are written atomically using a temporary file and renamed on completion 
 
 ---
 
-## Retraining Join: Combining Feedback with Original Tickets
+## Retraining Join: Combining Feedback with Original & Pilot Tickets
 
 ### Retraining join: how to combine feedback_export.jsonl with the original redacted tickets by ticket_id
 
-To retrain the triage classifier using human feedback corrections, combine the exported `data/feedback_export.jsonl` with the original redacted tickets (`data/triage_labeled.jsonl`) by `ticket_id`.
+To retrain the triage classifier using human feedback corrections, combine the exported `data/feedback_export.jsonl` with the original tickets (`data/triage_labeled.jsonl`) and pilot tickets (`out_redacted/redacted.jsonl`) by `ticket_id`.
 
 ### Join Logic
-1. **Load Corrections**: Parse `data/feedback_export.jsonl` into a dictionary mapping `ticket_id -> correct_label`.
-2. **Override Labels**: Scan the original redacted dataset (`data/triage_labeled.jsonl`). For each ticket, if its `ticket_id` exists in the feedback dictionary, override its `label` with the human-verified `correct_label`.
-3. **Preserve Untouched Tickets**: Tickets with no feedback keep their original label.
-4. **Zero PII Introduced**: Because `feedback_export.jsonl` contains only `ticket_id` and `correct_label`, the join preserves the existing PII redaction of the source dataset.
+1. **Fail-Fast Validation**: Verifies `feedback_export` and `original_dataset` exist immediately. Missing input files raise `FileNotFoundError` rather than silently skipping corrections.
+2. **Load Corrections**: Parses `feedback_export.jsonl` into a dictionary mapping `ticket_id -> correct_label`.
+3. **Relabel Original Tickets**: Scans `data/triage_labeled.jsonl`. For tickets with agent feedback, updates `label = correct_label` (`matched`). Tickets without feedback retain their original label.
+4. **Append Pilot Tickets**: Scans helpdesk pilot tickets (`out_redacted/redacted.jsonl`). For pilot tickets reviewed by agents, appends them as new training rows `{"ticket_id": tid, "body": body, "label": correct_label}` (`appended`). This ensures retraining learns from real production data.
+5. **Report Unmatched Rows**: Unmatched feedback rows (feedback entries with no ticket text in either dataset) are counted (`unmatched`) and reported so operators know what was omitted.
+6. **Zero PII Introduced**: Because `feedback_export.jsonl` contains only `ticket_id` and `correct_label`, the join preserves the existing PII redaction of both datasets.
 
 ### Retraining Join Function (`supportpilot.feedback.join_feedback_for_retraining`)
-
-You can import and run the built-in retraining join utility:
 
 ```python
 from pathlib import Path
 from supportpilot.feedback import join_feedback_for_retraining
 
-updated_count = join_feedback_for_retraining(
+report = join_feedback_for_retraining(
     original_dataset=Path("data/triage_labeled.jsonl"),
     feedback_export=Path("data/feedback_export.jsonl"),
-    output_dataset=Path("data/triage_labeled_retrain.jsonl"),
+    redacted_tickets=Path("out_redacted/redacted.jsonl"),
+    output_dataset=Path("data/triage_retrain.jsonl"),
 )
-print(f"Updated {updated_count} ticket label(s) with human ground truth.")
+
+print(
+    f"Retraining dataset ready: {report.matched} matched, "
+    f"{report.appended} appended, {report.unmatched} unmatched."
+)
 ```
 
-Under the hood, `join_feedback_for_retraining` executes the atomic join:
-
-```python
-import json
-from pathlib import Path
-
-
-def join_feedback_for_retraining(
-    original_dataset: Path | str,
-    feedback_export: Path | str,
-    output_dataset: Path | str,
-) -> int:
-    """Join feedback_export.jsonl with original dataset on ticket_id."""
-    # 1. Load feedback corrections
-    corrections: dict[str, str] = {}
-    with open(feedback_export, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                item = json.loads(line)
-                corrections[item["ticket_id"]] = item["correct_label"]
-
-    # 2. Join with original tickets and write updated dataset
-    updated = 0
-    with (
-        open(original_dataset, "r", encoding="utf-8") as src,
-        open(output_dataset, "w", encoding="utf-8") as dst,
-    ):
-        for line in src:
-            if not line.strip():
-                continue
-            ticket = json.loads(line)
-            tid = ticket["ticket_id"]
-            if tid in corrections:
-                ticket["label"] = corrections[tid]
-                updated += 1
-            dst.write(json.dumps(ticket, ensure_ascii=False) + "\n")
-
-    return updated
+### CLI Command (`join`)
+You can also run the join directly via the CLI:
+```bash
+python -m supportpilot.feedback join \
+  --feedback data/feedback_export.jsonl \
+  --original data/triage_labeled.jsonl \
+  --redacted out_redacted/redacted.jsonl \
+  --output data/triage_retrain.jsonl
 ```
 
 ### Triggering Model Retraining
