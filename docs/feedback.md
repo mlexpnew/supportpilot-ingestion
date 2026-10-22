@@ -141,14 +141,61 @@ Aggregates live model accuracy alongside operational counters.
 **Example Response:**
 ```json
 {
+  "requests_total": 150,
   "triage_total": 150,
-  "needs_review_total": 24,
-  "needs_review_rate": 0.16,
-  "avg_latency_ms": 1.45,
   "errors_total": 0,
+  "avg_latency_ms": 1.45,
+  "needs_review_rate": 0.16,
   "rate_limited_total": 0,
   "feedback_total": 40,
   "live_accuracy": 0.875
+}
+```
+
+---
+
+### `GET /metrics/labels`
+Per-category accuracy breakdown based on human agent corrections. Protected by API key authentication (`X-API-Key`) and rate limiting dependencies.
+
+**Response Schema:**
+Maps category labels (`delivery`, `billing`, `refund`, `cancellation`, `account`, `other`) to:
+- `total` (`int`): Number of feedback items received for this category.
+- `agreed` (`int`): Number of predictions that matched agent correction.
+- `accuracy` (`float | null`): `agreed / total`, or `null` if `total == 0`.
+
+**Example Response:**
+```json
+{
+  "delivery": {
+    "total": 20,
+    "agreed": 18,
+    "accuracy": 0.9
+  },
+  "billing": {
+    "total": 10,
+    "agreed": 8,
+    "accuracy": 0.8
+  },
+  "refund": {
+    "total": 10,
+    "agreed": 9,
+    "accuracy": 0.9
+  },
+  "cancellation": {
+    "total": 0,
+    "agreed": 0,
+    "accuracy": null
+  },
+  "account": {
+    "total": 0,
+    "agreed": 0,
+    "accuracy": null
+  },
+  "other": {
+    "total": 0,
+    "agreed": 0,
+    "accuracy": null
+  }
 }
 ```
 
