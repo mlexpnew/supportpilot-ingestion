@@ -237,7 +237,23 @@ To retrain the triage classifier using human feedback corrections, combine the e
 3. **Preserve Untouched Tickets**: Tickets with no feedback keep their original label.
 4. **Zero PII Introduced**: Because `feedback_export.jsonl` contains only `ticket_id` and `correct_label`, the join preserves the existing PII redaction of the source dataset.
 
-### Example Retraining Join Script (`scripts/join_retraining.py`)
+### Retraining Join Function (`supportpilot.feedback.join_feedback_for_retraining`)
+
+You can import and run the built-in retraining join utility:
+
+```python
+from pathlib import Path
+from supportpilot.feedback import join_feedback_for_retraining
+
+updated_count = join_feedback_for_retraining(
+    original_dataset=Path("data/triage_labeled.jsonl"),
+    feedback_export=Path("data/feedback_export.jsonl"),
+    output_dataset=Path("data/triage_labeled_retrain.jsonl"),
+)
+print(f"Updated {updated_count} ticket label(s) with human ground truth.")
+```
+
+Under the hood, `join_feedback_for_retraining` executes the atomic join:
 
 ```python
 import json

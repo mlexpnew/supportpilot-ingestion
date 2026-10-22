@@ -45,7 +45,7 @@ def main() -> int:
         try:
             count = store.export_feedback(args.output)
             print(
-                f"Exported {count} feedback record(s) to {args.output}",
+                f"Exported {count} feedback rows to {args.output}",
                 file=sys.stderr,
             )
             summary = {

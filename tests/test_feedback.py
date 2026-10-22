@@ -32,6 +32,7 @@ from supportpilot.feedback import (
     FeedbackRequest,
     FeedbackStore,
     init_db,
+    join_feedback_for_retraining,
     normalize_agent_id,
     normalize_ticket_id,
 )
@@ -1191,8 +1192,10 @@ def test_app_state_has_only_feedback_store_no_aliases() -> None:
         )
 
 
-def test_export_feedback_cli(tmp_path: Path) -> None:
-    """Verify CLI export command writes ticket_id and correct_label only."""
+def test_export_feedback_cli(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify CLI export command writes ticket_id and correct_label only and prints summary to stderr."""
     db_file = tmp_path / "cli_test.db"
     store = FeedbackStore(db_file)
     store.save_prediction("T-EXP-1", "delivery", 0.9, "v1")
@@ -1218,6 +1221,9 @@ def test_export_feedback_cli(tmp_path: Path) -> None:
     finally:
         sys.argv = orig_argv
 
+    captured = capsys.readouterr()
+    assert f"Exported 2 feedback rows to {export_file}" in captured.err
+
     assert export_file.exists()
     lines = [line.strip() for line in export_file.read_text().splitlines() if line]
     assert len(lines) == 2
@@ -1226,3 +1232,62 @@ def test_export_feedback_cli(tmp_path: Path) -> None:
     assert rec1 == {"ticket_id": "T-EXP-1", "correct_label": "delivery"}
     rec2 = json.loads(lines[1])
     assert rec2 == {"ticket_id": "T-EXP-2", "correct_label": "refund"}
+
+
+def test_join_feedback_for_retraining(tmp_path: Path) -> None:
+    """Verify joining feedback_export.jsonl with original dataset on ticket_id."""
+    # 1. Original dataset
+    orig_file = tmp_path / "original.jsonl"
+    orig_tickets = [
+        {"ticket_id": "T1", "body": "Where is my delivery?", "label": "delivery"},
+        {
+            "ticket_id": "T2",
+            "body": "Overcharged subscription fee.",
+            "label": "billing",
+        },
+        {"ticket_id": "T3", "body": "I want to delete my account.", "label": "account"},
+    ]
+    with open(orig_file, "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(t) + "\n" for t in orig_tickets)
+
+    # 2. Feedback export (T2 was corrected to 'refund')
+    fb_export_file = tmp_path / "feedback_export.jsonl"
+    fb_records = [
+        {"ticket_id": "T2", "correct_label": "refund"},
+        {
+            "ticket_id": "T99",
+            "correct_label": "other",
+        },  # Feedback on ticket not in original
+    ]
+    with open(fb_export_file, "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(r) + "\n" for r in fb_records)
+
+    # 3. Perform join
+    out_file = tmp_path / "retrain_dataset.jsonl"
+    updated_count = join_feedback_for_retraining(
+        original_dataset=orig_file,
+        feedback_export=fb_export_file,
+        output_dataset=out_file,
+    )
+
+    assert updated_count == 1
+    assert out_file.exists()
+
+    joined_lines = [
+        json.loads(line) for line in out_file.read_text().splitlines() if line.strip()
+    ]
+    assert len(joined_lines) == 3
+
+    # T1 untouched
+    assert joined_lines[0]["ticket_id"] == "T1"
+    assert joined_lines[0]["label"] == "delivery"
+    assert joined_lines[0]["body"] == "Where is my delivery?"
+
+    # T2 updated from billing -> refund
+    assert joined_lines[1]["ticket_id"] == "T2"
+    assert joined_lines[1]["label"] == "refund"
+    assert joined_lines[1]["body"] == "Overcharged subscription fee."
+
+    # T3 untouched
+    assert joined_lines[2]["ticket_id"] == "T3"
+    assert joined_lines[2]["label"] == "account"

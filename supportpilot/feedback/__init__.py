@@ -8,6 +8,7 @@ from .models import (
     normalize_agent_id,
     normalize_ticket_id,
 )
+from .retrain import join_feedback_for_retraining
 from .store import (
     DEFAULT_DB_PATH,
     FeedbackStore,
@@ -26,6 +27,7 @@ __all__ = [
     "get_feedback_db_path",
     "get_feedback_store",
     "init_db",
+    "join_feedback_for_retraining",
     "normalize_agent_id",
     "normalize_ticket_id",
 ]
