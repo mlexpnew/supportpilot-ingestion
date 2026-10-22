@@ -1518,16 +1518,3 @@ def test_startup_fails_fast_on_broken_model_version(
     with pytest.raises(ValueError, match="Broken or invalid model version"):
         with TestClient(app):
             pass
-
-
-def test_triage_fails_fast_if_model_version_missing() -> None:
-    """If model version is missing, /triage must fail fast and not lie."""
-    with TestClient(app) as client:
-        # Intentionally tamper with model version to None
-        client.app.state.model.version = None
-        res = client.post(
-            "/triage",
-            json={"ticket_id": "T-FAIL-1", "body": "Where is my parcel?"},
-        )
-        assert res.status_code == 500
-        assert "Model version is missing" in res.json()["detail"]

@@ -181,12 +181,14 @@ def test_model_training_and_predictions(tmp_path):
     assert clf.predict("") == "other"
     assert clf.predict_proba("")["other"] == 1.0
 
-    # Test model persistence
+    # Test model persistence and metadata
+    assert clf.metadata["macro_f1"] is None
     model_file = tmp_path / "model.joblib"
     clf.save(model_file)
     assert model_file.exists()
 
     reloaded = TriageClassifier.load(model_file)
+    assert reloaded.metadata["macro_f1"] is None
     assert reloaded.predict("Where is my parcel?") == "delivery"
 
 
@@ -712,3 +714,28 @@ def test_model_metadata_version_date_size_macro_f1(tmp_path):
     )
     with pytest.raises(ValueError, match="Missing or invalid 'labels'"):
         TriageClassifier.load(no_labels_file)
+
+
+def test_tiny_dataset_macro_f1_returns_none_with_warning(caplog) -> None:
+    """Tiny dataset (<2 examples/label) sets macro_f1 to None and logs warning."""
+    import logging
+
+    texts = [
+        "Where is my package parcel tracking",
+        "Charged twice on my credit card statement invoice",
+        "Refund returned item wapas paisa",
+        "Cancel order before dispatch stop shipment",
+        "Login password otp account verification",
+        "Gift card wholesale partner retail store",
+    ]
+    labels = list(LABELS)
+
+    clf = TriageClassifier()
+    with caplog.at_level(logging.WARNING):
+        clf.fit(texts, labels)
+
+    assert clf.metadata["macro_f1"] is None
+    assert (
+        "Dataset too small for cross-validation (<2 examples per label); "
+        "macro_f1 set to None."
+    ) in caplog.text

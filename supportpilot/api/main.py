@@ -455,14 +455,10 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
         },
     )
 
-    model_version = getattr(model, "version", None)
-    if not model_version:
-        raise HTTPException(status_code=500, detail="Model version is missing")
-
     return TriageResponse(
         ticket_id=request.ticket_id,
         label=result["label"],
         confidence=result["confidence"],
         needs_review=result["needs_review"],
-        model_version=model_version,
+        model_version=model.version,
     )

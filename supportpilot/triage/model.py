@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import collections
-import json
 from datetime import datetime, timezone
+import json
+import logging
 from pathlib import Path
 import re
 from typing import Any, Sequence
@@ -17,6 +18,8 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.pipeline import Pipeline
 
 from . import LABELS
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_PATH = Path("models/triage_model.joblib")
 DEFAULT_CONFIDENCE_THRESHOLD: float = 0.35
@@ -65,10 +68,11 @@ def compute_cv_macro_f1(
     val_labels: Sequence[str] | None = None,
     macro_f1: float | None = None,
     n_splits: int = 5,
-) -> float:
+) -> float | None:
     """Compute held-out or cross-validated macro F1 score.
 
     Avoids evaluating on training data to prevent memorization score inflation.
+    Returns None with a warning if dataset has fewer than 2 examples per label.
     """
     if macro_f1 is not None:
         return round(float(macro_f1), 4)
@@ -97,10 +101,11 @@ def compute_cv_macro_f1(
         )
         return round(float(scores.mean()), 4)
 
-    preds = pipeline.predict(texts)
-    return round(
-        float(f1_score(labels, preds, average="macro", zero_division=0)), 4
+    logger.warning(
+        "Dataset too small for cross-validation (<2 examples per label); "
+        "macro_f1 set to None."
     )
+    return None
 
 
 def load_dataset(path: Path | str) -> tuple[list[str], list[str], list[str]]:
@@ -163,7 +168,7 @@ class TriageClassifier:
                 "version": version,
                 "training_date": None,
                 "dataset_size": 0,
-                "macro_f1": 0.0,
+                "macro_f1": None,
                 "labels": [],
             }
         self._is_fitted: bool = False
