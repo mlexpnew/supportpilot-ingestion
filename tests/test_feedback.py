@@ -850,6 +850,87 @@ def test_live_accuracy_null_when_empty(tmp_path: Path) -> None:
     assert serialized == '{"feedback_total": 0, "live_accuracy": null}'
 
 
+def test_metrics_endpoint_includes_feedback_total_and_live_accuracy(
+    tmp_path: Path, auth_headers: dict[str, str]
+) -> None:
+    """Verify GET /metrics includes feedback_total and live_accuracy (SP-110 Part C)."""
+    db_file = tmp_path / "metrics_test.db"
+    store = FeedbackStore(db_file)
+
+    with TestClient(app) as client:
+        app.state.feedback_store = store
+
+        # 1. Initial state: no feedback -> feedback_total=0, live_accuracy=null
+        res_init = client.get("/metrics", headers=auth_headers)
+        assert res_init.status_code == 200
+        data_init = res_init.json()
+        assert data_init["feedback_total"] == 0
+        assert data_init["live_accuracy"] is None
+
+        # 2. Triage two tickets
+        res_t1 = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": "T-METRIC-1", "body": "Where is my ordered delivery?"},
+        )
+        assert res_t1.status_code == 200
+        pred_label1 = res_t1.json()["label"]
+
+        res_t2 = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": "T-METRIC-2", "body": "Need refund on duplicate charge"},
+        )
+        assert res_t2.status_code == 200
+
+        # Metrics before any feedback still has feedback_total=0, live_accuracy=null
+        res_mid = client.get("/metrics", headers=auth_headers)
+        assert res_mid.status_code == 200
+        assert res_mid.json()["feedback_total"] == 0
+        assert res_mid.json()["live_accuracy"] is None
+
+        # 3. Submit 1st feedback: agree with predicted label
+        res_fb1 = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": "T-METRIC-1",
+                "correct_label": pred_label1,
+                "agent_id": "AG-101",
+            },
+        )
+        assert res_fb1.status_code == 200
+        assert res_fb1.json()["agreed"] is True
+
+        res_after_fb1 = client.get("/metrics", headers=auth_headers)
+        assert res_after_fb1.status_code == 200
+        data1 = res_after_fb1.json()
+        assert data1["feedback_total"] == 1
+        assert data1["live_accuracy"] == 1.0
+
+        # 4. Submit 2nd feedback: disagree
+        pred_label2 = res_t2.json()["label"]
+        different_label = "billing" if pred_label2 != "billing" else "refund"
+        res_fb2 = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": "T-METRIC-2",
+                "correct_label": different_label,
+                "agent_id": "AG-102",
+            },
+        )
+        assert res_fb2.status_code == 200
+        assert res_fb2.json()["agreed"] is False
+
+        # Now: 2 total, 1 agreed -> live_accuracy = 0.50
+        res_after_fb2 = client.get("/metrics", headers=auth_headers)
+        assert res_after_fb2.status_code == 200
+        data2 = res_after_fb2.json()
+        assert data2["feedback_total"] == 2
+        assert data2["live_accuracy"] == 0.50
+
+
 def test_zero_ticket_body_in_db(tmp_path: Path, auth_headers: dict[str, str]) -> None:
     """Strict privacy test: verify ticket body and subject are NEVER stored in the DB.
 

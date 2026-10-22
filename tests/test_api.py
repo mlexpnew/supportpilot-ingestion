@@ -474,6 +474,8 @@ def test_counters_initial_state() -> None:
             "avg_latency_ms": 0.0,
             "needs_review_rate": 0.0,
             "rate_limited_total": 0,
+            "feedback_total": 0,
+            "live_accuracy": None,
         }
 
         # app.state.counters contains the same zero values
@@ -755,6 +757,8 @@ def test_metric_keys() -> None:
             "avg_latency_ms",
             "needs_review_rate",
             "rate_limited_total",
+            "feedback_total",
+            "live_accuracy",
         }
         assert isinstance(data["requests_total"], int)
         assert isinstance(data["triage_total"], int)
@@ -762,6 +766,8 @@ def test_metric_keys() -> None:
         assert isinstance(data["avg_latency_ms"], float)
         assert isinstance(data["needs_review_rate"], float)
         assert isinstance(data["rate_limited_total"], int)
+        assert isinstance(data["feedback_total"], int)
+        assert data["live_accuracy"] is None or isinstance(data["live_accuracy"], float)
 
 
 def test_no_ticket_text_in_metrics() -> None:
@@ -802,9 +808,9 @@ def test_no_ticket_text_in_metrics() -> None:
         assert "4111222233334444" not in raw_metrics_text
         assert "555-0199" not in raw_metrics_text
 
-        # Zero leakage check in values (strictly numeric operational telemetry)
+        # Zero leakage check in values (strictly numeric operational telemetry or None)
         for val in metrics_data.values():
-            assert isinstance(val, (int, float))
+            assert val is None or isinstance(val, (int, float))
 
 
 # =====================================================================

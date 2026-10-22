@@ -252,6 +252,8 @@ class MetricsResponse(BaseModel):
     avg_latency_ms: float
     needs_review_rate: float
     rate_limited_total: int
+    feedback_total: int = 0
+    live_accuracy: float | None = None
 
 
 @asynccontextmanager
@@ -394,6 +396,13 @@ def health(req: Request) -> dict[str, object]:
 )
 def get_metrics(req: Request) -> MetricsResponse:
     counters: Counters | None = getattr(req.app.state, "counters", None)
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    feedback_total, live_accuracy = (
+        feedback_store.get_live_accuracy() if feedback_store is not None else (0, None)
+    )
+
     if counters is None or counters.requests_total == 0:
         return MetricsResponse(
             requests_total=0 if counters is None else counters.requests_total,
@@ -402,6 +411,8 @@ def get_metrics(req: Request) -> MetricsResponse:
             avg_latency_ms=0.0,
             needs_review_rate=0.0,
             rate_limited_total=0 if counters is None else counters.rate_limited_total,
+            feedback_total=feedback_total,
+            live_accuracy=live_accuracy,
         )
 
     avg_latency = round(counters.total_latency_ms / counters.requests_total, 2)
@@ -418,6 +429,8 @@ def get_metrics(req: Request) -> MetricsResponse:
         avg_latency_ms=avg_latency,
         needs_review_rate=review_rate,
         rate_limited_total=counters.rate_limited_total,
+        feedback_total=feedback_total,
+        live_accuracy=live_accuracy,
     )
 
 
