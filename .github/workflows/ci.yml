@@ -63,7 +63,7 @@ jobs:
           fi
 
       - name: Run container
-        run: docker run -d --name api -p 8000:8000 supportpilot-api
+        run: docker run -d --name api -p 8000:8000 -e TRIAGE_API_KEYS=ci-test-key-1 supportpilot-api
 
       - name: Call /health
         run: |

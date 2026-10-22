@@ -48,7 +48,8 @@ def process_triage_file(
                 classifier = train_model(dataset_path, save_path=m_path)
             else:
                 raise FileNotFoundError(
-                    f"Model file not found at {m_path} and dataset data/triage_labeled.jsonl is missing."
+                    f"Model file not found at {m_path} and "
+                    "dataset data/triage_labeled.jsonl is missing."
                 )
 
     counts: dict[str, int] = {label: 0 for label in LABELS}
@@ -177,12 +178,21 @@ def main() -> int:
         "--data",
         type=Path,
         default=Path("data/triage_labeled.jsonl"),
-        help="Dataset path for training or evaluation (default: data/triage_labeled.jsonl).",
+        help=(
+            "Dataset path for training or evaluation "
+            "(default: data/triage_labeled.jsonl)."
+        ),
     )
     parser.add_argument(
         "--evaluate",
         action="store_true",
         help="Run benchmark evaluation comparing Rule vs ML classifiers.",
+    )
+    parser.add_argument(
+        "--model-version",
+        type=str,
+        default="1.0.0",
+        help="Version string for the trained model (default: 1.0.0).",
     )
 
     args = parser.parse_args()
@@ -210,10 +220,18 @@ def main() -> int:
     # Mode 2: Train model
     if args.train:
         start_time = time.monotonic()
-        train_model(args.data, save_path=args.model_path)
+        clf = train_model(
+            args.data,
+            save_path=args.model_path,
+            version=args.model_version,
+        )
         elapsed = round(time.monotonic() - start_time, 4)
         print(
-            f"Triage model trained on {args.data} and saved to {args.model_path} in {elapsed}s."
+            f"Triage model ({clf.version}) trained on {args.data} "
+            f"(size={clf.metadata.get('dataset_size')}, "
+            f"macro_f1={clf.metadata.get('macro_f1')}, "
+            f"labels={clf.metadata.get('labels')}) "
+            f"and saved to {args.model_path} in {elapsed}s."
         )
         return 0
 

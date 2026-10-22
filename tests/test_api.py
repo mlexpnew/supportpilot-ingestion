@@ -17,13 +17,25 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 import uuid
 import pytest
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient as FastAPITestClient
 
 from supportpilot.api.main import MAX_BODY_BYTES, app
 from supportpilot.triage import LABELS
 from supportpilot.triage.model import train_model
+
+DEFAULT_AUTH_HEADERS = {"X-API-Key": "test-key-1"}
+
+
+class TestClient(FastAPITestClient):
+    """TestClient that includes default authentication headers for the app."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        if "headers" not in kwargs:
+            kwargs["headers"] = dict(DEFAULT_AUTH_HEADERS)
+        super().__init__(*args, **kwargs)
 
 
 # =====================================================================
@@ -38,6 +50,7 @@ def test_health() -> None:
         data = response.json()
         assert data["status"] == "ok"
         assert data["model_loaded"] is True
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
 
 
 # =====================================================================
@@ -60,12 +73,14 @@ def test_happy_path_with_subject_and_body() -> None:
             "label",
             "confidence",
             "needs_review",
+            "model_version",
         }
         assert data["ticket_id"] == "T-1001"
         assert data["label"] in LABELS
         assert isinstance(data["confidence"], float)
         assert data["confidence"] > 0.0
         assert isinstance(data["needs_review"], bool)
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
 
 
 def test_happy_path_with_body_only() -> None:
@@ -82,11 +97,13 @@ def test_happy_path_with_body_only() -> None:
             "label",
             "confidence",
             "needs_review",
+            "model_version",
         }
         assert data["ticket_id"] == "T-1002"
         assert data["label"] in LABELS
         assert isinstance(data["confidence"], float)
         assert isinstance(data["needs_review"], bool)
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
 
 
 # =====================================================================
@@ -169,8 +186,10 @@ def test_triage_email_in_body_never_echoed_back() -> None:
             "label",
             "confidence",
             "needs_review",
+            "model_version",
         }
         assert data["ticket_id"] == "T-EMAIL-LEAK-TEST"
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
         assert sensitive_email not in response.text
         assert "customer.confidential" not in response.text
 
@@ -199,9 +218,11 @@ def test_triage_pii_never_echoed_back() -> None:
             "label",
             "confidence",
             "needs_review",
+            "model_version",
         }
         assert data["ticket_id"] == "T-PII-ZERO-LEAK"
         assert data["label"] in LABELS
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
 
         raw_text = response.text
         assert sensitive_email not in raw_text
@@ -446,6 +467,7 @@ def test_counters_initial_state() -> None:
             "errors_total": 0,
             "avg_latency_ms": 0.0,
             "needs_review_rate": 0.0,
+            "rate_limited_total": 0,
         }
 
         # app.state.counters contains the same zero values
@@ -454,6 +476,7 @@ def test_counters_initial_state() -> None:
         assert app.state.counters.errors_total == 0
         assert app.state.counters.total_latency_ms == 0.0
         assert app.state.counters.needs_review_total == 0
+        assert app.state.counters.rate_limited_total == 0
 
 
 def test_counters_increment_requests_and_latency_on_success() -> None:
@@ -725,12 +748,14 @@ def test_metric_keys() -> None:
             "errors_total",
             "avg_latency_ms",
             "needs_review_rate",
+            "rate_limited_total",
         }
         assert isinstance(data["requests_total"], int)
         assert isinstance(data["triage_total"], int)
         assert isinstance(data["errors_total"], int)
         assert isinstance(data["avg_latency_ms"], float)
         assert isinstance(data["needs_review_rate"], float)
+        assert isinstance(data["rate_limited_total"], int)
 
 
 def test_no_ticket_text_in_metrics() -> None:
@@ -774,3 +799,997 @@ def test_no_ticket_text_in_metrics() -> None:
         # Zero leakage check in values (strictly numeric operational telemetry)
         for val in metrics_data.values():
             assert isinstance(val, (int, float))
+
+
+# =====================================================================
+# 12. API Key Authentication Configuration Tests
+# =====================================================================
+
+
+def test_triage_api_keys_startup_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify TRIAGE_API_KEYS is split by comma and stored as set in app.state."""
+    monkeypatch.setenv("TRIAGE_API_KEYS", "key-one, key-two , key-three,,")
+    with TestClient(app) as client:
+        res = client.get("/health")
+        assert res.status_code == 200
+        assert app.state.api_keys == {"key-one", "key-two", "key-three"}
+
+
+def test_missing_api_keys_fails_fast_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify service fails fast at startup if TRIAGE_API_KEYS is missing."""
+    monkeypatch.delenv("TRIAGE_API_KEYS", raising=False)
+    with pytest.raises(ValueError, match="No API keys configured"):
+        with TestClient(app):
+            pass
+
+
+def test_empty_api_keys_fails_fast_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify service fails fast at startup if TRIAGE_API_KEYS contains no keys."""
+    monkeypatch.setenv("TRIAGE_API_KEYS", " , ,, ")
+    with pytest.raises(ValueError, match="No API keys configured"):
+        with TestClient(app):
+            pass
+
+
+def test_validate_api_key_constant_time_comparison() -> None:
+    """Verify validate_api_key compares in constant time against each key."""
+    from supportpilot.api.main import validate_api_key
+
+    valid_keys = {"secret-alpha", "secret-beta", "secret-gamma"}
+
+    # Matches valid keys
+    assert validate_api_key("secret-alpha", valid_keys) is True
+    assert validate_api_key("secret-beta", valid_keys) is True
+    assert validate_api_key("secret-gamma", valid_keys) is True
+
+    # Rejects invalid or empty keys
+    assert validate_api_key("wrong-key", valid_keys) is False
+    assert validate_api_key("", valid_keys) is False
+    assert validate_api_key(None, valid_keys) is False
+    assert validate_api_key("secret-alph", valid_keys) is False
+    assert validate_api_key("secret-alphaa", valid_keys) is False
+    assert validate_api_key("secret-alpha", set()) is False
+    assert validate_api_key("secret-alpha", None) is False
+    # Non-ASCII keys do not raise TypeError
+    assert validate_api_key("é", valid_keys) is False
+    assert validate_api_key("secret-🔑", valid_keys) is False
+
+
+def test_validate_api_key_iterates_all_keys_without_short_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify validate_api_key does not short-circuit when a match is found."""
+    import secrets
+    from supportpilot.api.main import validate_api_key
+
+    calls: list[tuple[bytes, bytes]] = []
+    real_compare = secrets.compare_digest
+
+    def tracking_compare(a: bytes, b: bytes) -> bool:
+        calls.append((a, b))
+        return real_compare(a, b)
+
+    monkeypatch.setattr(secrets, "compare_digest", tracking_compare)
+
+    valid_keys = {"key-1", "key-2", "key-3"}
+
+    # Even though key-1 matches first, all 3 keys must be compared as bytes
+    assert validate_api_key("key-1", valid_keys) is True
+    assert len(calls) == 3
+    assert isinstance(calls[0][0], bytes)
+    assert isinstance(calls[0][1], bytes)
+
+    # For invalid key, all 3 keys are compared
+    calls.clear()
+    assert validate_api_key("wrong-key", valid_keys) is False
+    assert len(calls) == 3
+
+    # For None key, all 3 keys are compared
+    calls.clear()
+    assert validate_api_key(None, valid_keys) is False
+    assert len(calls) == 3
+
+
+def test_get_api_key_dependency_validation() -> None:
+    """Verify get_api_key dependency validates X-API-Key and raises 401."""
+    from fastapi import Depends, FastAPI
+    from supportpilot.api.main import api_key_header, get_api_key
+
+    assert api_key_header.model.name == "X-API-Key"
+
+    test_sub_app = FastAPI()
+    test_sub_app.state.api_keys = {"secret-123", "secret-456"}
+
+    @test_sub_app.get("/test-key")
+    def _read_key(
+        key: str = Depends(get_api_key),
+    ) -> dict[str, str]:
+        return {"key": key}
+
+    with TestClient(test_sub_app) as client:
+        # Standard header with valid key
+        res = client.get("/test-key", headers={"X-API-Key": "secret-123"})
+        assert res.status_code == 200
+        assert res.json() == {"key": "secret-123"}
+
+        # Case-insensitive header with valid key
+        res_lower = client.get("/test-key", headers={"x-api-key": "secret-456"})
+        assert res_lower.status_code == 200
+        assert res_lower.json() == {"key": "secret-456"}
+
+        # Missing header returns 401
+        res_none = client.get("/test-key")
+        assert res_none.status_code == 401
+        assert res_none.json()["detail"] == "Unauthorized"
+
+        # Invalid key returns 401
+        res_invalid = client.get(
+            "/test-key",
+            headers={"X-API-Key": "wrong-secret"},
+        )
+        assert res_invalid.status_code == 401
+        assert res_invalid.json()["detail"] == "Unauthorized"
+
+
+def test_endpoint_api_key_protection_routes() -> None:
+    """Verify API key protection is attached to /triage and /metrics only."""
+    with FastAPITestClient(app) as unauth_client:
+        # /health is public - works without API key
+        res_health = unauth_client.get("/health")
+        assert res_health.status_code == 200
+        assert res_health.json()["status"] == "ok"
+
+        # /metrics requires API key
+        res_metrics_unauth = unauth_client.get("/metrics")
+        assert res_metrics_unauth.status_code == 401
+        assert res_metrics_unauth.json()["detail"] == "Unauthorized"
+
+        res_metrics_bad_key = unauth_client.get(
+            "/metrics",
+            headers={"X-API-Key": "invalid-key-xyz"},
+        )
+        assert res_metrics_bad_key.status_code == 401
+        assert res_metrics_bad_key.json()["detail"] == "Unauthorized"
+
+        res_metrics_auth = unauth_client.get(
+            "/metrics",
+            headers={"X-API-Key": "test-key-1"},
+        )
+        assert res_metrics_auth.status_code == 200
+
+        # /triage requires API key
+        payload = {"ticket_id": "T-SEC-1", "body": "Where is my package?"}
+        res_triage_unauth = unauth_client.post("/triage", json=payload)
+        assert res_triage_unauth.status_code == 401
+        assert res_triage_unauth.json()["detail"] == "Unauthorized"
+
+        res_triage_bad_key = unauth_client.post(
+            "/triage",
+            headers={"X-API-Key": "invalid-key-xyz"},
+            json=payload,
+        )
+        assert res_triage_bad_key.status_code == 401
+        assert res_triage_bad_key.json()["detail"] == "Unauthorized"
+
+        res_triage_auth = unauth_client.post(
+            "/triage",
+            headers={"X-API-Key": "test-key-2"},
+            json=payload,
+        )
+        assert res_triage_auth.status_code == 200
+        assert res_triage_auth.json()["ticket_id"] == "T-SEC-1"
+
+
+def test_api_key_logging_short_hash_and_never_raw_key(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify logger records 8-char SHA-256 hash and never the raw API key."""
+    import hashlib
+    from supportpilot.api.main import hash_api_key
+
+    # Unit test hash_api_key
+    raw_key = "super-secret-key-99999"
+    key_hash = hash_api_key(raw_key)
+    assert len(key_hash) == 8
+    assert key_hash == hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:8]
+    assert hash_api_key("") == "none"
+    assert hash_api_key(None) == "none"
+
+    # Integration test with successful triage request
+    expected_valid_hash = hashlib.sha256(b"test-key-1").hexdigest()[:8]
+    with caplog.at_level(logging.INFO, logger="supportpilot.api.main"):
+        with FastAPITestClient(app) as client:
+            res = client.post(
+                "/triage",
+                headers={"X-API-Key": "test-key-1"},
+                json={"ticket_id": "T-HASH-1", "body": "Where is my parcel?"},
+            )
+            assert res.status_code == 200
+
+    api_records = [r for r in caplog.records if r.name == "supportpilot.api.main"]
+    messages = [r.getMessage() for r in api_records]
+    assert any(f"api_key_hash={expected_valid_hash}" in msg for msg in messages)
+    for msg in messages:
+        assert "test-key-1" not in msg
+
+    # Test with failed key
+    caplog.clear()
+    secret_bad_key = "unauthorized-token-secret-77777"
+    expected_bad_hash = hashlib.sha256(secret_bad_key.encode("utf-8")).hexdigest()[:8]
+    with caplog.at_level(logging.INFO, logger="supportpilot.api.main"):
+        with FastAPITestClient(app) as client:
+            res_bad = client.post(
+                "/triage",
+                headers={"X-API-Key": secret_bad_key},
+                json={"ticket_id": "T-HASH-2", "body": "Where is my parcel?"},
+            )
+            assert res_bad.status_code == 401
+
+    api_records_bad = [r for r in caplog.records if r.name == "supportpilot.api.main"]
+    messages_bad = [r.getMessage() for r in api_records_bad]
+    assert any(f"api_key_hash={expected_bad_hash}" in msg for msg in messages_bad)
+    for msg in messages_bad:
+        assert secret_bad_key not in msg
+
+
+def test_non_ascii_api_key_returns_401_not_500() -> None:
+    """Verify non-ASCII key (e.g. 'é') returns 401 instead of crashing with 500."""
+    from supportpilot.api.main import validate_api_key
+
+    # Direct unit validation test does not raise TypeError
+    valid_keys = {"test-key-1", "test-key-2"}
+    assert validate_api_key("é", valid_keys) is False
+    assert validate_api_key("secret-🔑", valid_keys) is False
+    assert validate_api_key("triage-üñîçødé", valid_keys) is False
+
+    # HTTP endpoint test via TestClient with raw byte header
+    with FastAPITestClient(app) as client:
+        initial_errors = app.state.counters.errors_total
+
+        # Non-ASCII key 'é' returns 401 Unauthorized, never 500
+        res = client.post(
+            "/triage",
+            headers=[(b"x-api-key", "é".encode("utf-8"))],
+            json={"ticket_id": "T-NONASCII-1", "body": "Need refund please"},
+        )
+        assert res.status_code == 401
+        assert res.json()["detail"] == "Unauthorized"
+
+        # Unicode emoji key returns 401 Unauthorized
+        res_emoji = client.post(
+            "/triage",
+            headers=[(b"x-api-key", "key-🔑".encode("utf-8"))],
+            json={"ticket_id": "T-NONASCII-2", "body": "Need refund please"},
+        )
+        assert res_emoji.status_code == 401
+        assert res_emoji.json()["detail"] == "Unauthorized"
+
+        # Verify errors_total was NOT incremented (401 is not a 5xx server crash)
+        assert app.state.counters.errors_total == initial_errors
+
+
+def test_no_key_with_invalid_body_returns_401_not_422() -> None:
+    """Verify unauthenticated request with invalid body returns 401, not 422.
+
+    Unauthenticated users must not learn validation rules before authenticating.
+    """
+    with FastAPITestClient(app) as unauth_client:
+        # Empty JSON payload
+        res_empty = unauth_client.post("/triage", json={})
+        assert res_empty.status_code == 401
+        assert res_empty.json()["detail"] == "Unauthorized"
+
+        # Invalid field types / empty required fields
+        res_bad_fields = unauth_client.post(
+            "/triage",
+            json={"ticket_id": "", "body": ""},
+        )
+        assert res_bad_fields.status_code == 401
+        assert res_bad_fields.json()["detail"] == "Unauthorized"
+
+        # Payload exceeding 10 KB limit
+        res_oversized = unauth_client.post(
+            "/triage",
+            json={"ticket_id": "T-1", "body": "a" * (MAX_BODY_BYTES + 100)},
+        )
+        assert res_oversized.status_code == 401
+        assert res_oversized.json()["detail"] == "Unauthorized"
+
+
+def test_rate_limiting_tracks_request_timestamps_by_key_hash() -> None:
+    """Verify rate limiter keeps a dictionary: key hash -> list of timestamps."""
+    from supportpilot.api.main import hash_api_key
+
+    with FastAPITestClient(app) as client:
+        # Reset state for test isolation
+        app.state.rate_limits.clear()
+
+        key1 = "test-key-1"
+        key2 = "test-key-2"
+        hash1 = hash_api_key(key1)
+        hash2 = hash_api_key(key2)
+
+        payload1 = {"ticket_id": "T-RL-1", "body": "Where is my item?"}
+        payload2 = {"ticket_id": "T-RL-2", "body": "Need billing help"}
+
+        # 1. First request with key1
+        res1 = client.post(
+            "/triage",
+            headers={"X-API-Key": key1},
+            json=payload1,
+        )
+        assert res1.status_code == 200
+
+        assert hash1 in app.state.rate_limits
+        timestamps1 = app.state.rate_limits[hash1]
+        assert len(timestamps1) == 1
+        assert isinstance(timestamps1[0], float)
+
+        # 2. Second request with key1
+        res2 = client.post(
+            "/triage",
+            headers={"X-API-Key": key1},
+            json=payload2,
+        )
+        assert res2.status_code == 200
+        assert len(app.state.rate_limits[hash1]) == 2
+        assert app.state.rate_limits[hash1][1] >= app.state.rate_limits[hash1][0]
+
+        # 3. Request with key2
+        res3 = client.post(
+            "/triage",
+            headers={"X-API-Key": key2},
+            json=payload1,
+        )
+        assert res3.status_code == 200
+        assert hash2 in app.state.rate_limits
+        assert len(app.state.rate_limits[hash2]) == 1
+        assert len(app.state.rate_limits[hash1]) == 2
+
+        # 4. Failed request with invalid key does not record valid timestamp
+        bad_hash = hash_api_key("invalid-token")
+        res_bad = client.post(
+            "/triage",
+            headers={"X-API-Key": "invalid-token"},
+            json=payload1,
+        )
+        assert res_bad.status_code == 401
+        assert bad_hash not in app.state.rate_limits
+
+        # 5. Rate limits dictionary stores entries by key hash
+        assert len(app.state.rate_limits) == 2
+
+
+def test_drop_timestamps_older_than_60_seconds() -> None:
+    """Verify timestamps older than 60 seconds are dropped on each request."""
+    import time
+    from supportpilot.api.main import (
+        RATE_LIMIT_WINDOW_SECONDS,
+        hash_api_key,
+        prune_old_timestamps,
+    )
+
+    assert RATE_LIMIT_WINDOW_SECONDS == 60.0
+
+    # 1. Direct unit test of prune_old_timestamps
+    t_ref = 10_000.0
+    stale_ts = [
+        t_ref - 120.0,  # 120s old -> drop
+        t_ref - 60.1,  # 60.1s old -> drop
+        t_ref - 60.0,  # exactly 60s old -> drop
+    ]
+    fresh_ts = [
+        t_ref - 59.9,  # 59.9s old -> keep
+        t_ref - 30.0,  # 30s old -> keep
+        t_ref - 5.0,  # 5s old -> keep
+    ]
+    all_ts = stale_ts + fresh_ts
+    pruned = prune_old_timestamps(all_ts, now=t_ref, window_seconds=60.0)
+    assert pruned == fresh_ts
+
+    # 2. End-to-end integration test via API request
+    key = "test-key-1"
+    key_hash = hash_api_key(key)
+    now = time.monotonic()
+
+    with FastAPITestClient(app) as client:
+        # Pre-seed history with both stale and fresh timestamps
+        old_1 = now - 150.0
+        old_2 = now - 75.0
+        fresh_1 = now - 25.0
+        fresh_2 = now - 10.0
+        app.state.rate_limits[key_hash] = [old_1, old_2, fresh_1, fresh_2]
+
+        # Make an authenticated request
+        res = client.post(
+            "/triage",
+            headers={"X-API-Key": key},
+            json={"ticket_id": "T-PRUNE-1", "body": "Need delivery status"},
+        )
+        assert res.status_code == 200
+
+        # Verify old timestamps were dropped and new one appended
+        current_history = app.state.rate_limits[key_hash]
+        assert old_1 not in current_history
+        assert old_2 not in current_history
+        assert fresh_1 in current_history
+        assert fresh_2 in current_history
+        assert len(current_history) == 3
+        assert current_history[-1] >= now
+
+
+def test_rate_limit_exceeded_returns_429_with_retry_after() -> None:
+    """Verify 60 or more requests in 60s return 429 + Retry-After header."""
+    import time
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        hash_api_key,
+    )
+
+    key = "test-key-1"
+    key_hash = hash_api_key(key)
+
+    with FastAPITestClient(app) as client:
+        now = time.monotonic()
+        initial_errors = app.state.counters.errors_total
+        initial_rate_limited = app.state.counters.rate_limited_total
+
+        # Oldest request was 45 seconds ago (expires in ~15 seconds)
+        oldest_ts = now - 45.0
+        # Seed exactly 60 active timestamps within the 60s sliding window
+        seeded_timestamps = [oldest_ts] + [
+            now - (40.0 - i * 0.5) for i in range(RATE_LIMIT_MAX_REQUESTS - 1)
+        ]
+        assert len(seeded_timestamps) == RATE_LIMIT_MAX_REQUESTS
+        app.state.rate_limits[key_hash] = list(seeded_timestamps)
+
+        # 61st request arrives while 60 remain -> rejected with 429
+        payload = {"ticket_id": "T-RL-LIMIT", "body": "Where is my item?"}
+        res = client.post(
+            "/triage",
+            headers={"X-API-Key": key},
+            json=payload,
+        )
+        assert res.status_code == 429
+        assert res.json()["detail"] == "Too Many Requests"
+
+        # Verify Retry-After header
+        assert "Retry-After" in res.headers
+        retry_after = int(res.headers["Retry-After"])
+        # Expected expiry: oldest_ts + 60.0 - now = 60 - 45 = ~15s
+        assert 14 <= retry_after <= 16
+
+        # History should still contain 60 timestamps (rejected request is not added)
+        assert len(app.state.rate_limits[key_hash]) == RATE_LIMIT_MAX_REQUESTS
+
+        # 429 is a client error, not a 5xx server error
+        assert app.state.counters.errors_total == initial_errors
+        # rate_limited_total counter is incremented on every 429
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 1
+
+
+def test_rate_limit_isolation_between_keys() -> None:
+    """Verify rate limits are tracked independently per API key."""
+    import time
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        hash_api_key,
+    )
+
+    key1 = "test-key-1"
+    key2 = "test-key-2"
+    hash1 = hash_api_key(key1)
+    hash2 = hash_api_key(key2)
+
+    with FastAPITestClient(app) as client:
+        now = time.monotonic()
+        # Key 1 has exhausted its 60 requests
+        app.state.rate_limits[hash1] = [now - 10.0] * RATE_LIMIT_MAX_REQUESTS
+        app.state.rate_limits[hash2] = []
+
+        payload = {"ticket_id": "T-ISO-1", "body": "Need delivery check"}
+
+        # Key 1 gets 429
+        res1 = client.post(
+            "/triage",
+            headers={"X-API-Key": key1},
+            json=payload,
+        )
+        assert res1.status_code == 429
+
+        # Key 2 still succeeds with 200
+        res2 = client.post(
+            "/triage",
+            headers={"X-API-Key": key2},
+            json=payload,
+        )
+        assert res2.status_code == 200
+        assert len(app.state.rate_limits[hash2]) == 1
+
+
+def test_rate_limited_total_increments_on_every_429() -> None:
+    """Verify rate_limited_total in-memory counter increments on every 429."""
+    import time
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        hash_api_key,
+    )
+
+    key1 = "test-key-1"
+    key2 = "test-key-2"
+    hash1 = hash_api_key(key1)
+
+    with FastAPITestClient(app) as client:
+        now = time.monotonic()
+        initial_rate_limited = app.state.counters.rate_limited_total
+        initial_errors = app.state.counters.errors_total
+
+        # Key 1 has reached max requests in window
+        app.state.rate_limits[hash1] = [now - 5.0] * RATE_LIMIT_MAX_REQUESTS
+
+        payload = {"ticket_id": "T-RL-CTR-1", "body": "Need order help"}
+
+        # First 429 on /triage
+        res1 = client.post("/triage", headers={"X-API-Key": key1}, json=payload)
+        assert res1.status_code == 429
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 1
+
+        # Second 429 on /triage
+        res2 = client.post("/triage", headers={"X-API-Key": key1}, json=payload)
+        assert res2.status_code == 429
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 2
+
+        # Third 429 on /metrics (also protected by get_api_key)
+        res3 = client.get("/metrics", headers={"X-API-Key": key1})
+        assert res3.status_code == 429
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 3
+
+        # Successful request on key2 does NOT increment rate_limited_total
+        res_ok = client.post("/triage", headers={"X-API-Key": key2}, json=payload)
+        assert res_ok.status_code == 200
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 3
+
+        # rate_limited_total is exposed in /metrics response
+        res_metrics_exposed = client.get("/metrics", headers={"X-API-Key": key2})
+        assert res_metrics_exposed.status_code == 200
+        assert (
+            res_metrics_exposed.json()["rate_limited_total"] == initial_rate_limited + 3
+        )
+
+        # Unauthorized request (401) does NOT increment rate_limited_total
+        res_unauth = client.post(
+            "/triage",
+            headers={"X-API-Key": "wrong-key"},
+            json=payload,
+        )
+        assert res_unauth.status_code == 401
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 3
+
+        # 429 client errors do NOT pollute errors_total
+        assert app.state.counters.errors_total == initial_errors
+
+
+def test_limiter_runs_after_auth_only_valid_keys_counted() -> None:
+    """Verify limiter runs strictly after auth: only valid keys get counted."""
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        hash_api_key,
+    )
+
+    valid_key = "test-key-1"
+    invalid_key = "unauthenticated-attacker-key"
+    invalid_hash = hash_api_key(invalid_key)
+    valid_hash = hash_api_key(valid_key)
+
+    with FastAPITestClient(app) as client:
+        # Reset rate limits for clean state
+        app.state.rate_limits.clear()
+        initial_rate_limited = app.state.counters.rate_limited_total
+
+        payload = {"ticket_id": "T-AUTH-LIMIT-1", "body": "Need support help"}
+
+        # 1. Repeated requests with invalid key (> 60 rate limit)
+        for _ in range(RATE_LIMIT_MAX_REQUESTS + 10):
+            res_bad = client.post(
+                "/triage",
+                headers={"X-API-Key": invalid_key},
+                json=payload,
+            )
+            # Must always return 401 Unauthorized, never 429 Too Many Requests
+            assert res_bad.status_code == 401
+            assert res_bad.json()["detail"] == "Unauthorized"
+
+        # Invalid key was never recorded in rate_limits dictionary
+        assert invalid_key not in app.state.rate_limits
+        assert invalid_hash not in app.state.rate_limits
+        assert app.state.counters.rate_limited_total == initial_rate_limited
+
+        # 2. Missing key also returns 401 and is never counted in rate limits
+        res_no_key = client.post("/triage", json=payload)
+        assert res_no_key.status_code == 401
+        assert "none" not in app.state.rate_limits
+        assert app.state.counters.rate_limited_total == initial_rate_limited
+
+        # 3. Valid key is counted and succeeds normally
+        res_valid = client.post(
+            "/triage",
+            headers={"X-API-Key": valid_key},
+            json=payload,
+        )
+        assert res_valid.status_code == 200
+        assert valid_hash in app.state.rate_limits
+        assert len(app.state.rate_limits[valid_hash]) == 1
+
+
+def test_rate_limit_dependency_standalone() -> None:
+    """Verify rate_limit dependency functions as an independent dependency."""
+    from fastapi import Depends, FastAPI
+    from supportpilot.api.main import rate_limit
+
+    sub_app = FastAPI()
+    sub_app.state.api_keys = {"sub-key-1"}
+    sub_app.state.rate_limits = {}
+    sub_app.state.rate_limit_max_requests = 2
+
+    @sub_app.get("/guarded", dependencies=[Depends(rate_limit)])
+    def _guarded_endpoint() -> dict[str, str]:
+        return {"status": "ok"}
+
+    with FastAPITestClient(sub_app) as client:
+        # Request without key fails at auth with 401
+        res_no_key = client.get("/guarded")
+        assert res_no_key.status_code == 401
+
+        # First request succeeds with 200
+        res1 = client.get("/guarded", headers={"X-API-Key": "sub-key-1"})
+        assert res1.status_code == 200
+
+        # Second request succeeds with 200
+        res2 = client.get("/guarded", headers={"X-API-Key": "sub-key-1"})
+        assert res2.status_code == 200
+
+        # Third request exceeds max 2 -> 429
+        res3 = client.get("/guarded", headers={"X-API-Key": "sub-key-1"})
+        assert res3.status_code == 429
+        assert "Retry-After" in res3.headers
+
+
+def test_health_and_triage_model_version_contract() -> None:
+    """Verify model_version is returned in /health and every /triage response."""
+    with TestClient(app) as client:
+        # /health contract
+        res_health = client.get("/health")
+        assert res_health.status_code == 200
+        health_data = res_health.json()
+        assert "model_version" in health_data
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", health_data["model_version"])
+
+        # /triage contract
+        res_triage = client.post(
+            "/triage",
+            json={"ticket_id": "T-VER-1", "body": "Need delivery tracking info"},
+        )
+        assert res_triage.status_code == 200
+        triage_data = res_triage.json()
+        assert "model_version" in triage_data
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", triage_data["model_version"])
+        assert health_data["model_version"] == triage_data["model_version"]
+        assert set(triage_data.keys()) == {
+            "ticket_id",
+            "label",
+            "confidence",
+            "needs_review",
+            "model_version",
+        }
+
+
+def test_startup_fails_fast_on_broken_model_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Startup must fail if model version is broken or missing (no silent fallback)."""
+    import joblib
+    from supportpilot.triage.model import TriageClassifier
+
+    broken_model_path = tmp_path / "broken_model.joblib"
+    clf = TriageClassifier()
+    joblib.dump(
+        {
+            "pipeline": clf.pipeline,
+            "version": "1.0.0",  # Legacy format without triage-v prefix and date
+            "metadata": {
+                "version": "1.0.0",
+                "training_date": "2026-10-22",
+                "dataset_size": 180,
+                "macro_f1": 0.85,
+                "labels": list(LABELS),
+            },
+        },
+        broken_model_path,
+    )
+    monkeypatch.setenv("TRIAGE_MODEL_PATH", str(broken_model_path))
+    monkeypatch.setenv("TRIAGE_API_KEYS", "test-key-1")
+
+    with pytest.raises(ValueError, match="Broken or invalid model version"):
+        with TestClient(app):
+            pass
+
+
+def test_conftest_fixture_sets_test_keys_via_env_var(test_keys: list[str]) -> None:
+    """Verify conftest fixture sets test keys via TRIAGE_API_KEYS env var (Part D)."""
+    import os
+
+    env_val = os.getenv("TRIAGE_API_KEYS")
+    assert env_val is not None
+    for key in test_keys:
+        assert key in env_val
+
+
+# =====================================================================
+# Auth Tests: no key, wrong key, valid key, and /health without a key
+# =====================================================================
+
+
+def test_auth_no_key_returns_401() -> None:
+    """Verify request with no API key returns 401 Unauthorized."""
+    with FastAPITestClient(app) as client:
+        # 1. /triage without key
+        res_triage = client.post(
+            "/triage",
+            json={"ticket_id": "T-NOKEY", "body": "Where is my parcel?"},
+        )
+        assert res_triage.status_code == 401
+        assert res_triage.json() == {"detail": "Unauthorized"}
+
+        # 2. /metrics without key
+        res_metrics = client.get("/metrics")
+        assert res_metrics.status_code == 401
+        assert res_metrics.json() == {"detail": "Unauthorized"}
+
+
+def test_auth_wrong_key_returns_401() -> None:
+    """Verify request with wrong API key returns 401 Unauthorized."""
+    with FastAPITestClient(app) as client:
+        # 1. /triage with invalid key
+        res_triage = client.post(
+            "/triage",
+            headers={"X-API-Key": "invalid-wrong-key-secret"},
+            json={"ticket_id": "T-WRONGKEY", "body": "Where is my parcel?"},
+        )
+        assert res_triage.status_code == 401
+        assert res_triage.json() == {"detail": "Unauthorized"}
+
+        # 2. /metrics with invalid key
+        res_metrics = client.get(
+            "/metrics",
+            headers={"X-API-Key": "invalid-wrong-key-secret"},
+        )
+        assert res_metrics.status_code == 401
+        assert res_metrics.json() == {"detail": "Unauthorized"}
+
+
+def test_auth_valid_key_returns_200(test_keys: list[str]) -> None:
+    """Verify request with valid API key returns 200 OK."""
+    with FastAPITestClient(app) as client:
+        # 1. /triage with valid key 1
+        res_triage = client.post(
+            "/triage",
+            headers={"X-API-Key": test_keys[0]},
+            json={"ticket_id": "T-VALIDKEY", "body": "Where is my parcel?"},
+        )
+        assert res_triage.status_code == 200
+        assert res_triage.json()["label"] == "delivery"
+
+        # 2. /metrics with valid key 2
+        res_metrics = client.get(
+            "/metrics",
+            headers={"X-API-Key": test_keys[1]},
+        )
+        assert res_metrics.status_code == 200
+        assert "requests_total" in res_metrics.json()
+
+
+def test_auth_health_without_key_returns_200() -> None:
+    """Verify /health is public and succeeds without an API key."""
+    with FastAPITestClient(app) as client:
+        # Request /health without any X-API-Key header
+        response = client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["model_loaded"] is True
+        assert "model_version" in data
+
+
+# =====================================================================
+# Rate Limit Tests: send 61 requests -> last gets 429 with Retry-After
+# =====================================================================
+
+
+def test_rate_limit_send_61_requests_last_gets_429_with_retry_after() -> None:
+    """Send 61 requests: first 60 succeed (200), 61st returns 429 + Retry-After."""
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        RATE_LIMIT_WINDOW_SECONDS,
+        hash_api_key,
+    )
+
+    test_key = "test-key-1"
+    key_hash = hash_api_key(test_key)
+
+    with FastAPITestClient(app) as client:
+        # Reset sliding window history for this key
+        app.state.rate_limits[key_hash] = []
+        initial_rate_limited = app.state.counters.rate_limited_total
+
+        # Send first 60 requests -> all must succeed (200 OK)
+        for i in range(RATE_LIMIT_MAX_REQUESTS):
+            res = client.get("/metrics", headers={"X-API-Key": test_key})
+            assert res.status_code == 200, f"Request {i + 1} failed: {res.text}"
+
+        assert len(app.state.rate_limits[key_hash]) == RATE_LIMIT_MAX_REQUESTS
+
+        # Send 61st request -> returns 429 Too Many Requests
+        res_61 = client.get("/metrics", headers={"X-API-Key": test_key})
+        assert res_61.status_code == 429
+        assert res_61.json()["detail"] == "Too Many Requests"
+
+        # Verify Retry-After header
+        assert "Retry-After" in res_61.headers
+        retry_after = int(res_61.headers["Retry-After"])
+        assert 1 <= retry_after <= int(RATE_LIMIT_WINDOW_SECONDS)
+
+        # Counter rate_limited_total incremented on 429
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 1
+
+
+def test_rate_limit_triage_send_61_requests_last_gets_429() -> None:
+    """Send 61 /triage requests: first 60 return 200, 61st returns 429."""
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        hash_api_key,
+    )
+
+    test_key = "test-key-2"
+    key_hash = hash_api_key(test_key)
+
+    with FastAPITestClient(app) as client:
+        app.state.rate_limits[key_hash] = []
+
+        for i in range(RATE_LIMIT_MAX_REQUESTS):
+            payload = {"ticket_id": f"T-RL-{i:03d}", "body": "Where is my parcel?"}
+            res = client.post(
+                "/triage",
+                headers={"X-API-Key": test_key},
+                json=payload,
+            )
+            assert res.status_code == 200
+
+        # 61st request gets 429 with Retry-After
+        res_61 = client.post(
+            "/triage",
+            headers={"X-API-Key": test_key},
+            json={"ticket_id": "T-RL-061", "body": "Where is my parcel?"},
+        )
+        assert res_61.status_code == 429
+        assert "Retry-After" in res_61.headers
+        assert int(res_61.headers["Retry-After"]) >= 1
+
+
+# =====================================================================
+# Versioning Tests: model_version in both responses
+# =====================================================================
+
+
+def test_versioning_model_version_in_both_responses() -> None:
+    """Verify model_version is returned in both /health and /triage responses."""
+    with FastAPITestClient(app) as client:
+        # 1. /health response contains model_version
+        res_health = client.get("/health")
+        assert res_health.status_code == 200
+        health_data = res_health.json()
+        assert "model_version" in health_data
+        assert isinstance(health_data["model_version"], str)
+        assert re.match(r"^triage-v\d+\.\d+\.\d+-\d{8}$", health_data["model_version"])
+
+        # 2. /triage response contains model_version
+        res_triage = client.post(
+            "/triage",
+            headers={"X-API-Key": "test-key-1"},
+            json={
+                "ticket_id": "T-VER-BOTH-1",
+                "subject": "Delivery tracking query",
+                "body": "Where is my delivery package?",
+            },
+        )
+        assert res_triage.status_code == 200
+        triage_data = res_triage.json()
+        assert "model_version" in triage_data
+        assert isinstance(triage_data["model_version"], str)
+        assert re.match(r"^triage-v\d+\.\d+\.\d+-\d{8}$", triage_data["model_version"])
+
+        # 3. Both responses return identical model_version matching loaded model
+        assert health_data["model_version"] == triage_data["model_version"]
+        assert triage_data["model_version"] == app.state.model.version
+
+        # 4. /triage without subject also includes model_version
+        res_body_only = client.post(
+            "/triage",
+            headers={"X-API-Key": "test-key-2"},
+            json={"ticket_id": "T-VER-BOTH-2", "body": "Need refund status."},
+        )
+        assert res_body_only.status_code == 200
+        assert res_body_only.json()["model_version"] == health_data["model_version"]
+
+
+# =====================================================================
+# Logging Tests: the key string never appears in captured logs
+# =====================================================================
+
+
+def test_logging_key_string_never_appears_in_captured_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify raw API key strings never appear in captured logs."""
+    from supportpilot.api.main import hash_api_key
+
+    valid_key = "test-key-1"
+    wrong_key = "unauthorized-secret-leak-test-key-9999"
+
+    valid_hash = hash_api_key(valid_key)
+    wrong_hash = hash_api_key(wrong_key)
+
+    with caplog.at_level(logging.DEBUG):
+        with FastAPITestClient(app) as client:
+            # 1. Successful authenticated /triage request
+            res_triage = client.post(
+                "/triage",
+                headers={"X-API-Key": valid_key},
+                json={"ticket_id": "T-LOG-1", "body": "Delivery question"},
+            )
+            assert res_triage.status_code == 200
+
+            # 2. Failed unauthenticated /triage request with wrong key
+            res_wrong = client.post(
+                "/triage",
+                headers={"X-API-Key": wrong_key},
+                json={"ticket_id": "T-LOG-2", "body": "Delivery question"},
+            )
+            assert res_wrong.status_code == 401
+
+            # 3. Successful authenticated /metrics request
+            res_metrics = client.get(
+                "/metrics",
+                headers={"X-API-Key": valid_key},
+            )
+            assert res_metrics.status_code == 200
+
+            # 4. Failed /metrics request with wrong key
+            res_metrics_wrong = client.get(
+                "/metrics",
+                headers={"X-API-Key": wrong_key},
+            )
+            assert res_metrics_wrong.status_code == 401
+
+    # Raw key string must NEVER appear anywhere in captured log text
+    assert valid_key not in caplog.text
+    assert wrong_key not in caplog.text
+
+    # SHA-256 short hash prefixes MUST be logged instead
+    assert f"api_key_hash={valid_hash}" in caplog.text
+    assert f"api_key_hash={wrong_hash}" in caplog.text
+
+    # Comprehensive inspection across all log record messages and extras
+    for record in caplog.records:
+        message = record.getMessage()
+        assert valid_key not in message
+        assert wrong_key not in message
+        for val in record.__dict__.values():
+            if isinstance(val, str):
+                assert valid_key not in val
+                assert wrong_key not in val

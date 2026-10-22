@@ -27,24 +27,38 @@ Build and run the ticket triage FastAPI container locally:
 # 1. Build the production multi-stage image (size < 400 MB)
 docker build -t supportpilot-api:latest .
 
-# 2. Run the container exposing port 8000
-docker run -d --name supportpilot-api -p 8000:8000 supportpilot-api:latest
+# 2. Run the container exposing port 8000 with configured API key
+docker run -d --name supportpilot-api -p 8000:8000 \
+  -e TRIAGE_API_KEYS="secret-key-1" \
+  supportpilot-api:latest
 
-# 3. Verify the healthcheck endpoint
+# 3. Verify public healthcheck endpoint (no key required)
 curl http://localhost:8000/health
-# {"status":"ok","model_loaded":true}
+# {"status":"ok","model_loaded":true,"model_version":"triage-v1.0.0-20261022"}
 
-# 4. Classify an inbound support ticket
+# 4. Unauthenticated calls are rejected with 401 Unauthorized
+curl -i -X POST http://localhost:8000/triage \
+  -H "Content-Type: application/json" \
+  -d '{"ticket_id":"T-001","body":"Where is my order?"}'
+# HTTP/1.1 401 Unauthorized
+# {"detail":"Unauthorized"}
+
+# 5. Authenticated classification of an inbound support ticket
 curl -X POST http://localhost:8000/triage \
+  -H "X-API-Key: secret-key-1" \
   -H "Content-Type: application/json" \
   -d '{"ticket_id":"T-001","body":"Where is my order? Scheduled delivery was today."}'
 
-# 5. Inspect operational telemetry
-curl http://localhost:8000/metrics
+# 6. Inspect operational telemetry (authenticated)
+curl http://localhost:8000/metrics \
+  -H "X-API-Key: secret-key-1"
 ```
 
 Interactive OpenAPI documentation is available at `http://localhost:8000/docs`.  
-For environment variables, cloud deployment, and rollback guides, see [docs/deployment.md](docs/deployment.md).
+- **API Key Generation**: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+- **Rate Limiting**: 60 requests/minute per key sliding window (returns 429 with `Retry-After`).
+- *Note: In-memory limits only work for a single instance.*  
+For environment variables, key rotation, rate limit architecture, cloud deployment, and rollback guides, see [docs/deployment.md](docs/deployment.md).
 
 ## CLI Usage
 

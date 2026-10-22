@@ -45,14 +45,17 @@ docker images supportpilot-api:latest
 ## 2. Run
 
 ### Local Container Execution
-Run the container in detached mode mapping port 8000:
+Run the container in detached mode mapping port 8000 (at least one valid key is required in `TRIAGE_API_KEYS`):
 ```bash
-docker run -d --name supportpilot-api -p 8000:8000 supportpilot-api:latest
+docker run -d --name supportpilot-api -p 8000:8000 \
+  -e TRIAGE_API_KEYS="secret-key-1,secret-key-2" \
+  supportpilot-api:latest
 ```
 
 ### Running with Custom Configuration
 ```bash
 docker run -d --name supportpilot-api -p 8000:8000 \
+  -e TRIAGE_API_KEYS="secret-key-1,secret-key-2" \
   -e TRIAGE_THRESHOLD=0.35 \
   supportpilot-api:latest
 ```
@@ -64,34 +67,51 @@ docker logs -f supportpilot-api
 ```
 
 ### Verifying Service Health
-Query the `/health` endpoint:
+Query the public `/health` endpoint (no API key required):
 ```bash
 curl -i http://localhost:8000/health
 ```
 Expected response (`HTTP 200 OK`):
 ```json
-{"status":"ok","model_loaded":true}
+{"status":"ok","model_loaded":true,"model_version":"triage-v1.0.0-20261022"}
 ```
 
-### Testing Triage Prediction
+### Unauthenticated Request Rejection
+Requests to `/triage` without an `X-API-Key` header are rejected before schema parsing:
+```bash
+curl -i -X POST http://localhost:8000/triage \
+  -H "Content-Type: application/json" \
+  -d '{"ticket_id":"T-TEST-1","body":"Where is my order?"}'
+```
+Expected response (`HTTP 401 Unauthorized`):
+```json
+{"detail":"Unauthorized"}
+```
+
+### Testing Authenticated Triage Prediction
+Provide a valid API key in the `X-API-Key` header:
 ```bash
 curl -s -X POST http://localhost:8000/triage \
+  -H "X-API-Key: secret-key-1" \
   -H "Content-Type: application/json" \
   -d '{"ticket_id":"T-TEST-1","body":"Where is my order? Delivery was expected yesterday."}'
 ```
-Expected response:
+Expected response (`HTTP 200 OK`):
 ```json
 {
   "ticket_id": "T-TEST-1",
   "label": "delivery",
   "confidence": 0.3172,
-  "needs_review": true
+  "needs_review": true,
+  "model_version": "triage-v1.0.0-20261022"
 }
 ```
 
 ### Querying Operational Telemetry
+Telemetry endpoint `/metrics` requires API key authentication:
 ```bash
-curl -s http://localhost:8000/metrics
+curl -s http://localhost:8000/metrics \
+  -H "X-API-Key: secret-key-1"
 ```
 Expected response:
 ```json
@@ -100,7 +120,8 @@ Expected response:
   "triage_total": 1,
   "errors_total": 0,
   "avg_latency_ms": 3.12,
-  "needs_review_rate": 1.0
+  "needs_review_rate": 1.0,
+  "rate_limited_total": 0
 }
 ```
 
@@ -112,18 +133,84 @@ All configuration settings are read dynamically at application startup:
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
+| `TRIAGE_API_KEYS` | `string` | *(Required)* | Comma-separated list of authorized API keys. At least one non-empty key is required. |
 | `TRIAGE_THRESHOLD` | `float` | `0.35` | Minimum classification confidence required to avoid manual human review. Predictions below this cutoff mark `needs_review: true`. Must be between `0.0` and `1.0`. |
 | `TRIAGE_MODEL_PATH`| `string`| `models/triage_model.joblib` | Filesystem path to the serialized trained model artifact. |
 | `PORT` | `int` | `8000` | Port on which the Uvicorn ASGI server listens. |
 
 ### Validation & Fail-Fast Guarantees
+- **Missing or Empty API Keys**: If `TRIAGE_API_KEYS` is missing, blank, or contains no non-empty comma-separated keys, startup fails immediately with `ValueError`.
 - **Invalid Float / Format**: If `TRIAGE_THRESHOLD` is not a valid float, startup fails immediately with `ValueError`.
 - **Out of Range**: If `TRIAGE_THRESHOLD` is outside `[0.0, 1.0]`, startup fails fast with `ValueError`.
 - **Missing Model File**: If the model artifact cannot be located at `TRIAGE_MODEL_PATH`, startup fails fast with `FileNotFoundError`.
 
 ---
 
-## 4. Deploy
+## 4. API Key Management & Security
+
+### Generating Strong API Keys
+Generate cryptographically random 256-bit URL-safe tokens (43 characters in base64url) using Python's standard `secrets` module:
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+### Secret Hygiene & Distribution Rules
+- **Never Commit Secrets**: Never commit raw API keys, `.env`, or `.secrets` files to Git. Secrets must remain ignored in `.gitignore`.
+- **Private Channels Only**: Distribute client and team API keys (e.g., Neha's key) **strictly through private, encrypted channels** (such as 1Password vaults or direct encrypted messages) — **never in chat transcripts, issue trackers, or Git commits**.
+- **Audit Logging**: The API server hashes API keys with SHA-256 and logs only the first 8 characters (`api_key_hash=<hash[:8]>`). Raw secret strings never appear in captured server logs.
+
+### Adding a New Key
+To add a new key, append it to the comma-separated `TRIAGE_API_KEYS` environment variable:
+```bash
+TRIAGE_API_KEYS=existing-key-1,new-key-2
+```
+Save and redeploy. Both keys are immediately active.
+
+### Zero-Downtime Key Rotation
+To rotate an API key without service downtime:
+1. **Generate**: Generate a new strong key using `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+2. **Dual-Key Stage**: Update `TRIAGE_API_KEYS` in the Render environment settings to contain both the old and new keys separated by a comma (e.g., `TRIAGE_API_KEYS=<old_key>,<new_key>`).
+3. **Deploy**: Save and trigger a redeploy. While the deployment rolls out, both old and new keys will authenticate successfully.
+4. **Distribute & Migrate**: Transmit `<new_key>` to the consumer (e.g. Neha) via a secure private channel. Update downstream client configurations to use `<new_key>`.
+5. **Revoke Old Key**: Once clients have migrated, update `TRIAGE_API_KEYS` to remove `<old_key>` (e.g., `TRIAGE_API_KEYS=<new_key>`) and redeploy. The old key is permanently revoked, and any requests still using it will receive `401 Unauthorized`.
+
+### Emergency Key Revocation
+If an API key is leaked or compromised:
+1. Open the **Render Dashboard** → **Environment Settings**.
+2. Remove the compromised key from `TRIAGE_API_KEYS`.
+3. Save and trigger a redeployment immediately.
+4. Once deployed, the compromised key will fail authentication instantly with `401 Unauthorized` without consuming rate limit quota or leaking schema details.
+
+---
+
+## 5. Rate Limiting Rules & Telemetry
+
+### Rate Limit Specification
+- **Window**: 60-second sliding window (`RATE_LIMIT_WINDOW_SECONDS = 60.0`).
+- **Quota**: Up to 60 requests (`RATE_LIMIT_MAX_REQUESTS = 60`) per window per API key.
+- **Execution Order**: The rate limit check executes *after* successful authentication. Unauthenticated requests are rejected immediately with 401 and do not consume quota.
+- **Clock Precision**: Tracks timestamps using `time.monotonic()` rather than wall-clock time (`time.time()`), preventing window corruption from server NTP adjustments or leap seconds.
+- **HTTP 429 Too Many Requests**: When the 61st request arrives within 60 seconds, the server rejects it with:
+  ```http
+  HTTP/1.1 429 Too Many Requests
+  Retry-After: 42
+  Content-Type: application/json
+
+  {"detail":"Rate limit exceeded"}
+  ```
+  The `Retry-After` header indicates the integer seconds until the oldest request in the window expires and quota becomes available.
+- **Metrics Exposure**: Every 429 response increments `rate_limited_total`, visible on `/metrics`.
+
+### Single-Instance Limitation
+> ⚠️ **In-Memory Single-Instance Limitation**:
+> Rate limiting timestamps are tracked in-memory within FastAPI application state (`app.state.rate_limit_history`) using Python deques.
+> - **In-memory limits only work for a single instance**: In a single-instance deployment (e.g. standard Render Web Service), the 60 req/min quota is strictly enforced per key.
+> - **Horizontal Scaling**: If the service is scaled to $N$ container instances or deployed behind a round-robin load balancer, each instance maintains independent memory state. A single API key could issue up to $N \times 60$ requests per minute across the fleet.
+> - **Multi-Instance Migration**: For horizontal multi-instance production clusters, replace the in-memory deque with a centralized distributed cache (e.g. Redis sliding window using `ZADD` / `ZREMRANGEBYSCORE` or Redis token bucket).
+
+---
+
+## 6. Deploy
 
 ### Continuous Integration (GitHub Actions)
 Every pull request and push to `main` or `feature/**` triggers `.github/workflows/ci.yml`:
@@ -138,16 +225,52 @@ Every pull request and push to `main` or `feature/**` triggers `.github/workflow
 ### Render Cloud Deployment
 The service is hosted on Render as a Docker Web Service.
 
+#### Pre-Deployment Requirement:
+> 🚨 **Critical Deployment Order**: Because `TRIAGE_API_KEYS` is validated at startup with fail-fast enforcement, you **must set `TRIAGE_API_KEYS` in the Render environment variables BEFORE merging PR #15 or deploying**, otherwise the new container will fail to start.
+
 #### Service Configuration:
 - **Service Type**: Web Service
 - **Repository**: `mlexpnew/supportpilot-ingestion`
-- **Branch**: `feature/SP-108-docker-deploy` (or `main` post-merge)
+- **Branch**: `main` (post-merge)
 - **Runtime**: **Docker** (Render uses repo `Dockerfile`)
 - **Port**: `8000` (Render auto-detects `EXPOSE 8000`)
 - **Health Check Path**: `/health`
 - **Instance Type**: Free tier or Starter (512 MB+ RAM)
 - **Environment Variables**:
   - `TRIAGE_THRESHOLD`: `0.35`
+  - `TRIAGE_API_KEYS`: `<comma-separated-api-keys>`
+
+#### Production Verification Checklist:
+Once deployed on Render, verify endpoints:
+1. **Health Check (Public)**:
+   ```bash
+   curl -i https://supportpilot-ingestion.onrender.com/health
+   # HTTP/2 200 OK
+   # {"status":"ok","model_loaded":true,"model_version":"triage-v1.0.0-YYYYMMDD"}
+   ```
+2. **Unauthenticated Triage Rejection (401)**:
+   ```bash
+   curl -i -X POST https://supportpilot-ingestion.onrender.com/triage \
+     -H "Content-Type: application/json" \
+     -d '{"ticket_id":"T-VERIFY-1","body":"Where is my order?"}'
+   # HTTP/2 401 Unauthorized
+   # {"detail":"Unauthorized"}
+   ```
+3. **Authenticated Triage Prediction (200)**:
+   ```bash
+   curl -i -X POST https://supportpilot-ingestion.onrender.com/triage \
+     -H "X-API-Key: <your-key>" \
+     -H "Content-Type: application/json" \
+     -d '{"ticket_id":"T-VERIFY-1","body":"Where is my order? Delivery was scheduled today."}'
+   # HTTP/2 200 OK
+   # {"ticket_id":"T-VERIFY-1","label":"delivery","confidence":...,"needs_review":...,"model_version":"triage-v1.0.0-YYYYMMDD"}
+   ```
+4. **Telemetry (Authenticated)**:
+   ```bash
+   curl -i https://supportpilot-ingestion.onrender.com/metrics \
+     -H "X-API-Key: <your-key>"
+   # HTTP/2 200 OK
+   ```
 
 #### Production URLs:
 - **Base Service**: `https://supportpilot-ingestion.onrender.com`
@@ -157,7 +280,7 @@ The service is hosted on Render as a Docker Web Service.
 
 ---
 
-## 5. Rollback
+## 7. Rollback
 
 In the event of an incident or degraded release, use one of the following rollback procedures:
 
