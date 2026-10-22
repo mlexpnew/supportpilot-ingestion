@@ -61,8 +61,8 @@ def main() -> int:
         "--redacted",
         "-r",
         type=Path,
-        default=None,
-        help="Path to redacted pilot tickets (default: out_redacted/redacted.jsonl if present).",
+        required=True,
+        help="Path to redacted pilot tickets JSONL file (e.g. out_redacted/redacted.jsonl).",
     )
     join_parser.add_argument(
         "--output",
@@ -100,8 +100,8 @@ def main() -> int:
             report = join_feedback_for_retraining(
                 original_dataset=args.original,
                 feedback_export=args.feedback,
-                output_dataset=args.output,
                 redacted_tickets=args.redacted,
+                output_dataset=args.output,
             )
             summary = {
                 "command": "join",

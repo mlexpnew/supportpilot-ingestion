@@ -1257,6 +1257,7 @@ def test_join_feedback_for_retraining_pilot_appends_and_unmatched(
         {
             "ticket_id": "T-5021",
             "customer_id": "C-1",
+            "subject": "Broken item received",
             "body": "Need a refund for damaged item.",
         },
         {
@@ -1286,8 +1287,8 @@ def test_join_feedback_for_retraining_pilot_appends_and_unmatched(
     report = join_feedback_for_retraining(
         original_dataset=orig_file,
         feedback_export=fb_export_file,
-        output_dataset=out_file,
         redacted_tickets=pilot_file,
+        output_dataset=out_file,
     )
 
     # Verify counts
@@ -1321,10 +1322,13 @@ def test_join_feedback_for_retraining_pilot_appends_and_unmatched(
     assert joined_lines[1]["label"] == "refund"
     assert joined_lines[1]["body"] == "Overcharged subscription fee."
 
-    # Row 2: T-5021 appended as new training row (ticket_id, body, label)
+    # Row 2: T-5021 appended as new training row (ticket_id, body=subject + body, label)
     assert joined_lines[2]["ticket_id"] == "T-5021"
     assert joined_lines[2]["label"] == "refund"
-    assert joined_lines[2]["body"] == "Need a refund for damaged item."
+    assert (
+        joined_lines[2]["body"]
+        == "Broken item received Need a refund for damaged item."
+    )
 
 
 def test_join_feedback_fail_fast_missing_files(tmp_path: Path) -> None:
@@ -1335,11 +1339,15 @@ def test_join_feedback_fail_fast_missing_files(tmp_path: Path) -> None:
     valid_fb = tmp_path / "fb.jsonl"
     valid_fb.write_text('{"ticket_id": "T1", "correct_label": "delivery"}\n')
 
+    valid_pilot = tmp_path / "pilot.jsonl"
+    valid_pilot.write_text('{"ticket_id": "T-PILOT-1", "body": "..."}\n')
+
     # Missing feedback export
     with pytest.raises(FileNotFoundError, match="Feedback export file not found"):
         join_feedback_for_retraining(
             original_dataset=valid_orig,
             feedback_export=tmp_path / "missing_fb.jsonl",
+            redacted_tickets=valid_pilot,
             output_dataset=tmp_path / "out.jsonl",
         )
 
@@ -1348,18 +1356,19 @@ def test_join_feedback_fail_fast_missing_files(tmp_path: Path) -> None:
         join_feedback_for_retraining(
             original_dataset=tmp_path / "missing_orig.jsonl",
             feedback_export=valid_fb,
+            redacted_tickets=valid_pilot,
             output_dataset=tmp_path / "out.jsonl",
         )
 
-    # Missing explicitly provided redacted pilot tickets
+    # Missing required redacted pilot tickets
     with pytest.raises(
         FileNotFoundError, match="Redacted pilot tickets file not found"
     ):
         join_feedback_for_retraining(
             original_dataset=valid_orig,
             feedback_export=valid_fb,
-            output_dataset=tmp_path / "out.jsonl",
             redacted_tickets=tmp_path / "missing_pilot.jsonl",
+            output_dataset=tmp_path / "out.jsonl",
         )
 
 

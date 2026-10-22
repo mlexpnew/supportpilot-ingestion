@@ -260,10 +260,10 @@ Exports are written atomically using a temporary file and renamed on completion 
 To retrain the triage classifier using human feedback corrections, combine the exported `data/feedback_export.jsonl` with the original tickets (`data/triage_labeled.jsonl`) and pilot tickets (`out_redacted/redacted.jsonl`) by `ticket_id`.
 
 ### Join Logic
-1. **Fail-Fast Validation**: Verifies `feedback_export` and `original_dataset` exist immediately. Missing input files raise `FileNotFoundError` rather than silently skipping corrections.
+1. **Fail-Fast Validation**: Verifies `feedback_export`, `original_dataset`, and `redacted_tickets` exist immediately. All paths are required (no hidden defaults). Missing input files raise `FileNotFoundError` rather than silently skipping corrections.
 2. **Load Corrections**: Parses `feedback_export.jsonl` into a dictionary mapping `ticket_id -> correct_label`.
 3. **Relabel Original Tickets**: Scans `data/triage_labeled.jsonl`. For tickets with agent feedback, updates `label = correct_label` (`matched`). Tickets without feedback retain their original label.
-4. **Append Pilot Tickets**: Scans helpdesk pilot tickets (`out_redacted/redacted.jsonl`). For pilot tickets reviewed by agents, appends them as new training rows `{"ticket_id": tid, "body": body, "label": correct_label}` (`appended`). This ensures retraining learns from real production data.
+4. **Append Pilot Tickets**: Scans helpdesk pilot tickets (`out_redacted/redacted.jsonl`). For pilot tickets reviewed by agents, concatenates `subject + body` (matching the exact text format `/triage` predicts on) and appends them as new training rows `{"ticket_id": tid, "body": f"{subject} {body}".strip(), "label": correct_label}` (`appended`). This ensures retraining learns from real production data on identical classification text.
 5. **Report Unmatched Rows**: Unmatched feedback rows (feedback entries with no ticket text in either dataset) are counted (`unmatched`) and reported so operators know what was omitted.
 6. **Zero PII Introduced**: Because `feedback_export.jsonl` contains only `ticket_id` and `correct_label`, the join preserves the existing PII redaction of both datasets.
 
