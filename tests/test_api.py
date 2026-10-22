@@ -457,6 +457,7 @@ def test_counters_initial_state() -> None:
             "errors_total": 0,
             "avg_latency_ms": 0.0,
             "needs_review_rate": 0.0,
+            "rate_limited_total": 0,
         }
 
         # app.state.counters contains the same zero values
@@ -737,12 +738,14 @@ def test_metric_keys() -> None:
             "errors_total",
             "avg_latency_ms",
             "needs_review_rate",
+            "rate_limited_total",
         }
         assert isinstance(data["requests_total"], int)
         assert isinstance(data["triage_total"], int)
         assert isinstance(data["errors_total"], int)
         assert isinstance(data["avg_latency_ms"], float)
         assert isinstance(data["needs_review_rate"], float)
+        assert isinstance(data["rate_limited_total"], int)
 
 
 def test_no_ticket_text_in_metrics() -> None:
@@ -1149,8 +1152,8 @@ def test_rate_limiting_tracks_request_timestamps_by_key_hash() -> None:
         assert res_bad.status_code == 401
         assert bad_hash not in app.state.rate_limits
 
-        # 5. Check alias
-        assert app.state.request_timestamps is app.state.rate_limits
+        # 5. Rate limits dictionary stores entries by key hash
+        assert len(app.state.rate_limits) == 2
 
 
 def test_drop_timestamps_older_than_60_seconds() -> None:
@@ -1183,7 +1186,7 @@ def test_drop_timestamps_older_than_60_seconds() -> None:
     # 2. End-to-end integration test via API request
     key = "test-key-1"
     key_hash = hash_api_key(key)
-    now = time.time()
+    now = time.monotonic()
 
     with FastAPITestClient(app) as client:
         # Pre-seed history with both stale and fresh timestamps
@@ -1223,7 +1226,7 @@ def test_rate_limit_exceeded_returns_429_with_retry_after() -> None:
     key_hash = hash_api_key(key)
 
     with FastAPITestClient(app) as client:
-        now = time.time()
+        now = time.monotonic()
         initial_errors = app.state.counters.errors_total
         initial_rate_limited = app.state.counters.rate_limited_total
 
@@ -1275,7 +1278,7 @@ def test_rate_limit_isolation_between_keys() -> None:
     hash2 = hash_api_key(key2)
 
     with FastAPITestClient(app) as client:
-        now = time.time()
+        now = time.monotonic()
         # Key 1 has exhausted its 60 requests
         app.state.rate_limits[hash1] = [now - 10.0] * RATE_LIMIT_MAX_REQUESTS
         app.state.rate_limits[hash2] = []
@@ -1313,7 +1316,7 @@ def test_rate_limited_total_increments_on_every_429() -> None:
     hash1 = hash_api_key(key1)
 
     with FastAPITestClient(app) as client:
-        now = time.time()
+        now = time.monotonic()
         initial_rate_limited = app.state.counters.rate_limited_total
         initial_errors = app.state.counters.errors_total
 
@@ -1341,6 +1344,13 @@ def test_rate_limited_total_increments_on_every_429() -> None:
         res_ok = client.post("/triage", headers={"X-API-Key": key2}, json=payload)
         assert res_ok.status_code == 200
         assert app.state.counters.rate_limited_total == initial_rate_limited + 3
+
+        # rate_limited_total is exposed in /metrics response
+        res_metrics_exposed = client.get("/metrics", headers={"X-API-Key": key2})
+        assert res_metrics_exposed.status_code == 200
+        assert (
+            res_metrics_exposed.json()["rate_limited_total"] == initial_rate_limited + 3
+        )
 
         # Unauthorized request (401) does NOT increment rate_limited_total
         res_unauth = client.post(
@@ -1405,3 +1415,36 @@ def test_limiter_runs_after_auth_only_valid_keys_counted() -> None:
         assert res_valid.status_code == 200
         assert valid_hash in app.state.rate_limits
         assert len(app.state.rate_limits[valid_hash]) == 1
+
+
+def test_rate_limit_dependency_standalone() -> None:
+    """Verify rate_limit dependency functions as an independent dependency."""
+    from fastapi import Depends, FastAPI
+    from supportpilot.api.main import rate_limit
+
+    sub_app = FastAPI()
+    sub_app.state.api_keys = {"sub-key-1"}
+    sub_app.state.rate_limits = {}
+    sub_app.state.rate_limit_max_requests = 2
+
+    @sub_app.get("/guarded", dependencies=[Depends(rate_limit)])
+    def _guarded_endpoint() -> dict[str, str]:
+        return {"status": "ok"}
+
+    with FastAPITestClient(sub_app) as client:
+        # Request without key fails at auth with 401
+        res_no_key = client.get("/guarded")
+        assert res_no_key.status_code == 401
+
+        # First request succeeds with 200
+        res1 = client.get("/guarded", headers={"X-API-Key": "sub-key-1"})
+        assert res1.status_code == 200
+
+        # Second request succeeds with 200
+        res2 = client.get("/guarded", headers={"X-API-Key": "sub-key-1"})
+        assert res2.status_code == 200
+
+        # Third request exceeds max 2 -> 429
+        res3 = client.get("/guarded", headers={"X-API-Key": "sub-key-1"})
+        assert res3.status_code == 429
+        assert "Retry-After" in res3.headers

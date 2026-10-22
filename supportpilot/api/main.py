@@ -131,11 +131,7 @@ def get_api_key(
     request: Request,
     api_key: str | None = Security(api_key_header),
 ) -> str:
-    """FastAPI dependency that reads and validates the X-API-Key header.
-
-    Authenticates the request first; rate limiting runs strictly after
-    authentication so only valid keys get counted.
-    """
+    """FastAPI dependency that reads and validates the X-API-Key header."""
     key_hash = hash_api_key(api_key)
     request.state.api_key_hash = key_hash
     valid_keys: set[str] = getattr(request.app.state, "api_keys", set())
@@ -154,18 +150,27 @@ def get_api_key(
         key_hash,
         extra={"api_key_hash": key_hash},
     )
+    return api_key  # type: ignore[return-value]
 
-    # Rate limiting: runs after auth (only valid keys get counted)
-    # key hash -> list of request timestamps
+
+def rate_limit(
+    request: Request,
+    api_key: str = Depends(get_api_key),
+) -> None:
+    """FastAPI dependency enforcing per-key sliding window rate limiting.
+
+    Runs after authentication (only valid keys are counted).
+    Note: In-memory limits only work for a single instance.
+    """
+    key_hash = getattr(request.state, "api_key_hash", None) or hash_api_key(api_key)
     rate_limits: dict[str, list[float]] | None = getattr(
         request.app.state, "rate_limits", None
     )
     if rate_limits is None:
         rate_limits = {}
         request.app.state.rate_limits = rate_limits
-        request.app.state.request_timestamps = rate_limits
 
-    now = time.time()
+    now = time.monotonic()
     # On each request, drop timestamps older than 60 seconds
     active_timestamps = prune_old_timestamps(
         rate_limits.get(key_hash, []),
@@ -195,17 +200,9 @@ def get_api_key(
             headers={"Retry-After": str(retry_after)},
         )
 
-    # Otherwise add the current timestamp and continue
+    # Otherwise add the current monotonic timestamp and continue
     active_timestamps.append(now)
     rate_limits[key_hash] = active_timestamps
-
-    return api_key  # type: ignore[return-value]
-
-
-def get_request_timestamps(request: Request, key_hash: str) -> list[float]:
-    """Return the list of request timestamps for a key hash."""
-    rate_limits: dict[str, list[float]] = getattr(request.app.state, "rate_limits", {})
-    return rate_limits.get(key_hash, [])
 
 
 class TriageRequest(BaseModel):
@@ -246,6 +243,7 @@ class MetricsResponse(BaseModel):
     errors_total: int
     avg_latency_ms: float
     needs_review_rate: float
+    rate_limited_total: int
 
 
 @asynccontextmanager
@@ -266,20 +264,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.counters = Counters()
     app.state.api_keys = get_api_keys()
     app.state.rate_limits = {}
-    app.state.request_timestamps = app.state.rate_limits
     yield
     app.state.model = None
     app.state.threshold = None
     app.state.api_keys = set()
     app.state.rate_limits = {}
-    app.state.request_timestamps = app.state.rate_limits
 
 
-app = FastAPI(title="SupportPilot Triage API", lifespan=lifespan)
+app = FastAPI(
+    title="SupportPilot Triage API",
+    description=(
+        "SupportPilot Ticket Triage API. "
+        "In-memory limits only work for a single instance."
+    ),
+    lifespan=lifespan,
+)
 app.state.counters = Counters()
 app.state.api_keys = set()
 app.state.rate_limits = {}
-app.state.request_timestamps = app.state.rate_limits
 
 
 @app.middleware("http")
@@ -356,7 +358,7 @@ def health(req: Request) -> dict[str, object]:
 @app.get(
     "/metrics",
     response_model=MetricsResponse,
-    dependencies=[Depends(get_api_key)],
+    dependencies=[Depends(rate_limit)],
 )
 def get_metrics(req: Request) -> MetricsResponse:
     counters: Counters | None = getattr(req.app.state, "counters", None)
@@ -367,6 +369,7 @@ def get_metrics(req: Request) -> MetricsResponse:
             errors_total=0 if counters is None else counters.errors_total,
             avg_latency_ms=0.0,
             needs_review_rate=0.0,
+            rate_limited_total=0 if counters is None else counters.rate_limited_total,
         )
 
     avg_latency = round(counters.total_latency_ms / counters.requests_total, 2)
@@ -382,13 +385,14 @@ def get_metrics(req: Request) -> MetricsResponse:
         errors_total=counters.errors_total,
         avg_latency_ms=avg_latency,
         needs_review_rate=review_rate,
+        rate_limited_total=counters.rate_limited_total,
     )
 
 
 @app.post(
     "/triage",
     response_model=TriageResponse,
-    dependencies=[Depends(get_api_key)],
+    dependencies=[Depends(rate_limit)],
 )
 def triage(request: TriageRequest, req: Request) -> TriageResponse:
     start_time = time.perf_counter()

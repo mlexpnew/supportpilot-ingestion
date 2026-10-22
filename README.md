@@ -44,7 +44,8 @@ curl http://localhost:8000/metrics
 ```
 
 Interactive OpenAPI documentation is available at `http://localhost:8000/docs`.  
-For environment variables, cloud deployment, and rollback guides, see [docs/deployment.md](docs/deployment.md).
+For environment variables, cloud deployment, and rollback guides, see [docs/deployment.md](docs/deployment.md).  
+*Note: In-memory limits only work for a single instance.*
 
 ## CLI Usage
 

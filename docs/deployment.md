@@ -100,9 +100,12 @@ Expected response:
   "triage_total": 1,
   "errors_total": 0,
   "avg_latency_ms": 3.12,
-  "needs_review_rate": 1.0
+  "needs_review_rate": 1.0,
+  "rate_limited_total": 0
 }
 ```
+
+> Note: In-memory limits only work for a single instance.
 
 ---
 
