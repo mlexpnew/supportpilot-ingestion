@@ -1728,4 +1728,74 @@ def test_versioning_model_version_in_both_responses() -> None:
             json={"ticket_id": "T-VER-BOTH-2", "body": "Need refund status."},
         )
         assert res_body_only.status_code == 200
-        assert res_body_only.json()["model_version"] == health_data["model_version"]
+        assert (
+            res_body_only.json()["model_version"] == health_data["model_version"]
+        )
+
+
+# =====================================================================
+# Logging Tests: the key string never appears in captured logs
+# =====================================================================
+
+
+def test_logging_key_string_never_appears_in_captured_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify raw API key strings never appear in captured logs."""
+    from supportpilot.api.main import hash_api_key
+
+    valid_key = "test-key-1"
+    wrong_key = "unauthorized-secret-leak-test-key-9999"
+
+    valid_hash = hash_api_key(valid_key)
+    wrong_hash = hash_api_key(wrong_key)
+
+    with caplog.at_level(logging.DEBUG):
+        with FastAPITestClient(app) as client:
+            # 1. Successful authenticated /triage request
+            res_triage = client.post(
+                "/triage",
+                headers={"X-API-Key": valid_key},
+                json={"ticket_id": "T-LOG-1", "body": "Delivery question"},
+            )
+            assert res_triage.status_code == 200
+
+            # 2. Failed unauthenticated /triage request with wrong key
+            res_wrong = client.post(
+                "/triage",
+                headers={"X-API-Key": wrong_key},
+                json={"ticket_id": "T-LOG-2", "body": "Delivery question"},
+            )
+            assert res_wrong.status_code == 401
+
+            # 3. Successful authenticated /metrics request
+            res_metrics = client.get(
+                "/metrics",
+                headers={"X-API-Key": valid_key},
+            )
+            assert res_metrics.status_code == 200
+
+            # 4. Failed /metrics request with wrong key
+            res_metrics_wrong = client.get(
+                "/metrics",
+                headers={"X-API-Key": wrong_key},
+            )
+            assert res_metrics_wrong.status_code == 401
+
+    # Raw key string must NEVER appear anywhere in captured log text
+    assert valid_key not in caplog.text
+    assert wrong_key not in caplog.text
+
+    # SHA-256 short hash prefixes MUST be logged instead
+    assert f"api_key_hash={valid_hash}" in caplog.text
+    assert f"api_key_hash={wrong_hash}" in caplog.text
+
+    # Comprehensive inspection across all log record messages and extras
+    for record in caplog.records:
+        message = record.getMessage()
+        assert valid_key not in message
+        assert wrong_key not in message
+        for val in record.__dict__.values():
+            if isinstance(val, str):
+                assert valid_key not in val
+                assert wrong_key not in val
