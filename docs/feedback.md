@@ -9,6 +9,34 @@ SupportPilot's feedback loop enables human agents to correct automated ticket tr
 
 ---
 
+## Data Flow
+
+```mermaid
+flowchart TD
+    A[Incoming Ticket] -->|POST /triage| B[FastAPI Triage Service]
+    B -->|PII Redaction + ML Model| C[Triage Response]
+    B -->|Save Prediction Metadata| D[(SQLite predictions)]
+    E[Support Agent] -->|Inspects Ticket & Posts Correction| F[FastAPI Feedback Endpoint]
+    F -->|Validate & Upsert| G[(SQLite feedback)]
+    
+    D -.->|Join on ticket_id| H[GET /metrics & /metrics/labels]
+    G -.->|Join on ticket_id| H
+    H -->|Live Accuracy & Per-Label Recall| I[Meera's Dashboard]
+    
+    G -->|Export CLI| J[data/feedback_export.jsonl]
+    J -->|Retraining Join on ticket_id| K[data/triage_labeled.jsonl]
+    K -->|python -m supportpilot.triage --train| L[Updated Triage Model]
+```
+
+### End-to-End Stages
+1. **Triage Ingestion (`POST /triage`)**: Redacts customer PII in memory, computes category prediction, and saves telemetry metadata (`ticket_id`, `predicted_label`, `confidence`, `model_version`, `created_at`) to the `predictions` table. Ticket bodies, customer text, and PII are never persisted.
+2. **Agent Ground Truth Submission (`POST /feedback`)**: Human agents review tickets and submit corrections (`ticket_id`, `correct_label`, `agent_id`). Upserts update the record if a ticket is re-reviewed.
+3. **Live Monitoring (`GET /metrics`, `GET /metrics/labels`)**: Evaluates real-time agreement between `predictions` and `feedback` via an inner join on `ticket_id`. Returns overall `live_accuracy` and category-level `recall`.
+4. **Retraining Export (`python -m supportpilot.feedback export`)**: Queries feedback rows and writes pure `{ticket_id, correct_label}` JSONL lines atomically.
+5. **Retraining Dataset Join (`join_feedback_for_retraining`)**: Combines export pairs with original tickets on `ticket_id`, replacing old labels with verified ground truth before triggering retraining.
+
+---
+
 ## Architecture & Storage
 
 The feedback subsystem uses an embedded SQLite database configured in Write-Ahead Logging (`WAL`) mode with `NORMAL` synchronous writes for high concurrency across async Uvicorn worker threads.
