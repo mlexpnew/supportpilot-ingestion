@@ -85,7 +85,7 @@ curl -i -X POST http://localhost:8000/triage \
 ```
 Expected response (`HTTP 401 Unauthorized`):
 ```json
-{"detail":"Missing API key"}
+{"detail":"Unauthorized"}
 ```
 
 ### Testing Authenticated Triage Prediction
@@ -254,7 +254,7 @@ Once deployed on Render, verify endpoints:
      -H "Content-Type: application/json" \
      -d '{"ticket_id":"T-VERIFY-1","body":"Where is my order?"}'
    # HTTP/2 401 Unauthorized
-   # {"detail":"Missing API key"}
+   # {"detail":"Unauthorized"}
    ```
 3. **Authenticated Triage Prediction (200)**:
    ```bash

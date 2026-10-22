@@ -41,7 +41,7 @@ curl -i -X POST http://localhost:8000/triage \
   -H "Content-Type: application/json" \
   -d '{"ticket_id":"T-001","body":"Where is my order?"}'
 # HTTP/1.1 401 Unauthorized
-# {"detail":"Missing API key"}
+# {"detail":"Unauthorized"}
 
 # 5. Authenticated classification of an inbound support ticket
 curl -X POST http://localhost:8000/triage \
