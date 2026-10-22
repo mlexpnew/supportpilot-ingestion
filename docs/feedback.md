@@ -155,13 +155,17 @@ Aggregates live model accuracy alongside operational counters.
 ---
 
 ### `GET /metrics/labels`
-Per-category accuracy breakdown based on human agent corrections. Protected by API key authentication (`X-API-Key`) and rate limiting dependencies.
+Per-category performance breakdown based on human agent corrections. Protected by API key authentication (`X-API-Key`) and rate limiting dependencies.
+
+> [!NOTE]
+> **Recall Semantics**: Because feedback records are grouped by human ground truth (`correct_label`), this metric represents per-class **Recall** ($\text{TP} \div (\text{TP} + \text{FN})$): "of all true tickets for this class, how many did the model predict correctly?". The primary metric field is named `recall` (with `accuracy` maintained as a backward-compatible alias).
 
 **Response Schema:**
 Maps category labels (`delivery`, `billing`, `refund`, `cancellation`, `account`, `other`) to:
-- `total` (`int`): Number of feedback items received for this category.
+- `total` (`int`): Number of feedback items received for this true category.
 - `agreed` (`int`): Number of predictions that matched agent correction.
-- `accuracy` (`float | null`): `agreed / total`, or `null` if `total == 0`.
+- `recall` (`float | null`): `agreed / total`, or `null` if `total == 0`.
+- `accuracy` (`float | null`): Alias for `recall`.
 
 **Example Response:**
 ```json
@@ -169,31 +173,37 @@ Maps category labels (`delivery`, `billing`, `refund`, `cancellation`, `account`
   "delivery": {
     "total": 20,
     "agreed": 18,
+    "recall": 0.9,
     "accuracy": 0.9
   },
   "billing": {
     "total": 10,
     "agreed": 8,
+    "recall": 0.8,
     "accuracy": 0.8
   },
   "refund": {
     "total": 10,
     "agreed": 9,
+    "recall": 0.9,
     "accuracy": 0.9
   },
   "cancellation": {
     "total": 0,
     "agreed": 0,
+    "recall": null,
     "accuracy": null
   },
   "account": {
     "total": 0,
     "agreed": 0,
+    "recall": null,
     "accuracy": null
   },
   "other": {
     "total": 0,
     "agreed": 0,
+    "recall": null,
     "accuracy": null
   }
 }

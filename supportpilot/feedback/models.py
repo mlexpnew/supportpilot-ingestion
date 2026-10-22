@@ -79,8 +79,9 @@ class FeedbackResponse(BaseModel):
 
 
 class LabelMetric(BaseModel):
-    """Per-label accuracy metric model."""
+    """Per-label performance metric model (grouped by ground-truth correct_label)."""
 
     total: int
     agreed: int
+    recall: float | None = None
     accuracy: float | None = None

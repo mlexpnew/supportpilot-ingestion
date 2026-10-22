@@ -335,12 +335,17 @@ class FeedbackStore:
             return (total, round(agreed / total, 4))
 
     def get_label_metrics(self) -> dict[str, dict[str, Any]]:
-        """Compute per-label accuracy metrics based on agent corrections.
+        """Compute per-label recall/accuracy metrics based on agent corrections.
 
-        Returns dictionary mapping label -> {total, agreed, accuracy}.
+        Since rows are grouped by ground-truth `correct_label`, this metric
+        represents per-class Recall: of all true tickets for this class,
+        what fraction did the model predict correctly?
+
+        Returns dictionary mapping label -> {total, agreed, recall, accuracy}.
         """
         metrics: dict[str, dict[str, Any]] = {
-            lbl: {"total": 0, "agreed": 0, "accuracy": None} for lbl in LABELS
+            lbl: {"total": 0, "agreed": 0, "recall": None, "accuracy": None}
+            for lbl in LABELS
         }
         with self._get_connection() as conn:
             cursor = conn.execute("""
@@ -356,11 +361,12 @@ class FeedbackStore:
                 lbl = row["correct_label"]
                 total = int(row["total"])
                 agreed = int(row["agreed"]) if row["agreed"] is not None else 0
-                acc = round(agreed / total, 4) if total > 0 else None
+                score = round(agreed / total, 4) if total > 0 else None
                 metrics[lbl] = {
                     "total": total,
                     "agreed": agreed,
-                    "accuracy": acc,
+                    "recall": score,
+                    "accuracy": score,
                 }
         return metrics
 
