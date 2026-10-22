@@ -178,6 +178,96 @@ def test_feedback_upsert_on_duplicate(
         assert updated["agent_id"] == "agent-2"
 
 
+def test_retriage_after_feedback_preserves_original_prediction(
+    tmp_path: Path, auth_headers: dict[str, str]
+) -> None:
+    """Verify triage -> feedback -> re-triage leaves the stored prediction unchanged (Rohan's decision)."""
+    db_file = tmp_path / "retriage_test.db"
+    store = FeedbackStore(db_file)
+
+    # 1. Triage: initial prediction
+    store.save_prediction(
+        ticket_id="T-RE-1",
+        predicted_label="delivery",
+        confidence=0.85,
+        model_version="v1",
+    )
+    pred_orig = store.get_prediction("T-RE-1")
+    assert pred_orig is not None
+    assert pred_orig["predicted_label"] == "delivery"
+
+    # Re-triage with no feedback -> should overwrite
+    store.save_prediction(
+        ticket_id="T-RE-1",
+        predicted_label="billing",
+        confidence=0.92,
+        model_version="v2",
+    )
+    pred_overwritten = store.get_prediction("T-RE-1")
+    assert pred_overwritten is not None
+    assert pred_overwritten["predicted_label"] == "billing"
+    assert abs(pred_overwritten["confidence"] - 0.92) < 1e-4
+
+    # 2. Agent gives feedback
+    store.save_feedback("T-RE-1", "delivery", "agent-rohan")
+
+    # 3. Re-triage after feedback -> stored prediction must remain unchanged
+    store.save_prediction(
+        ticket_id="T-RE-1",
+        predicted_label="refund",
+        confidence=0.60,
+        model_version="v3",
+    )
+    pred_after_fb = store.get_prediction("T-RE-1")
+    assert pred_after_fb is not None
+    assert pred_after_fb["predicted_label"] == "billing"
+    assert abs(pred_after_fb["confidence"] - 0.92) < 1e-4
+    assert pred_after_fb["model_version"] == "v2"
+
+    # Also test end-to-end via API
+    with TestClient(app) as client:
+        # Step A: First triage
+        res_t1 = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": "T-API-RE-1", "body": "Where is my package delivery?"},
+        )
+        assert res_t1.status_code == 200
+        first_label = res_t1.json()["label"]
+        stored_pred_1 = app.state.feedback_store.get_prediction("T-API-RE-1")
+        assert stored_pred_1 is not None
+        assert stored_pred_1["predicted_label"] == first_label
+
+        # Step B: Agent submits feedback
+        res_fb = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": "T-API-RE-1",
+                "correct_label": "delivery",
+                "agent_id": "agent-1",
+            },
+        )
+        assert res_fb.status_code == 200
+
+        # Step C: Re-triage with different text
+        res_t2 = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={
+                "ticket_id": "T-API-RE-1",
+                "body": "Need refund and billing help right now immediately.",
+            },
+        )
+        assert res_t2.status_code == 200
+
+        # The stored prediction in the DB must remain the original one that the agent saw!
+        stored_pred_after = app.state.feedback_store.get_prediction("T-API-RE-1")
+        assert stored_pred_after is not None
+        assert stored_pred_after["predicted_label"] == stored_pred_1["predicted_label"]
+        assert stored_pred_after["created_at"] == stored_pred_1["created_at"]
+
+
 def test_feedback_unknown_ticket_404(
     tmp_path: Path, auth_headers: dict[str, str]
 ) -> None:

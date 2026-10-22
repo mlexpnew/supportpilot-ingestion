@@ -150,7 +150,10 @@ class FeedbackStore:
                     predicted_label = excluded.predicted_label,
                     confidence = excluded.confidence,
                     model_version = excluded.model_version,
-                    created_at = excluded.created_at;
+                    created_at = excluded.created_at
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM feedback WHERE feedback.ticket_id = predictions.ticket_id
+                );
                 """,
                 (ticket_id, predicted_label, float(confidence), model_version, ts),
             )
