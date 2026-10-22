@@ -158,7 +158,12 @@ def test_feedback_upsert_on_duplicate(
             },
         )
         assert res1.status_code == 200
-        assert res1.json()["status"] == "ok"
+        data1 = res1.json()
+        assert data1["ticket_id"] == "T-API-UP-1"
+        assert data1["correct_label"] == "billing"
+        assert "predicted_label" in data1
+        assert "agreed" in data1
+        assert isinstance(data1["agreed"], bool)
 
         # Update feedback via API
         res2 = client.post(
@@ -171,11 +176,68 @@ def test_feedback_upsert_on_duplicate(
             },
         )
         assert res2.status_code == 200
+        data2 = res2.json()
+        assert data2["ticket_id"] == "T-API-UP-1"
+        assert data2["correct_label"] == "refund"
+        assert "predicted_label" in data2
+        assert "agreed" in data2
 
         updated = app.state.feedback_store.get_feedback("T-API-UP-1")
         assert updated is not None
         assert updated["correct_label"] == "refund"
         assert updated["agent_id"] == "agent-2"
+
+
+def test_feedback_response_contract(auth_headers: dict[str, str]) -> None:
+    """Verify POST /feedback returns {ticket_id, correct_label, predicted_label, agreed: true/false}."""
+    with TestClient(app) as client:
+        # 1. Triage a ticket predicting 'delivery'
+        res_triage = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": "T-CONTRACT-1", "body": "Where is my parcel delivery?"},
+        )
+        assert res_triage.status_code == 200
+        pred_label = res_triage.json()["label"]
+        assert pred_label == "delivery"
+
+        # 2. Feedback agreeing with prediction -> agreed: true
+        res_agree = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": "T-CONTRACT-1",
+                "correct_label": "delivery",
+                "agent_id": "agent-sana",
+            },
+        )
+        assert res_agree.status_code == 200
+        agree_data = res_agree.json()
+        assert agree_data == {
+            "ticket_id": "T-CONTRACT-1",
+            "correct_label": "delivery",
+            "predicted_label": "delivery",
+            "agreed": True,
+        }
+
+        # 3. Feedback disagreeing with prediction -> agreed: false
+        res_disagree = client.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": "T-CONTRACT-1",
+                "correct_label": "billing",
+                "agent_id": "agent-sana",
+            },
+        )
+        assert res_disagree.status_code == 200
+        disagree_data = res_disagree.json()
+        assert disagree_data == {
+            "ticket_id": "T-CONTRACT-1",
+            "correct_label": "billing",
+            "predicted_label": "delivery",
+            "agreed": False,
+        }
 
 
 def test_retriage_after_feedback_preserves_original_prediction(

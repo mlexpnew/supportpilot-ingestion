@@ -521,7 +521,7 @@ def submit_feedback(
         )
 
     try:
-        feedback_store.save_feedback(
+        result = feedback_store.save_feedback(
             ticket_id=request.ticket_id,
             correct_label=request.correct_label,
             agent_id=request.agent_id,
@@ -538,8 +538,8 @@ def submit_feedback(
         ) from exc
 
     return FeedbackResponse(
-        status="ok",
-        ticket_id=request.ticket_id,
-        correct_label=request.correct_label,
-        agent_id=request.agent_id,
+        ticket_id=result["ticket_id"],
+        correct_label=result["correct_label"],
+        predicted_label=result["predicted_label"],
+        agreed=result["agreed"],
     )

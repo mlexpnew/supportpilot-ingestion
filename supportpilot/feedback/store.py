@@ -202,13 +202,16 @@ class FeedbackStore:
 
         ts = created_at or datetime.now(UTC).isoformat()
         with self._get_connection() as conn:
-            # Check existence of prediction first (Part B constraint)
+            # Check existence of prediction first and fetch predicted_label
             cursor = conn.execute(
-                "SELECT 1 FROM predictions WHERE ticket_id = ? LIMIT 1;",
+                "SELECT predicted_label FROM predictions WHERE ticket_id = ? LIMIT 1;",
                 (ticket_id,),
             )
-            if cursor.fetchone() is None:
+            row = cursor.fetchone()
+            if row is None:
                 raise KeyError(f"Ticket '{ticket_id}' has not been triaged.")
+
+            predicted_label = str(row["predicted_label"])
 
             conn.execute(
                 """
@@ -221,7 +224,13 @@ class FeedbackStore:
                 """,
                 (ticket_id, correct_label, agent_id, ts),
             )
-        return True
+
+        return {
+            "ticket_id": ticket_id,
+            "correct_label": correct_label,
+            "predicted_label": predicted_label,
+            "agreed": predicted_label == correct_label,
+        }
 
     def get_feedback(self, ticket_id: str) -> dict[str, Any] | None:
         """Fetch feedback record by ticket_id."""

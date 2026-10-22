@@ -111,10 +111,10 @@ Submit or update human agent corrections for a triaged ticket.
 - `200 OK`: Feedback saved or updated successfully.
   ```json
   {
-    "status": "ok",
     "ticket_id": "T-10492",
     "correct_label": "delivery",
-    "agent_id": "agent-sana"
+    "predicted_label": "delivery",
+    "agreed": true
   }
   ```
 - `404 Not Found`: Ticket was never triaged (`Ticket 'T-10492' has not been triaged.`).

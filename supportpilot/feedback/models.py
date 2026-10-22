@@ -44,7 +44,7 @@ class FeedbackRequest(BaseModel):
 class FeedbackResponse(BaseModel):
     """Response payload for POST /feedback."""
 
-    status: str = "ok"
     ticket_id: str
     correct_label: str
-    agent_id: str
+    predicted_label: str
+    agreed: bool
