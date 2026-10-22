@@ -769,6 +769,50 @@ def test_accuracy_math_known_numbers(tmp_path: Path) -> None:
     }
 
 
+def test_join_feedback_with_predictions_on_ticket_id(tmp_path: Path) -> None:
+    """Verify join feedback with predictions on ticket_id (SP-110 Part C)."""
+    db_file = tmp_path / "join_test.db"
+    store = FeedbackStore(db_file)
+
+    # 1. Predictions
+    store.save_prediction("T1", "delivery", 0.95, "v1.0")
+    store.save_prediction("T2", "billing", 0.88, "v1.0")
+    store.save_prediction("T3", "refund", 0.72, "v1.0")  # No feedback
+
+    # 2. Feedback
+    store.save_feedback("T1", "delivery", "AG-101")  # Agreed
+    store.save_feedback("T2", "refund", "AG-102")  # Disagreed
+
+    # 3. Join all
+    joined = store.get_feedback_with_predictions()
+    assert len(joined) == 2
+
+    t1_record = next(r for r in joined if r["ticket_id"] == "T1")
+    assert t1_record["correct_label"] == "delivery"
+    assert t1_record["predicted_label"] == "delivery"
+    assert t1_record["agent_id"] == "AG-101"
+    assert t1_record["confidence"] == 0.95
+    assert t1_record["model_version"] == "v1.0"
+    assert t1_record["agreed"] is True
+
+    t2_record = next(r for r in joined if r["ticket_id"] == "T2")
+    assert t2_record["correct_label"] == "refund"
+    assert t2_record["predicted_label"] == "billing"
+    assert t2_record["agent_id"] == "AG-102"
+    assert t2_record["confidence"] == 0.88
+    assert t2_record["model_version"] == "v1.0"
+    assert t2_record["agreed"] is False
+
+    # 4. Filter by specific ticket_id
+    filtered_t1 = store.get_feedback_with_predictions("T1")
+    assert len(filtered_t1) == 1
+    assert filtered_t1[0]["ticket_id"] == "T1"
+
+    # 5. Ticket with prediction but no feedback returns empty list
+    filtered_t3 = store.get_feedback_with_predictions("T3")
+    assert filtered_t3 == []
+
+
 def test_live_accuracy_null_when_empty(tmp_path: Path) -> None:
     """Verify live_accuracy returns None (null in JSON) when no feedback exists."""
     db_file = tmp_path / "empty_acc.db"

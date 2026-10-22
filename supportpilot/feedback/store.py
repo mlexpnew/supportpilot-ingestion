@@ -257,6 +257,59 @@ class FeedbackStore:
                 return None
             return dict(row)
 
+    def get_feedback_with_predictions(
+        self, ticket_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch feedback records joined with predictions on ticket_id.
+
+        Returns list of records containing:
+            ticket_id: Ticket identifier
+            correct_label: Agent verified label
+            agent_id: Identifier of the agent
+            feedback_created_at: Feedback submission timestamp
+            predicted_label: Model prediction label
+            confidence: Prediction confidence score
+            model_version: Version of the triage model
+            prediction_created_at: Prediction creation timestamp
+            agreed: True if predicted_label == correct_label, else False
+        """
+        query = """
+            SELECT
+                f.ticket_id,
+                f.correct_label,
+                f.agent_id,
+                f.created_at AS feedback_created_at,
+                p.predicted_label,
+                p.confidence,
+                p.model_version,
+                p.created_at AS prediction_created_at,
+                (p.predicted_label = f.correct_label) AS agreed
+            FROM feedback f
+            JOIN predictions p ON f.ticket_id = p.ticket_id
+        """
+        params: tuple[Any, ...] = ()
+        if ticket_id is not None:
+            query += " WHERE f.ticket_id = ?"
+            params = (normalize_ticket_id(ticket_id),)
+        query += " ORDER BY f.created_at ASC;"
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, params)
+            return [
+                {
+                    "ticket_id": row["ticket_id"],
+                    "correct_label": row["correct_label"],
+                    "agent_id": row["agent_id"],
+                    "feedback_created_at": row["feedback_created_at"],
+                    "predicted_label": row["predicted_label"],
+                    "confidence": float(row["confidence"]),
+                    "model_version": row["model_version"],
+                    "prediction_created_at": row["prediction_created_at"],
+                    "agreed": bool(row["agreed"]),
+                }
+                for row in cursor.fetchall()
+            ]
+
     def get_live_accuracy(self) -> tuple[int, float | None]:
         """Compute live accuracy across all agent feedback.
 
