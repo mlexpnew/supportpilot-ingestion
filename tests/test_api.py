@@ -1604,3 +1604,78 @@ def test_auth_health_without_key_returns_200() -> None:
         assert data["status"] == "ok"
         assert data["model_loaded"] is True
         assert "model_version" in data
+
+
+# =====================================================================
+# Rate Limit Tests: send 61 requests -> last gets 429 with Retry-After
+# =====================================================================
+
+
+def test_rate_limit_send_61_requests_last_gets_429_with_retry_after() -> None:
+    """Send 61 requests: first 60 succeed (200), 61st returns 429 + Retry-After."""
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        RATE_LIMIT_WINDOW_SECONDS,
+        hash_api_key,
+    )
+
+    test_key = "test-key-1"
+    key_hash = hash_api_key(test_key)
+
+    with FastAPITestClient(app) as client:
+        # Reset sliding window history for this key
+        app.state.rate_limits[key_hash] = []
+        initial_rate_limited = app.state.counters.rate_limited_total
+
+        # Send first 60 requests -> all must succeed (200 OK)
+        for i in range(RATE_LIMIT_MAX_REQUESTS):
+            res = client.get("/metrics", headers={"X-API-Key": test_key})
+            assert res.status_code == 200, f"Request {i + 1} failed: {res.text}"
+
+        assert len(app.state.rate_limits[key_hash]) == RATE_LIMIT_MAX_REQUESTS
+
+        # Send 61st request -> returns 429 Too Many Requests
+        res_61 = client.get("/metrics", headers={"X-API-Key": test_key})
+        assert res_61.status_code == 429
+        assert res_61.json()["detail"] == "Too Many Requests"
+
+        # Verify Retry-After header
+        assert "Retry-After" in res_61.headers
+        retry_after = int(res_61.headers["Retry-After"])
+        assert 1 <= retry_after <= int(RATE_LIMIT_WINDOW_SECONDS)
+
+        # Counter rate_limited_total incremented on 429
+        assert app.state.counters.rate_limited_total == initial_rate_limited + 1
+
+
+def test_rate_limit_triage_send_61_requests_last_gets_429() -> None:
+    """Send 61 /triage requests: first 60 return 200, 61st returns 429."""
+    from supportpilot.api.main import (
+        RATE_LIMIT_MAX_REQUESTS,
+        hash_api_key,
+    )
+
+    test_key = "test-key-2"
+    key_hash = hash_api_key(test_key)
+
+    with FastAPITestClient(app) as client:
+        app.state.rate_limits[key_hash] = []
+
+        for i in range(RATE_LIMIT_MAX_REQUESTS):
+            payload = {"ticket_id": f"T-RL-{i:03d}", "body": "Where is my parcel?"}
+            res = client.post(
+                "/triage",
+                headers={"X-API-Key": test_key},
+                json=payload,
+            )
+            assert res.status_code == 200
+
+        # 61st request gets 429 with Retry-After
+        res_61 = client.post(
+            "/triage",
+            headers={"X-API-Key": test_key},
+            json={"ticket_id": "T-RL-061", "body": "Where is my parcel?"},
+        )
+        assert res_61.status_code == 429
+        assert "Retry-After" in res_61.headers
+        assert int(res_61.headers["Retry-After"]) >= 1
