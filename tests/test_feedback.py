@@ -1427,8 +1427,9 @@ def test_join_feedback_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
 def test_storage_layer_fallback_to_sqlite_when_database_url_missing(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Verify missing DATABASE_URL falls back to SQLite file with a warning log."""
+    """Verify missing DATABASE_URL falls back to SQLite file with a warning log when ALLOW_SQLITE_FALLBACK=1."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("ALLOW_SQLITE_FALLBACK", "1")
     with caplog.at_level(logging.INFO, logger="supportpilot.feedback.store"):
         store = FeedbackStore()
         try:
@@ -1444,6 +1445,38 @@ def test_storage_layer_fallback_to_sqlite_when_database_url_missing(
 
     assert any("DATABASE_URL not set" in msg for msg in warning_msgs)
     assert any("Database initialized: sqlite" in msg for msg in info_msgs)
+
+
+def test_storage_layer_fails_fast_in_production_when_database_url_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify missing DATABASE_URL without ALLOW_SQLITE_FALLBACK fails fast with RuntimeError."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("ALLOW_SQLITE_FALLBACK", raising=False)
+    with pytest.raises(
+        RuntimeError, match="DATABASE_URL is not set and SQLite fallback is disabled"
+    ):
+        FeedbackStore()
+
+
+def test_init_db_returns_db_type_only_preventing_password_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify init_db returns only 'postgres' or 'sqlite', never raw URLs or passwords."""
+    fake_pass = "SUPER_SECRET_DB_PASSWORD_XYZ"
+    fake_url = f"postgres://db_user:{fake_pass}@pg.internal:5432/feedback_prod"
+    monkeypatch.setenv("DATABASE_URL", fake_url)
+
+    from unittest.mock import MagicMock, patch
+
+    mock_engine = MagicMock()
+    mock_engine.dialect.name = "postgresql"
+
+    with patch("supportpilot.feedback.store.create_engine", return_value=mock_engine):
+        result = init_db()
+        assert result == "postgres"
+        assert fake_pass not in str(result)
+        assert "postgres://" not in str(result)
 
 
 def test_storage_layer_never_logs_database_url_or_credentials(

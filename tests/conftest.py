@@ -34,6 +34,7 @@ def feedback_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Set temporary SQLite database path via FEEDBACK_DB_PATH for tests (SP-110)."""
     db_path = tmp_path / "test_feedback.db"
     monkeypatch.setenv("FEEDBACK_DB_PATH", str(db_path))
+    monkeypatch.setenv("ALLOW_SQLITE_FALLBACK", "1")
     return db_path
 
 

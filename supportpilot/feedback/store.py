@@ -69,8 +69,23 @@ feedback = Table(
     Index("idx_feedback_correct_label", "correct_label"),
 )
 
-predictions_table = predictions
-feedback_table = feedback
+
+def _sqlite_engine(path: Path | str) -> Engine:
+    """Create a SQLite engine with WAL mode and connection pooling."""
+    target_path = Path(path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    sqlite_url = f"sqlite:///{target_path.resolve()}"
+    engine = create_engine(sqlite_url, pool_size=5, pool_pre_ping=True)
+
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection: Any, connection_record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode = WAL;")
+        cursor.execute("PRAGMA synchronous = NORMAL;")
+        cursor.close()
+
+    logger.info("Database initialized: sqlite")
+    return engine
 
 
 def get_feedback_db_path() -> Path:
@@ -99,7 +114,9 @@ def create_feedback_engine(
 ) -> tuple[Engine, str]:
     """Create a SQLAlchemy Engine with connection pooling.
 
-    Uses DATABASE_URL if present. If missing, falls back to SQLite file + warning log.
+    Uses DATABASE_URL if present. If missing, falls back to SQLite only if
+    ALLOW_SQLITE_FALLBACK=1 or if db_path is explicitly provided.
+    Otherwise raises RuntimeError to prevent silent data loss in production.
     Logs database type only (postgres / sqlite), never the URL.
     Pool settings: pool_size=5, pool_pre_ping=True.
     """
@@ -113,20 +130,7 @@ def create_feedback_engine(
         return engine, db_type
 
     if db_path is not None:
-        target_path = Path(db_path)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        sqlite_url = f"sqlite:///{target_path.resolve()}"
-        engine = create_engine(sqlite_url, pool_size=5, pool_pre_ping=True)
-
-        @event.listens_for(engine, "connect")
-        def set_sqlite_pragma(dbapi_connection: Any, connection_record: Any) -> None:
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA journal_mode = WAL;")
-            cursor.execute("PRAGMA synchronous = NORMAL;")
-            cursor.close()
-
-        logger.info("Database initialized: sqlite")
-        return engine, "sqlite"
+        return _sqlite_engine(db_path), "sqlite"
 
     env_url = os.getenv("DATABASE_URL")
     if env_url is not None and env_url.strip():
@@ -138,57 +142,51 @@ def create_feedback_engine(
         logger.info("Database initialized: %s", db_type)
         return engine, db_type
 
+    allow_fallback = os.getenv("ALLOW_SQLITE_FALLBACK", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not allow_fallback:
+        raise RuntimeError(
+            "DATABASE_URL is not set and SQLite fallback is disabled. "
+            "Set DATABASE_URL to a valid database connection string, "
+            "or set ALLOW_SQLITE_FALLBACK=1 for local development."
+        )
+
     logger.warning("DATABASE_URL not set; falling back to SQLite storage.")
-    target_path = get_feedback_db_path()
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    sqlite_url = f"sqlite:///{target_path.resolve()}"
-    engine = create_engine(sqlite_url, pool_size=5, pool_pre_ping=True)
-
-    @event.listens_for(engine, "connect")
-    def set_sqlite_pragma_fallback(
-        dbapi_connection: Any, connection_record: Any
-    ) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode = WAL;")
-        cursor.execute("PRAGMA synchronous = NORMAL;")
-        cursor.close()
-
-    logger.info("Database initialized: sqlite")
-    return engine, "sqlite"
+    return _sqlite_engine(get_feedback_db_path()), "sqlite"
 
 
 def init_db(
     path: Path | str | None = None,
     engine: Engine | None = None,
-) -> Path | str:
+) -> str:
     """Initialize the feedback database schema (predictions and feedback tables).
 
     Zero-PII guarantee: neither table stores ticket body or customer text.
     Uses SQLAlchemy DDL.
 
     Args:
-        path: Path to SQLite database file. If None, checks DATABASE_URL then get_feedback_db_path().
+        path: Optional path to SQLite database file.
         engine: Existing SQLAlchemy engine to initialize schema on.
 
     Returns:
-        Path or URL string of the initialized database.
+        The database type string ("postgres" or "sqlite").
     """
     if engine is not None:
         metadata.create_all(engine)
-        return str(engine.url)
+        return (
+            "postgres" if engine.dialect.name == "postgresql" else engine.dialect.name
+        )
 
-    eng, _ = create_feedback_engine(db_path=path)
+    eng, db_type = create_feedback_engine(db_path=path)
     try:
         metadata.create_all(eng)
     finally:
         eng.dispose()
 
-    if path is not None:
-        return Path(path)
-    env_url = os.getenv("DATABASE_URL")
-    if env_url is not None and env_url.strip():
-        return env_url
-    return get_feedback_db_path()
+    return db_type
 
 
 class FeedbackStore:
