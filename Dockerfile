@@ -48,8 +48,10 @@ RUN groupadd -r appuser && \
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 
-# Copy application code and model with non-root ownership
+# Copy application code, migrations, and model with non-root ownership
 COPY --chown=appuser:appuser supportpilot/ supportpilot/
+COPY --chown=appuser:appuser migrations/ migrations/
+COPY --chown=appuser:appuser alembic.ini .
 COPY --from=builder --chown=appuser:appuser /app/models/ models/
 
 # Switch to non-root user
@@ -61,4 +63,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
-CMD ["uvicorn", "supportpilot.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn supportpilot.api.main:app --host 0.0.0.0 --port 8000 --log-level info"]

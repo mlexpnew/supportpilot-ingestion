@@ -30,10 +30,33 @@ def _model_env(model_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def feedback_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Set temporary SQLite database path via FEEDBACK_DB_PATH for tests (SP-110)."""
+def feedback_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path | str:
+    """Set temporary SQLite database path or use DATABASE_URL and run alembic migrations (Part C & D)."""
+    import os
+    from sqlalchemy import text
+    from supportpilot.feedback.store import create_feedback_engine, init_db
+
+    db_url = os.getenv("DATABASE_URL")
+    if db_url is not None and db_url.strip():
+        init_db()
+        # Test isolation: clean shared database tables before each test
+        engine, _ = create_feedback_engine()
+        try:
+            with engine.begin() as conn:
+                if engine.dialect.name == "postgresql":
+                    conn.execute(text("TRUNCATE feedback, predictions CASCADE;"))
+                else:
+                    conn.execute(text("DELETE FROM feedback;"))
+                    conn.execute(text("DELETE FROM predictions;"))
+        finally:
+            engine.dispose()
+        return db_url.strip()
+
     db_path = tmp_path / "test_feedback.db"
     monkeypatch.setenv("FEEDBACK_DB_PATH", str(db_path))
+    monkeypatch.setenv("ALLOW_SQLITE_FALLBACK", "1")
+
+    init_db(path=db_path)
     return db_path
 
 

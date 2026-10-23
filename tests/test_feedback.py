@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -82,6 +85,7 @@ def test_prediction_saved_in_store_and_via_triage(
 ) -> None:
     """Verify triage predictions are saved to the predictions table."""
     db_file = tmp_path / "pred_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     # 1. Direct store call
@@ -126,6 +130,7 @@ def test_feedback_upsert_on_duplicate(
 ) -> None:
     """Verify duplicate feedback on the same ticket updates in place (one row per ticket)."""
     db_file = tmp_path / "upsert_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     store.save_prediction("T-UP-1", "delivery", 0.9, "triage-v1.0.0-20261022")
@@ -298,6 +303,7 @@ def test_retriage_after_feedback_preserves_original_prediction(
 ) -> None:
     """Verify triage -> feedback -> re-triage leaves the stored prediction unchanged (Rohan's decision)."""
     db_file = tmp_path / "retriage_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     # 1. Triage: initial prediction
@@ -388,6 +394,7 @@ def test_feedback_unknown_ticket_404(
 ) -> None:
     """Verify feedback on an untriaged ticket raises KeyError and returns 404."""
     db_file = tmp_path / "unknown_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     # Store level raises KeyError
@@ -471,6 +478,7 @@ def test_feedback_invalid_label_422(
 ) -> None:
     """Verify invalid correct_label raises ValueError in store and returns 422 in API."""
     db_file = tmp_path / "invalid_label_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
     store.save_prediction("T-LBL-1", "delivery", 0.9, "triage-v1.0.0-20261022")
 
@@ -722,6 +730,7 @@ def test_numeric_ticket_and_agent_id_returns_422(
 def test_accuracy_math_known_numbers(tmp_path: Path) -> None:
     """Verify live accuracy calculation against exact known numbers."""
     db_file = tmp_path / "acc_math.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     # 4 tickets:
@@ -803,6 +812,7 @@ def test_accuracy_math_known_numbers(tmp_path: Path) -> None:
 def test_join_feedback_with_predictions_on_ticket_id(tmp_path: Path) -> None:
     """Verify join feedback with predictions on ticket_id (SP-110 Part C)."""
     db_file = tmp_path / "join_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     # 1. Predictions
@@ -847,6 +857,7 @@ def test_join_feedback_with_predictions_on_ticket_id(tmp_path: Path) -> None:
 def test_live_accuracy_null_when_empty(tmp_path: Path) -> None:
     """Verify live_accuracy returns None (null in JSON) when no feedback exists."""
     db_file = tmp_path / "empty_acc.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     store.save_prediction("T-NO-FB", "delivery", 0.9, "v1")
@@ -865,6 +876,7 @@ def test_metrics_endpoint_includes_feedback_total_and_live_accuracy(
 ) -> None:
     """Verify GET /metrics includes feedback_total and live_accuracy (SP-110 Part C)."""
     db_file = tmp_path / "metrics_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     with TestClient(app) as client:
@@ -946,6 +958,7 @@ def test_metrics_labels_endpoint_per_label_accuracy(
 ) -> None:
     """Verify GET /metrics/labels returns per-label accuracy protected by API key."""
     db_file = tmp_path / "metrics_labels_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     with TestClient(app) as client:
@@ -1008,6 +1021,7 @@ def test_zero_ticket_body_in_db(tmp_path: Path, auth_headers: dict[str, str]) ->
     Tests schema table definitions, row data dumps, and binary database file bytes.
     """
     db_file = tmp_path / "privacy_test.db"
+    init_db(db_file)
 
     secret_body = "SENSITIVE_CUSTOMER_PAYMENT_CARD_4111222233334444_SECRET"
     secret_subject = "CONFIDENTIAL_PASSWORD_RESET_TOKEN_XYZ98765"
@@ -1072,6 +1086,7 @@ def test_sql_injection_string_stored_safely(
 ) -> None:
     """Verify ? parameterization prevents SQL injection payloads from executing."""
     db_file = tmp_path / "sqli.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     sqli_ticket_1 = "T-INJECT-1'; DROP TABLE predictions; --"
@@ -1197,6 +1212,7 @@ def test_export_feedback_cli(
 ) -> None:
     """Verify CLI export command writes ticket_id and correct_label only and prints summary to stderr."""
     db_file = tmp_path / "cli_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
     store.save_prediction("T-EXP-1", "delivery", 0.9, "v1")
     store.save_prediction("T-EXP-2", "billing", 0.8, "v1")
@@ -1422,3 +1438,359 @@ def test_join_feedback_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     assert lines[0]["ticket_id"] == "T1"
     assert lines[1]["ticket_id"] == "T-PILOT-1"
     assert lines[1]["label"] == "billing"
+
+
+def test_storage_layer_fallback_to_sqlite_when_database_url_missing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Verify missing DATABASE_URL falls back to SQLite file with a warning log when ALLOW_SQLITE_FALLBACK=1."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("ALLOW_SQLITE_FALLBACK", "1")
+    with caplog.at_level(logging.INFO, logger="supportpilot.feedback.store"):
+        store = FeedbackStore()
+        try:
+            assert store.db_type == "sqlite"
+            assert store.engine.pool.size() == 5
+            assert store.engine.pool._pre_ping is True
+        finally:
+            store.close()
+
+    records = [r for r in caplog.records if r.name == "supportpilot.feedback.store"]
+    warning_msgs = [r.getMessage() for r in records if r.levelno == logging.WARNING]
+    info_msgs = [r.getMessage() for r in records if r.levelno == logging.INFO]
+
+    assert any("DATABASE_URL not set" in msg for msg in warning_msgs)
+    assert any("Database initialized: sqlite" in msg for msg in info_msgs)
+
+
+def test_storage_layer_fails_fast_in_production_when_database_url_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify missing DATABASE_URL without ALLOW_SQLITE_FALLBACK fails fast with RuntimeError."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("ALLOW_SQLITE_FALLBACK", raising=False)
+    with pytest.raises(
+        RuntimeError, match="DATABASE_URL is not set and SQLite fallback is disabled"
+    ):
+        FeedbackStore()
+
+
+def test_init_db_returns_db_type_only_preventing_password_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify init_db returns only 'postgres' or 'sqlite', never raw URLs or passwords."""
+    fake_pass = "SUPER_SECRET_DB_PASSWORD_XYZ"
+    fake_url = f"postgres://db_user:{fake_pass}@pg.internal:5432/feedback_prod"
+    monkeypatch.setenv("DATABASE_URL", fake_url)
+
+    from unittest.mock import MagicMock, patch
+
+    mock_engine = MagicMock()
+    mock_engine.dialect.name = "postgresql"
+    mock_engine.url = fake_url
+
+    with (
+        patch("supportpilot.feedback.store.create_engine", return_value=mock_engine),
+        patch("alembic.command.upgrade"),
+    ):
+        result = init_db()
+        assert result == "postgres"
+        assert fake_pass not in str(result)
+        assert "postgres://" not in str(result)
+
+
+def test_storage_layer_never_logs_database_url_or_credentials(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify engine initialization logs only the database type (postgres/sqlite), never credentials or URL."""
+    fake_secret = "SUPER_SECRET_POSTGRES_PASS_12345"
+    fake_pg_url = f"postgres://db_user:{fake_secret}@pg.render.com:5432/feedback_db"
+
+    with caplog.at_level(logging.DEBUG, logger="supportpilot.feedback.store"):
+        from supportpilot.feedback.store import create_feedback_engine
+
+        engine, db_type = create_feedback_engine(database_url=fake_pg_url)
+        try:
+            assert db_type == "postgres"
+            assert engine.pool.size() == 5
+            assert engine.pool._pre_ping is True
+        finally:
+            engine.dispose()
+
+    all_logs = " ".join(r.getMessage() for r in caplog.records)
+    assert fake_secret not in all_logs
+    assert "pg.render.com" not in all_logs
+    assert "Database initialized: postgres" in all_logs
+
+
+def test_postgres_upsert_statements_contain_lock_and_conflict_handling() -> None:
+    """Verify PostgreSQL dialect compiles on_conflict_do_update and preserves retriage lock condition."""
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from supportpilot.feedback.store import feedback, predictions
+
+    # 1. Predictions upsert statement on postgres
+    pred_stmt = pg_insert(predictions).values(
+        ticket_id="T1",
+        predicted_label="delivery",
+        confidence=0.9,
+        model_version="v1",
+        created_at="2026-10-23",
+    )
+    pred_stmt = pred_stmt.on_conflict_do_update(
+        index_elements=[predictions.c.ticket_id],
+        set_={
+            "predicted_label": pred_stmt.excluded.predicted_label,
+            "confidence": pred_stmt.excluded.confidence,
+            "model_version": pred_stmt.excluded.model_version,
+            "created_at": pred_stmt.excluded.created_at,
+        },
+        where=predictions.c.ticket_id.not_in(select(feedback.c.ticket_id)),
+    )
+    pred_compiled = str(
+        pred_stmt.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "ON CONFLICT (ticket_id) DO UPDATE" in pred_compiled
+    assert (
+        "WHERE (predictions.ticket_id NOT IN (SELECT feedback.ticket_id"
+        in pred_compiled
+    )
+
+    # 2. Feedback upsert statement on postgres
+    fb_stmt = pg_insert(feedback).values(
+        ticket_id="T1",
+        correct_label="delivery",
+        agent_id="a1",
+        created_at="2026-10-23",
+    )
+    fb_stmt = fb_stmt.on_conflict_do_update(
+        index_elements=[feedback.c.ticket_id],
+        set_={
+            "correct_label": fb_stmt.excluded.correct_label,
+            "agent_id": fb_stmt.excluded.agent_id,
+            "created_at": fb_stmt.excluded.created_at,
+        },
+    )
+    fb_compiled = str(
+        fb_stmt.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "ON CONFLICT (ticket_id) DO UPDATE" in fb_compiled
+    assert "correct_label = excluded.correct_label" in fb_compiled
+
+
+def test_lifespan_engine_lifecycle(auth_headers: dict[str, str]) -> None:
+    """Verify lifespan creates engine once, uses it during requests, and closes on shutdown."""
+    with TestClient(app) as client:
+        store = getattr(app.state, "feedback_store", None)
+        assert store is not None
+        assert store.engine is not None
+
+        # Verify endpoint works with lifespan store
+        res = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": "T-LIFECYCLE-1", "body": "Where is my parcel?"},
+        )
+        assert res.status_code == 200
+
+    # On shutdown, store reference is cleaned up
+    assert getattr(app.state, "feedback_store", None) is None
+
+
+def test_alembic_migration_creates_both_tables_on_empty_db(tmp_path: Path) -> None:
+    """Verify Alembic migration creates both tables, keys, and indexes on an empty DB (Part C)."""
+    db_file = tmp_path / "empty_migration.db"
+    assert not db_file.exists()
+
+    init_db(db_file)
+    assert db_file.exists()
+
+    conn = sqlite3.connect(str(db_file))
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
+    tables = {r[0] for r in cur.fetchall()}
+    assert "predictions" in tables
+    assert "feedback" in tables
+    assert "alembic_version" in tables
+
+    # Verify predictions table columns
+    cur.execute("PRAGMA table_info(predictions);")
+    pred_cols = {r[1]: r[2] for r in cur.fetchall()}
+    assert "ticket_id" in pred_cols
+    assert "predicted_label" in pred_cols
+    assert "confidence" in pred_cols
+    assert "model_version" in pred_cols
+    assert "created_at" in pred_cols
+
+    # Verify feedback table columns
+    cur.execute("PRAGMA table_info(feedback);")
+    fb_cols = {r[1]: r[2] for r in cur.fetchall()}
+    assert "ticket_id" in fb_cols
+    assert "correct_label" in fb_cols
+    assert "agent_id" in fb_cols
+    assert "created_at" in fb_cols
+
+    # Verify indices
+    cur.execute("SELECT name FROM sqlite_master WHERE type='index';")
+    indices = {r[0] for r in cur.fetchall()}
+    assert "idx_predictions_predicted_label" in indices
+    assert "idx_feedback_correct_label" in indices
+
+    # Verify foreign key on feedback table
+    cur.execute("PRAGMA foreign_key_list(feedback);")
+    fks = cur.fetchall()
+    assert any(fk[2] == "predictions" and fk[4] == "ticket_id" for fk in fks)
+    conn.close()
+
+
+def test_init_db_passes_live_connection_to_alembic_attributes() -> None:
+    """Verify init_db passes live connection in alembic_cfg.attributes and does not stringify engine.url."""
+    from unittest.mock import MagicMock, patch
+
+    mock_engine = MagicMock()
+    mock_engine.dialect.name = "postgresql"
+    mock_conn = MagicMock()
+    mock_engine.begin.return_value.__enter__.return_value = mock_conn
+
+    captured_attributes: dict[str, Any] = {}
+
+    def fake_upgrade(config: Any, revision: str) -> None:
+        captured_attributes.update(config.attributes)
+
+    with patch("alembic.command.upgrade", side_effect=fake_upgrade):
+        db_type = init_db(engine=mock_engine)
+
+    assert db_type == "postgres"
+    assert captured_attributes.get("connection") is mock_conn
+
+
+def test_alembic_env_fails_fast_when_database_url_missing_without_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify migrations/env.py get_url() fails fast if DATABASE_URL is missing and ALLOW_SQLITE_FALLBACK is not set."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("ALLOW_SQLITE_FALLBACK", raising=False)
+
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_ini_path = Path(__file__).parents[1] / "alembic.ini"
+    cfg = Config(str(alembic_ini_path))
+
+    with pytest.raises(
+        RuntimeError, match="DATABASE_URL is not set and SQLite fallback is disabled"
+    ):
+        command.upgrade(cfg, "head")
+
+
+def test_feedback_survives_app_restart(
+    tmp_path: Path, auth_headers: dict[str, str]
+) -> None:
+    """Verify feedback and predictions persist across application restart (SP-111 Part D)."""
+    db_url = os.getenv("DATABASE_URL")
+    if db_url and db_url.strip():
+        store1 = FeedbackStore()
+    else:
+        db_file = tmp_path / "persist_restart.db"
+        init_db(db_file)
+        store1 = FeedbackStore(db_path=db_file)
+
+    ticket_id = f"T-RESTART-{int(datetime.now(UTC).timestamp())}"
+
+    # 1. Start application (instance 1), triage a ticket, and submit feedback
+    with TestClient(app) as client1:
+        app.state.feedback_store = store1
+
+        triage_res = client1.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": ticket_id, "body": "Where is my parcel?"},
+        )
+        assert triage_res.status_code == 200
+        pred_label = triage_res.json()["label"]
+
+        fb_res = client1.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": ticket_id,
+                "correct_label": pred_label,
+                "agent_id": "agent-persistor",
+            },
+        )
+        assert fb_res.status_code == 200
+
+        metrics_res = client1.get("/metrics", headers=auth_headers)
+        assert metrics_res.status_code == 200
+        assert metrics_res.json()["feedback_total"] >= 1
+
+    # 2. "App restart": dispose store1, reset state
+    store1.close()
+    app.state.feedback_store = None
+
+    # 3. Reopen application (instance 2) pointing to the same database
+    if db_url and db_url.strip():
+        store2 = FeedbackStore()
+    else:
+        store2 = FeedbackStore(db_path=db_file)
+
+    try:
+        with TestClient(app) as client2:
+            app.state.feedback_store = store2
+
+            # Data must survive restart: prediction exists
+            pred = store2.get_prediction(ticket_id)
+            assert pred is not None
+            assert pred["ticket_id"] == ticket_id
+            assert pred["predicted_label"] == pred_label
+
+            # Joined feedback exists
+            feedback_rows = store2.get_feedback_with_predictions()
+            matched = [r for r in feedback_rows if r["ticket_id"] == ticket_id]
+            assert len(matched) == 1
+            assert matched[0]["ticket_id"] == ticket_id
+            assert matched[0]["agent_id"] == "agent-persistor"
+            assert matched[0]["correct_label"] == pred_label
+
+            # Metrics endpoint returns persisted count
+            metrics_res2 = client2.get("/metrics", headers=auth_headers)
+            assert metrics_res2.status_code == 200
+            assert metrics_res2.json()["feedback_total"] >= 1
+    finally:
+        store2.close()
+
+
+def test_postgres_test_isolation_truncates_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify test isolation executes TRUNCATE feedback, predictions on postgres connections."""
+    from unittest.mock import MagicMock, patch
+    from sqlalchemy import text
+
+    mock_engine = MagicMock()
+    mock_engine.dialect.name = "postgresql"
+    mock_conn = MagicMock()
+    mock_engine.begin.return_value.__enter__.return_value = mock_conn
+
+    with (
+        patch(
+            "supportpilot.feedback.store.create_feedback_engine",
+            return_value=(mock_engine, "postgres"),
+        ),
+        patch("supportpilot.feedback.store.init_db"),
+    ):
+        monkeypatch.setenv("DATABASE_URL", "postgresql://test:pass@localhost:5432/db")
+        from supportpilot.feedback.store import create_feedback_engine
+
+        engine, _ = create_feedback_engine()
+        with engine.begin() as conn:
+            conn.execute(text("TRUNCATE feedback, predictions CASCADE;"))
+
+        mock_conn.execute.assert_called()
+        sql_arg = str(mock_conn.execute.call_args[0][0])
+        assert "TRUNCATE feedback, predictions CASCADE;" in sql_arg

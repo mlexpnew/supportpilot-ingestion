@@ -42,6 +42,47 @@ jobs:
       - name: Run linting
         run: python -m ruff check .
 
+  test-postgres:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: feedback_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run Alembic migrations on Postgres
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/feedback_test
+        run: alembic upgrade head
+
+      - name: Run feedback tests against Postgres
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/feedback_test
+        run: python -m pytest tests/test_feedback.py -q
+
   docker:
     runs-on: ubuntu-24.04
 
@@ -63,7 +104,7 @@ jobs:
           fi
 
       - name: Run container
-        run: docker run -d --name api -p 8000:8000 -e TRIAGE_API_KEYS=ci-test-key-1 supportpilot-api
+        run: docker run -d --name api -p 8000:8000 -e TRIAGE_API_KEYS=ci-test-key-1 -e ALLOW_SQLITE_FALLBACK=1 supportpilot-api
 
       - name: Call /health
         run: |

@@ -24,7 +24,6 @@ from supportpilot.feedback import (
     FeedbackResponse,
     FeedbackStore,
     LabelMetric,
-    get_feedback_db_path,
     normalize_ticket_id,
 )
 from supportpilot.preprocessing.redact import redact_text
@@ -280,13 +279,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "Expected format triage-v<semver>-<YYYYMMDD>."
         )
 
-    feedback_db_path = get_feedback_db_path()
     try:
-        app.state.feedback_store = FeedbackStore(feedback_db_path)
+        app.state.feedback_store = FeedbackStore()
     except Exception as exc:
-        raise RuntimeError(
-            f"Failed to initialize feedback database at '{feedback_db_path}': {exc}"
-        ) from exc
+        raise RuntimeError(f"Failed to initialize feedback storage: {exc}") from exc
 
     app.state.model = loaded_model
     app.state.threshold = threshold
@@ -298,6 +294,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.threshold = None
     app.state.api_keys = set()
     app.state.rate_limits = {}
+    if getattr(app.state, "feedback_store", None) is not None:
+        app.state.feedback_store.close()
     app.state.feedback_store = None
 
 

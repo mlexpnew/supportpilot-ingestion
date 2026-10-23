@@ -134,12 +134,15 @@ All configuration settings are read dynamically at application startup:
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `TRIAGE_API_KEYS` | `string` | *(Required)* | Comma-separated list of authorized API keys. At least one non-empty key is required. |
+| `DATABASE_URL` | `string` | *(Required in Prod)* | PostgreSQL connection URI for feedback & predictions storage. Must start with `postgresql://` or `postgres://`. |
+| `ALLOW_SQLITE_FALLBACK` | `int` | `0` | If set to `1`, allows fallback to local SQLite when `DATABASE_URL` is omitted (local dev only). Missing `DATABASE_URL` fails fast in production. |
 | `TRIAGE_THRESHOLD` | `float` | `0.35` | Minimum classification confidence required to avoid manual human review. Predictions below this cutoff mark `needs_review: true`. Must be between `0.0` and `1.0`. |
 | `TRIAGE_MODEL_PATH`| `string`| `models/triage_model.joblib` | Filesystem path to the serialized trained model artifact. |
 | `PORT` | `int` | `8000` | Port on which the Uvicorn ASGI server listens. |
 
 ### Validation & Fail-Fast Guarantees
 - **Missing or Empty API Keys**: If `TRIAGE_API_KEYS` is missing, blank, or contains no non-empty comma-separated keys, startup fails immediately with `ValueError`.
+- **Missing Database URL**: In production, if `DATABASE_URL` is missing and `ALLOW_SQLITE_FALLBACK != 1`, startup fails immediately with `RuntimeError`.
 - **Invalid Float / Format**: If `TRIAGE_THRESHOLD` is not a valid float, startup fails immediately with `ValueError`.
 - **Out of Range**: If `TRIAGE_THRESHOLD` is outside `[0.0, 1.0]`, startup fails fast with `ValueError`.
 - **Missing Model File**: If the model artifact cannot be located at `TRIAGE_MODEL_PATH`, startup fails fast with `FileNotFoundError`.
