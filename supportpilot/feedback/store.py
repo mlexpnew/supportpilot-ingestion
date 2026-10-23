@@ -63,7 +63,8 @@ def init_db(path: Path | str | None = None) -> Path:
         # WAL mode allows concurrent readers and a writer
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS predictions (
                 ticket_id TEXT PRIMARY KEY,
                 predicted_label TEXT NOT NULL,
@@ -71,12 +72,16 @@ def init_db(path: Path | str | None = None) -> Path:
                 model_version TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
-            """)
-        conn.execute("""
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_predictions_predicted_label
             ON predictions(predicted_label);
-            """)
-        conn.execute("""
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS feedback (
                 ticket_id TEXT PRIMARY KEY,
                 correct_label TEXT NOT NULL,
@@ -84,11 +89,14 @@ def init_db(path: Path | str | None = None) -> Path:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (ticket_id) REFERENCES predictions(ticket_id)
             );
-            """)
-        conn.execute("""
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_feedback_correct_label
             ON feedback(correct_label);
-            """)
+            """
+        )
         conn.commit()
     finally:
         conn.close()
@@ -319,13 +327,15 @@ class FeedbackStore:
             or None if feedback_total == 0.
         """
         with self._get_connection() as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT
                     COUNT(f.ticket_id) AS total,
                     SUM(CASE WHEN p.predicted_label = f.correct_label THEN 1 ELSE 0 END) AS agreed
                 FROM feedback f
                 JOIN predictions p ON f.ticket_id = p.ticket_id;
-                """)
+                """
+            )
             row = cursor.fetchone()
             total = int(row["total"]) if row and row["total"] is not None else 0
             agreed = int(row["agreed"]) if row and row["agreed"] is not None else 0
@@ -347,7 +357,8 @@ class FeedbackStore:
             lbl: {"total": 0, "agreed": 0, "recall": None} for lbl in LABELS
         }
         with self._get_connection() as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT
                     f.correct_label,
                     COUNT(f.ticket_id) AS total,
@@ -355,7 +366,8 @@ class FeedbackStore:
                 FROM feedback f
                 JOIN predictions p ON f.ticket_id = p.ticket_id
                 GROUP BY f.correct_label;
-                """)
+                """
+            )
             for row in cursor.fetchall():
                 lbl = row["correct_label"]
                 total = int(row["total"])
@@ -386,11 +398,13 @@ class FeedbackStore:
                 open(tmp_fd, "w", encoding="utf-8") as f,
                 self._get_connection() as conn,
             ):
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                     SELECT ticket_id, correct_label
                     FROM feedback
                     ORDER BY created_at ASC;
-                    """)
+                    """
+                )
                 for row in cursor.fetchall():
                     record = {
                         "ticket_id": row["ticket_id"],
