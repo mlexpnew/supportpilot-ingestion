@@ -29,6 +29,14 @@ def _model_env(model_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRIAGE_API_KEYS", TEST_API_KEYS)
 
 
+@pytest.fixture(autouse=True)
+def feedback_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Set temporary SQLite database path via FEEDBACK_DB_PATH for tests (SP-110)."""
+    db_path = tmp_path / "test_feedback.db"
+    monkeypatch.setenv("FEEDBACK_DB_PATH", str(db_path))
+    return db_path
+
+
 @pytest.fixture
 def test_keys() -> list[str]:
     """Provide list of configured test API keys."""

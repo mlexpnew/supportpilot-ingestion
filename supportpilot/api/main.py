@@ -16,8 +16,17 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
+from supportpilot.feedback import (
+    MAX_ID_LENGTH,
+    FeedbackRequest,
+    FeedbackResponse,
+    FeedbackStore,
+    LabelMetric,
+    get_feedback_db_path,
+    normalize_ticket_id,
+)
 from supportpilot.preprocessing.redact import redact_text
 from supportpilot.triage.model import (
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -36,6 +45,7 @@ REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 EXCLUDED_METRIC_PATHS: set[str] = {
     "/health",
     "/metrics",
+    "/metrics/labels",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -207,16 +217,14 @@ def rate_limit(
 
 
 class TriageRequest(BaseModel):
-    ticket_id: str
+    ticket_id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
     subject: str | None = None
     body: str
 
-    @field_validator("ticket_id")
+    @field_validator("ticket_id", mode="before")
     @classmethod
-    def validate_ticket_id(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("ticket_id cannot be empty")
-        return v
+    def validate_ticket_id(cls, v: object) -> str:
+        return normalize_ticket_id(v)
 
     @field_validator("body")
     @classmethod
@@ -246,6 +254,8 @@ class MetricsResponse(BaseModel):
     avg_latency_ms: float
     needs_review_rate: float
     rate_limited_total: int
+    feedback_total: int = 0
+    live_accuracy: float | None = None
 
 
 @asynccontextmanager
@@ -270,6 +280,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "Expected format triage-v<semver>-<YYYYMMDD>."
         )
 
+    feedback_db_path = get_feedback_db_path()
+    try:
+        app.state.feedback_store = FeedbackStore(feedback_db_path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to initialize feedback database at '{feedback_db_path}': {exc}"
+        ) from exc
+
     app.state.model = loaded_model
     app.state.threshold = threshold
     app.state.counters = Counters()
@@ -280,6 +298,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.threshold = None
     app.state.api_keys = set()
     app.state.rate_limits = {}
+    app.state.feedback_store = None
 
 
 app = FastAPI(
@@ -293,6 +312,7 @@ app = FastAPI(
 app.state.counters = Counters()
 app.state.api_keys = set()
 app.state.rate_limits = {}
+app.state.feedback_store = None
 
 
 @app.middleware("http")
@@ -378,6 +398,13 @@ def health(req: Request) -> dict[str, object]:
 )
 def get_metrics(req: Request) -> MetricsResponse:
     counters: Counters | None = getattr(req.app.state, "counters", None)
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    feedback_total, live_accuracy = (
+        feedback_store.get_live_accuracy() if feedback_store is not None else (0, None)
+    )
+
     if counters is None or counters.requests_total == 0:
         return MetricsResponse(
             requests_total=0 if counters is None else counters.requests_total,
@@ -386,6 +413,8 @@ def get_metrics(req: Request) -> MetricsResponse:
             avg_latency_ms=0.0,
             needs_review_rate=0.0,
             rate_limited_total=0 if counters is None else counters.rate_limited_total,
+            feedback_total=feedback_total,
+            live_accuracy=live_accuracy,
         )
 
     avg_latency = round(counters.total_latency_ms / counters.requests_total, 2)
@@ -402,7 +431,25 @@ def get_metrics(req: Request) -> MetricsResponse:
         avg_latency_ms=avg_latency,
         needs_review_rate=review_rate,
         rate_limited_total=counters.rate_limited_total,
+        feedback_total=feedback_total,
+        live_accuracy=live_accuracy,
     )
+
+
+@app.get(
+    "/metrics/labels",
+    response_model=dict[str, LabelMetric],
+    dependencies=[Depends(get_api_key), Depends(rate_limit)],
+)
+def get_label_metrics(req: Request) -> dict[str, Any]:
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError(
+            "Feedback store is not initialized. Service startup invariant violated."
+        )
+    return feedback_store.get_label_metrics()
 
 
 @app.post(
@@ -455,10 +502,87 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
         },
     )
 
+    # Record prediction in feedback store (fail fast if not initialized)
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError(
+            "Feedback store is not initialized. Service startup invariant violated."
+        )
+
+    try:
+        feedback_store.save_prediction(
+            ticket_id=request.ticket_id,
+            predicted_label=result["label"],
+            confidence=result["confidence"],
+            model_version=model.version,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to save prediction for ticket_id=%s",
+            request.ticket_id,
+            extra={"ticket_id": request.ticket_id},
+        )
+
     return TriageResponse(
         ticket_id=request.ticket_id,
         label=result["label"],
         confidence=result["confidence"],
         needs_review=result["needs_review"],
         model_version=model.version,
+    )
+
+
+@app.post(
+    "/feedback",
+    response_model=FeedbackResponse,
+    dependencies=[Depends(get_api_key), Depends(rate_limit)],
+)
+def submit_feedback(
+    request: FeedbackRequest,
+    req: Request,
+) -> FeedbackResponse:
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError(
+            "Feedback store is not initialized. Service startup invariant violated."
+        )
+
+    try:
+        result = feedback_store.save_feedback(
+            ticket_id=request.ticket_id,
+            correct_label=request.correct_label,
+            agent_id=request.agent_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Ticket '{request.ticket_id}' has not been triaged.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    logger.info(
+        "ticket_id=%s agent_id=%s agreed=%s",
+        request.ticket_id,
+        request.agent_id,
+        result["agreed"],
+        extra={
+            "ticket_id": request.ticket_id,
+            "agent_id": request.agent_id,
+            "agreed": result["agreed"],
+        },
+    )
+
+    return FeedbackResponse(
+        ticket_id=result["ticket_id"],
+        correct_label=result["correct_label"],
+        predicted_label=result["predicted_label"],
+        agreed=result["agreed"],
     )
