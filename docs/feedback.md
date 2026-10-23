@@ -15,9 +15,9 @@ SupportPilot's feedback loop enables human agents to correct automated ticket tr
 flowchart TD
     A[Incoming Ticket] -->|POST /triage| B[FastAPI Triage Service]
     B -->|PII Redaction + ML Model| C[Triage Response]
-    B -->|Save Prediction Metadata| D[(SQLite predictions)]
+    B -->|Save Prediction Metadata| D[(PostgreSQL predictions)]
     E[Support Agent] -->|Inspects Ticket & Posts Correction| F[FastAPI Feedback Endpoint]
-    F -->|Validate & Upsert| G[(SQLite feedback)]
+    F -->|Validate & Upsert| G[(PostgreSQL feedback)]
     
     D -.->|Join on ticket_id| H[GET /metrics & /metrics/labels]
     G -.->|Join on ticket_id| H
@@ -39,12 +39,39 @@ flowchart TD
 
 ## Architecture & Storage
 
-The feedback subsystem uses an embedded SQLite database configured in Write-Ahead Logging (`WAL`) mode with `NORMAL` synchronous writes for high concurrency across async Uvicorn worker threads.
+The feedback subsystem uses PostgreSQL in production via SQLAlchemy 2.x and Alembic schema migrations.
 
-The database path is configured via the `FEEDBACK_DB_PATH` environment variable, defaulting to `data/feedback.db`.
+- **Primary Connection (`DATABASE_URL`)**: Connection string provided by Render's managed PostgreSQL service. Connections are pooled with `pool_size=5` and `pool_pre_ping=True` for connection health and automatic reconnects.
+- **Fail-Fast Production Startup**: If `DATABASE_URL` is missing, the service fails fast with `RuntimeError` unless local development fallback is explicitly enabled.
+- **Local Dev Fallback (`ALLOW_SQLITE_FALLBACK=1`)**: For offline development and lightweight testing without PostgreSQL, setting `ALLOW_SQLITE_FALLBACK=1` enables an embedded SQLite database (`FEEDBACK_DB_PATH`, defaulting to `data/feedback.db`) configured in Write-Ahead Logging (`WAL`) mode with `NORMAL` synchronous writes.
+- **Data Persistence**: Because database storage is hosted on a dedicated managed PostgreSQL instance, all agent feedback, predictions, and live accuracy metrics **persist across deployments and container restarts**.
 
-> [!WARNING]
-> **Render free-tier warning**: The SQLite file is wiped on every redeploy, so feedback is lost until we move to Postgres (Dev's note). Local container filesystems on Render's free tier are ephemeral (`FEEDBACK_DB_PATH`, defaulting to `data/feedback.db`), resetting database state upon restart or redeployment until migrated to Postgres.
+### Render Free-Tier Limits & Operational Constraints
+
+- **Storage Capacity**: Render's free PostgreSQL tier provides **1 GB** of storage.
+- **Connection Quota**: Supports up to **50 concurrent connections** (our application pool size of 5 operates safely below this threshold).
+- **Inactivity Suspension**: Free-tier PostgreSQL databases are suspended after **90 days** of inactivity. Keep the database active or connect periodically to ensure continuous availability.
+- **Automated Backups**: Free-tier PostgreSQL does not include automated daily point-in-time recovery (PITR). Operators should execute regular manual backups.
+
+### Database Backup & Disaster Recovery
+
+#### 1. SQL Dump Backup (`pg_dump`)
+To create a full logical backup of the `predictions` and `feedback` tables:
+```bash
+pg_dump "$DATABASE_URL" --no-owner --no-acl -f backup_$(date +%Y%m%d).sql
+```
+
+To restore from a logical backup:
+```bash
+psql "$DATABASE_URL" -f backup_YYYYMMDD.sql
+```
+
+#### 2. Feedback JSONL Export Backup
+To backup agent corrections in portable JSONL format for retraining and disaster recovery:
+```bash
+python -m supportpilot.feedback export --output backup_feedback_$(date +%Y%m%d).jsonl
+```
+
 
 ### Database Schema
 

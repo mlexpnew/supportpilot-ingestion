@@ -17,7 +17,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-
 DEFAULT_DEADLINE_SECONDS = 3.0
 MAX_ATTEMPTS = 3
 MAX_ORDER_ID_LENGTH = 64
