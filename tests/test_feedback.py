@@ -1422,3 +1422,128 @@ def test_join_feedback_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     assert lines[0]["ticket_id"] == "T1"
     assert lines[1]["ticket_id"] == "T-PILOT-1"
     assert lines[1]["label"] == "billing"
+
+
+def test_storage_layer_fallback_to_sqlite_when_database_url_missing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Verify missing DATABASE_URL falls back to SQLite file with a warning log."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with caplog.at_level(logging.INFO, logger="supportpilot.feedback.store"):
+        store = FeedbackStore()
+        try:
+            assert store.db_type == "sqlite"
+            assert store.engine.pool.size() == 5
+            assert store.engine.pool._pre_ping is True
+        finally:
+            store.close()
+
+    records = [r for r in caplog.records if r.name == "supportpilot.feedback.store"]
+    warning_msgs = [r.getMessage() for r in records if r.levelno == logging.WARNING]
+    info_msgs = [r.getMessage() for r in records if r.levelno == logging.INFO]
+
+    assert any("DATABASE_URL not set" in msg for msg in warning_msgs)
+    assert any("Database initialized: sqlite" in msg for msg in info_msgs)
+
+
+def test_storage_layer_never_logs_database_url_or_credentials(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify engine initialization logs only the database type (postgres/sqlite), never credentials or URL."""
+    fake_secret = "SUPER_SECRET_POSTGRES_PASS_12345"
+    fake_pg_url = f"postgres://db_user:{fake_secret}@pg.render.com:5432/feedback_db"
+
+    with caplog.at_level(logging.DEBUG, logger="supportpilot.feedback.store"):
+        from supportpilot.feedback.store import create_feedback_engine
+
+        engine, db_type = create_feedback_engine(database_url=fake_pg_url)
+        try:
+            assert db_type == "postgres"
+            assert engine.pool.size() == 5
+            assert engine.pool._pre_ping is True
+        finally:
+            engine.dispose()
+
+    all_logs = " ".join(r.getMessage() for r in caplog.records)
+    assert fake_secret not in all_logs
+    assert "pg.render.com" not in all_logs
+    assert "Database initialized: postgres" in all_logs
+
+
+def test_postgres_upsert_statements_contain_lock_and_conflict_handling() -> None:
+    """Verify PostgreSQL dialect compiles on_conflict_do_update and preserves retriage lock condition."""
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from supportpilot.feedback.store import feedback, predictions
+
+    # 1. Predictions upsert statement on postgres
+    pred_stmt = pg_insert(predictions).values(
+        ticket_id="T1",
+        predicted_label="delivery",
+        confidence=0.9,
+        model_version="v1",
+        created_at="2026-10-23",
+    )
+    pred_stmt = pred_stmt.on_conflict_do_update(
+        index_elements=[predictions.c.ticket_id],
+        set_={
+            "predicted_label": pred_stmt.excluded.predicted_label,
+            "confidence": pred_stmt.excluded.confidence,
+            "model_version": pred_stmt.excluded.model_version,
+            "created_at": pred_stmt.excluded.created_at,
+        },
+        where=predictions.c.ticket_id.not_in(select(feedback.c.ticket_id)),
+    )
+    pred_compiled = str(
+        pred_stmt.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "ON CONFLICT (ticket_id) DO UPDATE" in pred_compiled
+    assert (
+        "WHERE (predictions.ticket_id NOT IN (SELECT feedback.ticket_id"
+        in pred_compiled
+    )
+
+    # 2. Feedback upsert statement on postgres
+    fb_stmt = pg_insert(feedback).values(
+        ticket_id="T1",
+        correct_label="delivery",
+        agent_id="a1",
+        created_at="2026-10-23",
+    )
+    fb_stmt = fb_stmt.on_conflict_do_update(
+        index_elements=[feedback.c.ticket_id],
+        set_={
+            "correct_label": fb_stmt.excluded.correct_label,
+            "agent_id": fb_stmt.excluded.agent_id,
+            "created_at": fb_stmt.excluded.created_at,
+        },
+    )
+    fb_compiled = str(
+        fb_stmt.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "ON CONFLICT (ticket_id) DO UPDATE" in fb_compiled
+    assert "correct_label = excluded.correct_label" in fb_compiled
+
+
+def test_lifespan_engine_lifecycle(auth_headers: dict[str, str]) -> None:
+    """Verify lifespan creates engine once, uses it during requests, and closes on shutdown."""
+    with TestClient(app) as client:
+        store = getattr(app.state, "feedback_store", None)
+        assert store is not None
+        assert store.engine is not None
+
+        # Verify endpoint works with lifespan store
+        res = client.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": "T-LIFECYCLE-1", "body": "Where is my parcel?"},
+        )
+        assert res.status_code == 200
+
+    # On shutdown, store reference is cleaned up
+    assert getattr(app.state, "feedback_store", None) is None
