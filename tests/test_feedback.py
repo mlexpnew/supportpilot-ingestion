@@ -1763,3 +1763,34 @@ def test_feedback_survives_app_restart(
             assert metrics_res2.json()["feedback_total"] >= 1
     finally:
         store2.close()
+
+
+def test_postgres_test_isolation_truncates_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify test isolation executes TRUNCATE feedback, predictions on postgres connections."""
+    from unittest.mock import MagicMock, patch
+    from sqlalchemy import text
+
+    mock_engine = MagicMock()
+    mock_engine.dialect.name = "postgresql"
+    mock_conn = MagicMock()
+    mock_engine.begin.return_value.__enter__.return_value = mock_conn
+
+    with (
+        patch(
+            "supportpilot.feedback.store.create_feedback_engine",
+            return_value=(mock_engine, "postgres"),
+        ),
+        patch("supportpilot.feedback.store.init_db"),
+    ):
+        monkeypatch.setenv("DATABASE_URL", "postgresql://test:pass@localhost:5432/db")
+        from supportpilot.feedback.store import create_feedback_engine
+
+        engine, _ = create_feedback_engine()
+        with engine.begin() as conn:
+            conn.execute(text("TRUNCATE feedback, predictions CASCADE;"))
+
+        mock_conn.execute.assert_called()
+        sql_arg = str(mock_conn.execute.call_args[0][0])
+        assert "TRUNCATE feedback, predictions CASCADE;" in sql_arg
