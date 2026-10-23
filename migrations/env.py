@@ -33,6 +33,18 @@ def get_url() -> str:
     if env_url is not None and env_url.strip():
         return normalize_database_url(env_url)
 
+    allow_fallback = os.getenv("ALLOW_SQLITE_FALLBACK", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not allow_fallback:
+        raise RuntimeError(
+            "DATABASE_URL is not set and SQLite fallback is disabled. "
+            "Set DATABASE_URL to a valid database connection string, "
+            "or set ALLOW_SQLITE_FALLBACK=1 for local development."
+        )
+
     sqlite_path = get_feedback_db_path()
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite:///{sqlite_path.resolve()}"
@@ -54,24 +66,36 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    configuration = config.get_section(config.config_ini_section, {}) or {}
-    configuration["sqlalchemy.url"] = get_url()
+    connectable = config.attributes.get("connection", None)
 
-    connectable = engine_from_config(
-        configuration,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-
-    with connectable.connect() as connection:
+    if connectable is not None:
         context.configure(
-            connection=connection,
+            connection=connectable,
             target_metadata=target_metadata,
-            render_as_batch=(connection.dialect.name == "sqlite"),
+            render_as_batch=(connectable.dialect.name == "sqlite"),
         )
 
         with context.begin_transaction():
             context.run_migrations()
+    else:
+        configuration = config.get_section(config.config_ini_section, {}) or {}
+        configuration["sqlalchemy.url"] = get_url()
+
+        connectable = engine_from_config(
+            configuration,
+            prefix="sqlalchemy.",
+            poolclass=pool.NullPool,
+        )
+
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                render_as_batch=(connection.dialect.name == "sqlite"),
+            )
+
+            with context.begin_transaction():
+                context.run_migrations()
 
 
 if context.is_offline_mode():

@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -1604,13 +1607,7 @@ def test_alembic_migration_creates_both_tables_on_empty_db(tmp_path: Path) -> No
     db_file = tmp_path / "empty_migration.db"
     assert not db_file.exists()
 
-    from alembic import command
-    from alembic.config import Config
-
-    cfg = Config("alembic.ini")
-    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_file.resolve()}")
-    command.upgrade(cfg, "head")
-
+    init_db(db_file)
     assert db_file.exists()
 
     conn = sqlite3.connect(str(db_file))
@@ -1649,3 +1646,120 @@ def test_alembic_migration_creates_both_tables_on_empty_db(tmp_path: Path) -> No
     fks = cur.fetchall()
     assert any(fk[2] == "predictions" and fk[4] == "ticket_id" for fk in fks)
     conn.close()
+
+
+def test_init_db_passes_live_connection_to_alembic_attributes() -> None:
+    """Verify init_db passes live connection in alembic_cfg.attributes and does not stringify engine.url."""
+    from unittest.mock import MagicMock, patch
+
+    mock_engine = MagicMock()
+    mock_engine.dialect.name = "postgresql"
+    mock_conn = MagicMock()
+    mock_engine.begin.return_value.__enter__.return_value = mock_conn
+
+    captured_attributes: dict[str, Any] = {}
+
+    def fake_upgrade(config: Any, revision: str) -> None:
+        captured_attributes.update(config.attributes)
+
+    with patch("alembic.command.upgrade", side_effect=fake_upgrade):
+        db_type = init_db(engine=mock_engine)
+
+    assert db_type == "postgres"
+    assert captured_attributes.get("connection") is mock_conn
+
+
+def test_alembic_env_fails_fast_when_database_url_missing_without_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify migrations/env.py get_url() fails fast if DATABASE_URL is missing and ALLOW_SQLITE_FALLBACK is not set."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("ALLOW_SQLITE_FALLBACK", raising=False)
+
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_ini_path = Path(__file__).parents[1] / "alembic.ini"
+    cfg = Config(str(alembic_ini_path))
+
+    with pytest.raises(
+        RuntimeError, match="DATABASE_URL is not set and SQLite fallback is disabled"
+    ):
+        command.upgrade(cfg, "head")
+
+
+def test_feedback_survives_app_restart(
+    tmp_path: Path, auth_headers: dict[str, str]
+) -> None:
+    """Verify feedback and predictions persist across application restart (SP-111 Part D)."""
+    db_url = os.getenv("DATABASE_URL")
+    if db_url and db_url.strip():
+        store1 = FeedbackStore()
+    else:
+        db_file = tmp_path / "persist_restart.db"
+        init_db(db_file)
+        store1 = FeedbackStore(db_path=db_file)
+
+    ticket_id = f"T-RESTART-{int(datetime.now(UTC).timestamp())}"
+
+    # 1. Start application (instance 1), triage a ticket, and submit feedback
+    with TestClient(app) as client1:
+        app.state.feedback_store = store1
+
+        triage_res = client1.post(
+            "/triage",
+            headers=auth_headers,
+            json={"ticket_id": ticket_id, "body": "Where is my parcel?"},
+        )
+        assert triage_res.status_code == 200
+        pred_label = triage_res.json()["label"]
+
+        fb_res = client1.post(
+            "/feedback",
+            headers=auth_headers,
+            json={
+                "ticket_id": ticket_id,
+                "correct_label": pred_label,
+                "agent_id": "agent-persistor",
+            },
+        )
+        assert fb_res.status_code == 200
+
+        metrics_res = client1.get("/metrics", headers=auth_headers)
+        assert metrics_res.status_code == 200
+        assert metrics_res.json()["feedback_total"] >= 1
+
+    # 2. "App restart": dispose store1, reset state
+    store1.close()
+    app.state.feedback_store = None
+
+    # 3. Reopen application (instance 2) pointing to the same database
+    if db_url and db_url.strip():
+        store2 = FeedbackStore()
+    else:
+        store2 = FeedbackStore(db_path=db_file)
+
+    try:
+        with TestClient(app) as client2:
+            app.state.feedback_store = store2
+
+            # Data must survive restart: prediction exists
+            pred = store2.get_prediction(ticket_id)
+            assert pred is not None
+            assert pred["ticket_id"] == ticket_id
+            assert pred["predicted_label"] == pred_label
+
+            # Joined feedback exists
+            feedback_rows = store2.get_feedback_with_predictions()
+            matched = [r for r in feedback_rows if r["ticket_id"] == ticket_id]
+            assert len(matched) == 1
+            assert matched[0]["ticket_id"] == ticket_id
+            assert matched[0]["agent_id"] == "agent-persistor"
+            assert matched[0]["correct_label"] == pred_label
+
+            # Metrics endpoint returns persisted count
+            metrics_res2 = client2.get("/metrics", headers=auth_headers)
+            assert metrics_res2.status_code == 200
+            assert metrics_res2.json()["feedback_total"] >= 1
+    finally:
+        store2.close()

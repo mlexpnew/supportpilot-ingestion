@@ -177,11 +177,13 @@ def init_db(
     from alembic import command
     from alembic.config import Config
 
-    alembic_cfg = Config("alembic.ini")
+    alembic_ini_path = Path(__file__).parents[2] / "alembic.ini"
+    alembic_cfg = Config(str(alembic_ini_path))
 
     if engine is not None:
-        alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
-        command.upgrade(alembic_cfg, "head")
+        with engine.begin() as conn:
+            alembic_cfg.attributes["connection"] = conn
+            command.upgrade(alembic_cfg, "head")
         return (
             "postgres" if engine.dialect.name == "postgresql" else engine.dialect.name
         )
@@ -189,16 +191,20 @@ def init_db(
     if path is not None:
         target_path = Path(path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        alembic_cfg.set_main_option(
-            "sqlalchemy.url", f"sqlite:///{target_path.resolve()}"
-        )
-        command.upgrade(alembic_cfg, "head")
+        eng = _sqlite_engine(target_path)
+        try:
+            with eng.begin() as conn:
+                alembic_cfg.attributes["connection"] = conn
+                command.upgrade(alembic_cfg, "head")
+        finally:
+            eng.dispose()
         return "sqlite"
 
     eng, db_type = create_feedback_engine(db_path=path)
     try:
-        alembic_cfg.set_main_option("sqlalchemy.url", str(eng.url))
-        command.upgrade(alembic_cfg, "head")
+        with eng.begin() as conn:
+            alembic_cfg.attributes["connection"] = conn
+            command.upgrade(alembic_cfg, "head")
     finally:
         eng.dispose()
 
