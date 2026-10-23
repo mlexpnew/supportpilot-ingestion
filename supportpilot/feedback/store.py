@@ -162,10 +162,10 @@ def init_db(
     path: Path | str | None = None,
     engine: Engine | None = None,
 ) -> str:
-    """Initialize the feedback database schema (predictions and feedback tables).
+    """Initialize the feedback database schema via Alembic migrations.
 
     Zero-PII guarantee: neither table stores ticket body or customer text.
-    Uses SQLAlchemy DDL.
+    Alembic owns the schema.
 
     Args:
         path: Optional path to SQLite database file.
@@ -174,15 +174,31 @@ def init_db(
     Returns:
         The database type string ("postgres" or "sqlite").
     """
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_cfg = Config("alembic.ini")
+
     if engine is not None:
-        metadata.create_all(engine)
+        alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
+        command.upgrade(alembic_cfg, "head")
         return (
             "postgres" if engine.dialect.name == "postgresql" else engine.dialect.name
         )
 
+    if path is not None:
+        target_path = Path(path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        alembic_cfg.set_main_option(
+            "sqlalchemy.url", f"sqlite:///{target_path.resolve()}"
+        )
+        command.upgrade(alembic_cfg, "head")
+        return "sqlite"
+
     eng, db_type = create_feedback_engine(db_path=path)
     try:
-        metadata.create_all(eng)
+        alembic_cfg.set_main_option("sqlalchemy.url", str(eng.url))
+        command.upgrade(alembic_cfg, "head")
     finally:
         eng.dispose()
 
@@ -206,7 +222,6 @@ class FeedbackStore:
                 else self.engine.dialect.name
             )
             self.db_path = Path(db_path) if db_path is not None else None
-            metadata.create_all(self.engine)
         else:
             self.engine, self.db_type = create_feedback_engine(
                 database_url=database_url,
@@ -218,7 +233,6 @@ class FeedbackStore:
                 )
             else:
                 self.db_path = None
-            metadata.create_all(self.engine)
 
         self.predictions = predictions
         self.feedback = feedback

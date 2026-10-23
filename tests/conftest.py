@@ -31,10 +31,18 @@ def _model_env(model_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def feedback_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Set temporary SQLite database path via FEEDBACK_DB_PATH for tests (SP-110)."""
+    """Set temporary SQLite database path via FEEDBACK_DB_PATH and run alembic migrations (Part C)."""
     db_path = tmp_path / "test_feedback.db"
     monkeypatch.setenv("FEEDBACK_DB_PATH", str(db_path))
     monkeypatch.setenv("ALLOW_SQLITE_FALLBACK", "1")
+
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path.resolve()}")
+    command.upgrade(cfg, "head")
+
     return db_path
 
 

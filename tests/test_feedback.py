@@ -82,6 +82,7 @@ def test_prediction_saved_in_store_and_via_triage(
 ) -> None:
     """Verify triage predictions are saved to the predictions table."""
     db_file = tmp_path / "pred_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     # 1. Direct store call
@@ -126,6 +127,7 @@ def test_feedback_upsert_on_duplicate(
 ) -> None:
     """Verify duplicate feedback on the same ticket updates in place (one row per ticket)."""
     db_file = tmp_path / "upsert_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     store.save_prediction("T-UP-1", "delivery", 0.9, "triage-v1.0.0-20261022")
@@ -298,6 +300,7 @@ def test_retriage_after_feedback_preserves_original_prediction(
 ) -> None:
     """Verify triage -> feedback -> re-triage leaves the stored prediction unchanged (Rohan's decision)."""
     db_file = tmp_path / "retriage_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     # 1. Triage: initial prediction
@@ -388,6 +391,7 @@ def test_feedback_unknown_ticket_404(
 ) -> None:
     """Verify feedback on an untriaged ticket raises KeyError and returns 404."""
     db_file = tmp_path / "unknown_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     # Store level raises KeyError
@@ -471,6 +475,7 @@ def test_feedback_invalid_label_422(
 ) -> None:
     """Verify invalid correct_label raises ValueError in store and returns 422 in API."""
     db_file = tmp_path / "invalid_label_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
     store.save_prediction("T-LBL-1", "delivery", 0.9, "triage-v1.0.0-20261022")
 
@@ -722,6 +727,7 @@ def test_numeric_ticket_and_agent_id_returns_422(
 def test_accuracy_math_known_numbers(tmp_path: Path) -> None:
     """Verify live accuracy calculation against exact known numbers."""
     db_file = tmp_path / "acc_math.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     # 4 tickets:
@@ -803,6 +809,7 @@ def test_accuracy_math_known_numbers(tmp_path: Path) -> None:
 def test_join_feedback_with_predictions_on_ticket_id(tmp_path: Path) -> None:
     """Verify join feedback with predictions on ticket_id (SP-110 Part C)."""
     db_file = tmp_path / "join_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     # 1. Predictions
@@ -847,6 +854,7 @@ def test_join_feedback_with_predictions_on_ticket_id(tmp_path: Path) -> None:
 def test_live_accuracy_null_when_empty(tmp_path: Path) -> None:
     """Verify live_accuracy returns None (null in JSON) when no feedback exists."""
     db_file = tmp_path / "empty_acc.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     store.save_prediction("T-NO-FB", "delivery", 0.9, "v1")
@@ -865,6 +873,7 @@ def test_metrics_endpoint_includes_feedback_total_and_live_accuracy(
 ) -> None:
     """Verify GET /metrics includes feedback_total and live_accuracy (SP-110 Part C)."""
     db_file = tmp_path / "metrics_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     with TestClient(app) as client:
@@ -946,6 +955,7 @@ def test_metrics_labels_endpoint_per_label_accuracy(
 ) -> None:
     """Verify GET /metrics/labels returns per-label accuracy protected by API key."""
     db_file = tmp_path / "metrics_labels_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     with TestClient(app) as client:
@@ -1008,6 +1018,7 @@ def test_zero_ticket_body_in_db(tmp_path: Path, auth_headers: dict[str, str]) ->
     Tests schema table definitions, row data dumps, and binary database file bytes.
     """
     db_file = tmp_path / "privacy_test.db"
+    init_db(db_file)
 
     secret_body = "SENSITIVE_CUSTOMER_PAYMENT_CARD_4111222233334444_SECRET"
     secret_subject = "CONFIDENTIAL_PASSWORD_RESET_TOKEN_XYZ98765"
@@ -1072,6 +1083,7 @@ def test_sql_injection_string_stored_safely(
 ) -> None:
     """Verify ? parameterization prevents SQL injection payloads from executing."""
     db_file = tmp_path / "sqli.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
 
     sqli_ticket_1 = "T-INJECT-1'; DROP TABLE predictions; --"
@@ -1197,6 +1209,7 @@ def test_export_feedback_cli(
 ) -> None:
     """Verify CLI export command writes ticket_id and correct_label only and prints summary to stderr."""
     db_file = tmp_path / "cli_test.db"
+    init_db(db_file)
     store = FeedbackStore(db_file)
     store.save_prediction("T-EXP-1", "delivery", 0.9, "v1")
     store.save_prediction("T-EXP-2", "billing", 0.8, "v1")
@@ -1471,8 +1484,12 @@ def test_init_db_returns_db_type_only_preventing_password_leak(
 
     mock_engine = MagicMock()
     mock_engine.dialect.name = "postgresql"
+    mock_engine.url = fake_url
 
-    with patch("supportpilot.feedback.store.create_engine", return_value=mock_engine):
+    with (
+        patch("supportpilot.feedback.store.create_engine", return_value=mock_engine),
+        patch("alembic.command.upgrade"),
+    ):
         result = init_db()
         assert result == "postgres"
         assert fake_pass not in str(result)
@@ -1580,3 +1597,55 @@ def test_lifespan_engine_lifecycle(auth_headers: dict[str, str]) -> None:
 
     # On shutdown, store reference is cleaned up
     assert getattr(app.state, "feedback_store", None) is None
+
+
+def test_alembic_migration_creates_both_tables_on_empty_db(tmp_path: Path) -> None:
+    """Verify Alembic migration creates both tables, keys, and indexes on an empty DB (Part C)."""
+    db_file = tmp_path / "empty_migration.db"
+    assert not db_file.exists()
+
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_file.resolve()}")
+    command.upgrade(cfg, "head")
+
+    assert db_file.exists()
+
+    conn = sqlite3.connect(str(db_file))
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
+    tables = {r[0] for r in cur.fetchall()}
+    assert "predictions" in tables
+    assert "feedback" in tables
+    assert "alembic_version" in tables
+
+    # Verify predictions table columns
+    cur.execute("PRAGMA table_info(predictions);")
+    pred_cols = {r[1]: r[2] for r in cur.fetchall()}
+    assert "ticket_id" in pred_cols
+    assert "predicted_label" in pred_cols
+    assert "confidence" in pred_cols
+    assert "model_version" in pred_cols
+    assert "created_at" in pred_cols
+
+    # Verify feedback table columns
+    cur.execute("PRAGMA table_info(feedback);")
+    fb_cols = {r[1]: r[2] for r in cur.fetchall()}
+    assert "ticket_id" in fb_cols
+    assert "correct_label" in fb_cols
+    assert "agent_id" in fb_cols
+    assert "created_at" in fb_cols
+
+    # Verify indices
+    cur.execute("SELECT name FROM sqlite_master WHERE type='index';")
+    indices = {r[0] for r in cur.fetchall()}
+    assert "idx_predictions_predicted_label" in indices
+    assert "idx_feedback_correct_label" in indices
+
+    # Verify foreign key on feedback table
+    cur.execute("PRAGMA foreign_key_list(feedback);")
+    fks = cur.fetchall()
+    assert any(fk[2] == "predictions" and fk[4] == "ticket_id" for fk in fks)
+    conn.close()
