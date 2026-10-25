@@ -311,20 +311,24 @@ In the event of an incident or degraded release, use one of the following rollba
 5. Select **Rollback to this deploy**.
 6. Render will instantly switch traffic back to the previous healthy container image without re-building.
 
-### Option B: Git Revert (Standard Pipeline)
-To revert via source control and re-run standard CI validation:
-1. Revert the problematic commit on your local branch:
+### Option B: Git Revert via PR (Protected Branch Workflow)
+Direct push to `main` is blocked by GitHub branch protection. To revert via PR:
+1. Pull latest `main` branch and create a revert branch:
    ```bash
-   git fetch origin
-   git checkout main
-   git revert <bad-commit-sha>
+   git checkout main && git pull origin main
+   git checkout -b revert/rollback-<bad-commit-sha>
    ```
-2. Push the revert commit:
+2. Revert the problematic commit:
    ```bash
-   git push origin main
+   git revert <bad-commit-sha> --no-edit
    ```
-3. GitHub Actions CI will validate the reverted code.
-4. Render will detect the new commit and automatically build and deploy the reverted version.
+3. Push the branch and open a PR:
+   ```bash
+   git push -u origin revert/rollback-<bad-commit-sha>
+   gh pr create --title "revert: rollback <bad-commit-sha>" --body "Emergency rollback of degraded commit <bad-commit-sha>"
+   ```
+4. Wait for CI to turn green and team approval, then merge the PR. Render will detect the new commit on `main` and automatically build and deploy the reverted version.
+
 
 ### Option C: Environment Variable Rollback
 If an incorrect environment variable (such as an overly strict `TRIAGE_THRESHOLD`) caused degraded behavior:

@@ -35,7 +35,9 @@ curl -i https://supportpilot-ingestion.onrender.com/health
 curl -s -H "X-API-Key: $TRIAGE_API_KEY" https://supportpilot-ingestion.onrender.com/alerts | jq .
 
 # 3. Check live JSON logs in Render Dashboard for 5xx errors
-# Search query: status>=500 or level=ERROR
+# Note: Render log search is plain text (not a query language).
+# Search for: '"status": 50' or '"level": "ERROR"'
+
 ```
 
 ### Fix
@@ -60,27 +62,29 @@ curl -s -H "X-API-Key: $TRIAGE_API_KEY" https://supportpilot-ingestion.onrender.
 
 ### Check
 ```bash
-# 1. Test direct PostgreSQL connectivity using internal/external connection string
-psql "$DATABASE_URL" -c "SELECT 1;"
+# 1. Test direct PostgreSQL connectivity
+# Note: From your laptop, use the External Database URL from the Render Dashboard (the Internal URL only resolves inside Render's private network).
+psql "$EXTERNAL_DATABASE_URL" -c "SELECT 1;"
 
 # 2. Inspect Render application logs for database connection timeouts
-# Search query: "feedback_store" or "OperationalError" or "Connection refused"
+# Search plain text: "feedback_store" or "OperationalError" or "Connection refused"
 
 # 3. Verify PostgreSQL instance state in Render Dashboard (must show "Available")
 ```
 
 ### Fix
 1. **Resume suspended database**: Render free-tier databases automatically suspend after 90 days of inactivity. In [Render Dashboard](https://dashboard.render.com) -> PostgreSQL -> Click **Resume Database**.
-2. **Verify connection credentials**: In Web Service Environment settings, verify that `DATABASE_URL` exactly matches the PostgreSQL **Internal Database URL** provided by Render.
+2. **Verify connection credentials**: In Web Service Environment settings, verify that `DATABASE_URL` exactly matches the PostgreSQL **Internal Database URL** provided by Render (the web service runs inside Render's private network).
 3. **Reset exhausted connection pool**: Render free tier limits connections to 50 concurrent handles. If connection pool leaked, restart the web service to terminate abandoned sockets.
-4. **Emergency backup & restore (`pg_dump`)**: If database corruption is suspected, execute an emergency dump before attempting recovery:
+4. **Emergency backup & restore (`pg_dump`)**: If database corruption is suspected, execute an emergency dump before attempting recovery (from your laptop, connect using the **External Database URL**):
    ```bash
-   # Emergency backup of existing state
-   pg_dump "$DATABASE_URL" --no-owner --no-acl -f emergency_backup_$(date +%Y%m%d_%H%M%S).sql
+   # Emergency backup of existing state (run from laptop with External Database URL)
+   pg_dump "$EXTERNAL_DATABASE_URL" --no-owner --no-acl -f emergency_backup_$(date +%Y%m%d_%H%M%S).sql
 
    # Restore from last verified logical backup
-   psql "$DATABASE_URL" -f backup_latest.sql
+   psql "$EXTERNAL_DATABASE_URL" -f backup_latest.sql
    ```
+
 5. **Run database migrations**: Ensure schema tables (`predictions`, `feedback`) exist:
    ```bash
    alembic upgrade head
@@ -150,12 +154,13 @@ curl -s -H "X-API-Key: $TRIAGE_API_KEY" https://supportpilot-ingestion.onrender.
 
 ### Check
 ```bash
-# 1. Compute 8-character SHA-256 hash prefix of suspected leaked key without printing key
-python3 -c "import hashlib; print(hashlib.sha256(b'SUSPECTED_KEY').hexdigest()[:8])"
+# 1. Copy the suspected leaked key into your clipboard (e.g. from GitHub, Slack, or report),
+# then compute its 8-character SHA-256 hash prefix via pbpaste so the secret NEVER enters shell history:
+pbpaste | python3 -c "import sys,hashlib;print(hashlib.sha256(sys.stdin.read().strip().encode()).hexdigest()[:8])"
 
-# 2. Search Render logs for unauthorized traffic using this api_key_hash
-# Log query: api_key_hash=<computed_8_char_prefix>
+# 2. Search Render logs for plain text: "api_key_hash": "<computed_8_char_prefix>"
 ```
+
 
 ### Fix (3-Step pbcopy Rotation Method)
 1. **Step 1: Generate key directly to clipboard**  
@@ -211,20 +216,24 @@ curl -i https://supportpilot-ingestion.onrender.com/health
 5. Select **Rollback to this deploy**.
 6. Render will instantly switch incoming traffic back to the previous healthy container image without re-building.
 
-#### Option B: Git Revert (Standard Source Pipeline)
-1. Pull latest `main` branch:
+#### Option B: Git Revert via PR (Protected Branch Workflow)
+Direct push to `main` is blocked by GitHub branch protection. To revert via PR:
+1. Pull latest `main` branch and create a revert branch:
    ```bash
    git checkout main && git pull origin main
+   git checkout -b revert/rollback-<bad-commit-sha>
    ```
-2. Revert the problematic commit:
+2. Revert the problematic commit (plain `git revert` without `-m`):
    ```bash
-   git revert <bad-commit-sha> -m "revert: rollback bad deploy <bad-commit-sha>"
+   git revert <bad-commit-sha> --no-edit
    ```
-3. Push the revert commit:
+3. Push the revert branch and open a pull request:
    ```bash
-   git push origin main
+   git push -u origin revert/rollback-<bad-commit-sha>
+   gh pr create --title "revert: rollback <bad-commit-sha>" --body "Emergency rollback of degraded commit <bad-commit-sha>"
    ```
-4. GitHub Actions CI will validate the reverted code and Render will automatically deploy the clean build.
+4. Wait for CI to turn green and team approval, then merge the PR. Render will detect the new commit on `main` and automatically build and deploy the reverted version.
+
 
 #### Option C: Environment Variable Rollback
 If the deploy failure was caused by a malformed environment variable (e.g. invalid `LOG_LEVEL` or non-float `TRIAGE_THRESHOLD`):
