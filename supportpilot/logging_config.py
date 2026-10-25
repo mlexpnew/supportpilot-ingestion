@@ -264,10 +264,8 @@ def setup_logging(stream: TextIO | None = None) -> None:
     handler.setFormatter(JSONFormatter())
     handler._supportpilot_json_handler = True  # type: ignore[attr-defined]
 
-    # Attach filter to handler and root logger
+    # Attach filter to handler (covers records from root and all child loggers)
     sens_filter = SensitiveDataFilter()
     handler.addFilter(sens_filter)
-    if not any(isinstance(f, SensitiveDataFilter) for f in root_logger.filters):
-        root_logger.addFilter(sens_filter)
 
     root_logger.addHandler(handler)

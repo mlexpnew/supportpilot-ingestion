@@ -138,14 +138,22 @@ All configuration settings are read dynamically at application startup:
 | `ALLOW_SQLITE_FALLBACK` | `int` | `0` | If set to `1`, allows fallback to local SQLite when `DATABASE_URL` is omitted (local dev only). Missing `DATABASE_URL` fails fast in production. |
 | `TRIAGE_THRESHOLD` | `float` | `0.35` | Minimum classification confidence required to avoid manual human review. Predictions below this cutoff mark `needs_review: true`. Must be between `0.0` and `1.0`. |
 | `TRIAGE_MODEL_PATH`| `string`| `models/triage_model.joblib` | Filesystem path to the serialized trained model artifact. |
+| `LOG_LEVEL` | `string` | `INFO` | Application and server log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). Invalid values fail fast at startup. |
 | `PORT` | `int` | `8000` | Port on which the Uvicorn ASGI server listens. |
 
 ### Validation & Fail-Fast Guarantees
 - **Missing or Empty API Keys**: If `TRIAGE_API_KEYS` is missing, blank, or contains no non-empty comma-separated keys, startup fails immediately with `ValueError`.
 - **Missing Database URL**: In production, if `DATABASE_URL` is missing and `ALLOW_SQLITE_FALLBACK != 1`, startup fails immediately with `RuntimeError`.
+- **Invalid Log Level**: If `LOG_LEVEL` is not a valid standard level, startup fails immediately with `ValueError`.
 - **Invalid Float / Format**: If `TRIAGE_THRESHOLD` is not a valid float, startup fails immediately with `ValueError`.
 - **Out of Range**: If `TRIAGE_THRESHOLD` is outside `[0.0, 1.0]`, startup fails fast with `ValueError`.
 - **Missing Model File**: If the model artifact cannot be located at `TRIAGE_MODEL_PATH`, startup fails fast with `FileNotFoundError`.
+
+### Structured Logging & Observability
+- **JSON Format**: Application logs are formatted as single-line JSON objects with `timestamp` (UTC ISO 8601), `level`, `logger`, `message`, and any contextual `extra` fields.
+- **Request Logging**: Uvicorn access logging is disabled (`--no-access-log`). The request-ID middleware logs exactly one structured JSON line per request with `request_id`, `path`, `method`, `status`, and `latency_ms`.
+- **Alembic Startup Logs**: The pre-server migration command (`alembic upgrade head`) prints plain-text startup migration status lines to stdout prior to Uvicorn booting. This is normal and acceptable.
+- **Privacy Sanitization**: Logs pass through a sensitive data filter that automatically masks credentials, database URLs, API keys (`X-API-Key`), and ticket bodies (`[REDACTED]`), while preserving audit `api_key_hash`.
 
 ---
 
