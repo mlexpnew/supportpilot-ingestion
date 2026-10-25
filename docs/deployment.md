@@ -300,7 +300,8 @@ Once deployed on Render, verify endpoints:
 
 ## 7. Rollback
 
-In the event of an incident or degraded release, use one of the following rollback procedures:
+In the event of an incident or degraded release, use one of the following rollback procedures (see also the [Operations Runbook](runbook.md) for incident management workflows):
+
 
 ### Option A: Render Dashboard Instant Rollback (Zero Downtime)
 1. Open the **SupportPilot** service in the [Render Dashboard](https://dashboard.render.com).
