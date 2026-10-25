@@ -11,6 +11,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,11 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator
 
+from supportpilot.api.alerts import (
+    AlertsResponse,
+    evaluate_alerts,
+    get_alert_thresholds,
+)
 from supportpilot.feedback import (
     MAX_ID_LENGTH,
     FeedbackRequest,
@@ -44,6 +50,7 @@ REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 EXCLUDED_METRIC_PATHS: set[str] = {
     "/health",
+    "/alerts",
     "/metrics",
     "/metrics/labels",
     "/docs",
@@ -291,11 +298,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.counters = Counters()
     app.state.api_keys = get_api_keys()
     app.state.rate_limits = {}
+    app.state.alert_thresholds = get_alert_thresholds()
     yield
     app.state.model = None
     app.state.threshold = None
     app.state.api_keys = set()
     app.state.rate_limits = {}
+    app.state.alert_thresholds = None
     if getattr(app.state, "feedback_store", None) is not None:
         app.state.feedback_store.close()
     app.state.feedback_store = None
@@ -313,6 +322,7 @@ app.state.counters = Counters()
 app.state.api_keys = set()
 app.state.rate_limits = {}
 app.state.feedback_store = None
+app.state.alert_thresholds = None
 
 
 @app.middleware("http")
@@ -451,6 +461,23 @@ def get_label_metrics(req: Request) -> dict[str, Any]:
             "Feedback store is not initialized. Service startup invariant violated."
         )
     return feedback_store.get_label_metrics()
+
+
+@app.get(
+    "/alerts",
+    response_model=AlertsResponse,
+    dependencies=[Depends(get_api_key), Depends(rate_limit)],
+)
+def get_alerts(req: Request) -> AlertsResponse:
+    metrics = get_metrics(req)
+    thresholds = getattr(req.app.state, "alert_thresholds", None)
+    if thresholds is None:
+        thresholds = get_alert_thresholds()
+    active_alerts = evaluate_alerts(metrics, thresholds)
+    return AlertsResponse(
+        alerts=active_alerts,
+        checked_at=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 @app.post(
