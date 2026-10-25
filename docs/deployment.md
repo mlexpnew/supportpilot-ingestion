@@ -354,4 +354,10 @@ To monitor availability and detect service interruptions proactively, an externa
 
 #### Recommended Fix: Paid Instance
 - **Production Solution**: Upgrade the Render Web Service to a paid instance tier (Starter plan at $7/month or higher). Paid instances run continuously without idle spindown, eliminating cold starts entirely and ensuring sub-50ms triage response times 24/7.
-- **Architectural Policy**: Do not attempt to "hack around" cold starts with synthetic ping loops or scheduled keep-alive scripts. Render monitors and restricts synthetic keep-alive patterns on free tiers, and synthetic pings obscure real system idle metrics. A dedicated instance tier is the professional engineering standard.
+- **Architectural Policy**: Upgrading to a paid instance is the standard engineering fix for production workloads.
+
+### Known Side Effect: Free-Tier Keep-Alive Behavior
+Because Render's free tier spins down after ~15 minutes of inactivity, polling `/health` every 5 minutes means the service receives incoming traffic every 5 minutes and effectively remains awake permanently.
+- **Pilot Viability**: For the duration of this single-service pilot, keeping the container continuously awake is acceptable because Render provides 750 free instance hours per month, which covers one continuous service (24h × 31d = 744h).
+- **Operational Warning**: This reduction of cold starts is an incidental side effect of the external monitor. If the uptime monitor is ever paused, deleted, or reduced to a polling interval >15 minutes, the service will return to spinning down when idle and ~50-second cold-start delays will immediately return.
+- **Production Path**: The permanent, SLA-backed solution for production remains upgrading to a dedicated paid instance ($7/month Starter).
