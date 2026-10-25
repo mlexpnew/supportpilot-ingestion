@@ -17,7 +17,31 @@ from supportpilot.api.alerts import (
     evaluate_alerts,
     get_alert_thresholds,
 )
-from supportpilot.api.main import MetricsResponse, app
+from supportpilot.api.main import app
+from supportpilot.api.models import MetricsResponse
+
+
+def make_metrics(
+    requests_total: int = 100,
+    triage_total: int = 50,
+    errors_total: int = 0,
+    avg_latency_ms: float = 10.0,
+    needs_review_rate: float = 0.10,
+    rate_limited_total: int = 0,
+    feedback_total: int = 25,
+    live_accuracy: float | None = 0.90,
+) -> MetricsResponse:
+    """Helper creating typed MetricsResponse fixtures for alert testing."""
+    return MetricsResponse(
+        requests_total=requests_total,
+        triage_total=triage_total,
+        errors_total=errors_total,
+        avg_latency_ms=avg_latency_ms,
+        needs_review_rate=needs_review_rate,
+        rate_limited_total=rate_limited_total,
+        feedback_total=feedback_total,
+        live_accuracy=live_accuracy,
+    )
 
 
 # =====================================================================
@@ -27,40 +51,17 @@ from supportpilot.api.main import MetricsResponse, app
 
 def test_evaluate_alerts_healthy_returns_empty_list() -> None:
     """Verify healthy operational metrics return an empty list of alerts."""
-    thresholds = AlertThresholds(
-        min_accuracy=0.80,
-        max_review_rate=0.30,
-        max_error_rate=0.05,
-        min_feedback=20,
+    thresholds = AlertThresholds()
+    healthy_metrics = make_metrics(
+        requests_total=100,
+        triage_total=50,
+        errors_total=2,  # error_rate = 2/100 = 0.02 <= 0.05
+        needs_review_rate=0.15,  # <= 0.30
+        feedback_total=30,  # >= 20
+        live_accuracy=0.90,  # >= 0.80
     )
-    healthy_metrics = {
-        "requests_total": 100,
-        "triage_total": 50,
-        "errors_total": 2,  # error_rate = 2/100 = 0.02 <= 0.05
-        "needs_review_rate": 0.15,  # <= 0.30
-        "feedback_total": 30,  # >= 20
-        "live_accuracy": 0.90,  # >= 0.80
-    }
 
     alerts = evaluate_alerts(healthy_metrics, thresholds)
-    assert alerts == []
-
-
-def test_evaluate_alerts_supports_metrics_response_object() -> None:
-    """Verify evaluate_alerts accepts a Pydantic MetricsResponse object."""
-    thresholds = AlertThresholds()
-    metrics_obj = MetricsResponse(
-        requests_total=100,
-        triage_total=80,
-        errors_total=1,
-        avg_latency_ms=12.5,
-        needs_review_rate=0.20,
-        rate_limited_total=0,
-        feedback_total=25,
-        live_accuracy=0.88,
-    )
-
-    alerts = evaluate_alerts(metrics_obj, thresholds)
     assert alerts == []
 
 
@@ -72,62 +73,69 @@ def test_evaluate_alerts_supports_metrics_response_object() -> None:
 def test_accuracy_alert_does_not_fire_when_feedback_below_minimum() -> None:
     """Verify accuracy alert NEVER fires if feedback_total < min_feedback (20)."""
     thresholds = AlertThresholds(min_accuracy=0.80, min_feedback=20)
-
     # 19 feedback rows with terrible accuracy (0.10) must NOT alert
-    metrics_low_data = {
-        "requests_total": 50,
-        "triage_total": 30,
-        "errors_total": 0,
-        "needs_review_rate": 0.10,
-        "feedback_total": 19,
-        "live_accuracy": 0.10,
-    }
-    alerts = evaluate_alerts(metrics_low_data, thresholds)
+    metrics_low_feedback = make_metrics(
+        feedback_total=19,
+        live_accuracy=0.10,
+    )
+    alerts = evaluate_alerts(metrics_low_feedback, thresholds)
     assert not any(a.name == ALERT_NAME_ACCURACY for a in alerts)
 
 
 def test_accuracy_alert_does_not_fire_when_live_accuracy_is_none() -> None:
     """Verify accuracy alert does not fire if live_accuracy is None."""
     thresholds = AlertThresholds(min_accuracy=0.80, min_feedback=20)
-    metrics_none_accuracy = {
-        "requests_total": 50,
-        "triage_total": 30,
-        "errors_total": 0,
-        "needs_review_rate": 0.10,
-        "feedback_total": 25,
-        "live_accuracy": None,
-    }
+    metrics_none_accuracy = make_metrics(
+        feedback_total=25,
+        live_accuracy=None,
+    )
     alerts = evaluate_alerts(metrics_none_accuracy, thresholds)
     assert not any(a.name == ALERT_NAME_ACCURACY for a in alerts)
 
 
-def test_review_rate_alert_does_not_fire_when_triage_total_zero() -> None:
-    """Verify review_rate alert does not fire if triage_total is 0."""
-    thresholds = AlertThresholds(max_review_rate=0.30)
-    metrics_no_triage = {
-        "requests_total": 10,
-        "triage_total": 0,
-        "errors_total": 0,
-        "needs_review_rate": 0.99,
-        "feedback_total": 0,
-        "live_accuracy": None,
-    }
-    alerts = evaluate_alerts(metrics_no_triage, thresholds)
+def test_review_rate_alert_one_of_one_no_alert() -> None:
+    """Verify 1 of 1 triage with needs_review: true does NOT fire false alarm (day-one noise fix)."""
+    thresholds = AlertThresholds(max_review_rate=0.30, min_triage=20)
+    # Right after restart, 1 triage that needed review produces 100% review rate
+    metrics_day_one = make_metrics(
+        triage_total=1,
+        needs_review_rate=1.0,
+    )
+    alerts = evaluate_alerts(metrics_day_one, thresholds)
     assert not any(a.name == ALERT_NAME_REVIEW_RATE for a in alerts)
 
 
-def test_error_rate_alert_does_not_fire_when_requests_total_zero() -> None:
-    """Verify error_rate alert does not fire if requests_total is 0."""
-    thresholds = AlertThresholds(max_error_rate=0.05)
-    metrics_no_requests = {
-        "requests_total": 0,
-        "triage_total": 0,
-        "errors_total": 0,
-        "needs_review_rate": 0.0,
-        "feedback_total": 0,
-        "live_accuracy": None,
-    }
-    alerts = evaluate_alerts(metrics_no_requests, thresholds)
+def test_review_rate_alert_below_min_triage_does_not_fire() -> None:
+    """Verify review_rate alert does not fire when triage_total < min_triage (20)."""
+    thresholds = AlertThresholds(max_review_rate=0.30, min_triage=20)
+    metrics_low_triage = make_metrics(
+        triage_total=19,
+        needs_review_rate=0.95,
+    )
+    alerts = evaluate_alerts(metrics_low_triage, thresholds)
+    assert not any(a.name == ALERT_NAME_REVIEW_RATE for a in alerts)
+
+
+def test_error_rate_alert_one_of_one_no_alert() -> None:
+    """Verify 1 of 1 request with error does NOT fire false alarm (day-one noise fix)."""
+    thresholds = AlertThresholds(max_error_rate=0.05, min_requests=50)
+    # Right after restart, 1 request that failed produces 100% error rate
+    metrics_day_one = make_metrics(
+        requests_total=1,
+        errors_total=1,
+    )
+    alerts = evaluate_alerts(metrics_day_one, thresholds)
+    assert not any(a.name == ALERT_NAME_ERROR_RATE for a in alerts)
+
+
+def test_error_rate_alert_below_min_requests_does_not_fire() -> None:
+    """Verify error_rate alert does not fire when requests_total < min_requests (50)."""
+    thresholds = AlertThresholds(max_error_rate=0.05, min_requests=50)
+    metrics_low_requests = make_metrics(
+        requests_total=49,
+        errors_total=10,  # 10/49 = 0.20
+    )
+    alerts = evaluate_alerts(metrics_low_requests, thresholds)
     assert not any(a.name == ALERT_NAME_ERROR_RATE for a in alerts)
 
 
@@ -141,14 +149,10 @@ def test_accuracy_alert_known_numbers_warning_and_critical() -> None:
     thresholds = AlertThresholds(min_accuracy=0.80, min_feedback=20)
 
     # 1. Warning: slightly past threshold (0.75 < 0.80, but >= 0.70)
-    metrics_warning = {
-        "requests_total": 100,
-        "triage_total": 50,
-        "errors_total": 0,
-        "needs_review_rate": 0.10,
-        "feedback_total": 20,
-        "live_accuracy": 0.75,
-    }
+    metrics_warning = make_metrics(
+        feedback_total=20,
+        live_accuracy=0.75,
+    )
     alerts_warn = evaluate_alerts(metrics_warning, thresholds)
     assert len(alerts_warn) == 1
     alert_w = alerts_warn[0]
@@ -158,14 +162,10 @@ def test_accuracy_alert_known_numbers_warning_and_critical() -> None:
     assert alert_w.severity == SEVERITY_WARNING
 
     # 2. Critical: far past threshold (< 0.70)
-    metrics_critical = {
-        "requests_total": 100,
-        "triage_total": 50,
-        "errors_total": 0,
-        "needs_review_rate": 0.10,
-        "feedback_total": 20,
-        "live_accuracy": 0.65,
-    }
+    metrics_critical = make_metrics(
+        feedback_total=20,
+        live_accuracy=0.65,
+    )
     alerts_crit = evaluate_alerts(metrics_critical, thresholds)
     assert len(alerts_crit) == 1
     alert_c = alerts_crit[0]
@@ -177,17 +177,13 @@ def test_accuracy_alert_known_numbers_warning_and_critical() -> None:
 
 def test_review_rate_alert_known_numbers_warning_and_critical() -> None:
     """Verify review_rate alert triggers warning vs critical with known numbers."""
-    thresholds = AlertThresholds(max_review_rate=0.30)
+    thresholds = AlertThresholds(max_review_rate=0.30, min_triage=20)
 
     # 1. Warning: slightly past threshold (0.35 > 0.30, but < 0.40)
-    metrics_warning = {
-        "requests_total": 100,
-        "triage_total": 50,
-        "errors_total": 0,
-        "needs_review_rate": 0.35,
-        "feedback_total": 0,
-        "live_accuracy": None,
-    }
+    metrics_warning = make_metrics(
+        triage_total=25,
+        needs_review_rate=0.35,
+    )
     alerts_warn = evaluate_alerts(metrics_warning, thresholds)
     assert len(alerts_warn) == 1
     alert_w = alerts_warn[0]
@@ -197,14 +193,10 @@ def test_review_rate_alert_known_numbers_warning_and_critical() -> None:
     assert alert_w.severity == SEVERITY_WARNING
 
     # 2. Critical: far past threshold (0.45 >= 0.40)
-    metrics_critical = {
-        "requests_total": 100,
-        "triage_total": 50,
-        "errors_total": 0,
-        "needs_review_rate": 0.45,
-        "feedback_total": 0,
-        "live_accuracy": None,
-    }
+    metrics_critical = make_metrics(
+        triage_total=25,
+        needs_review_rate=0.45,
+    )
     alerts_crit = evaluate_alerts(metrics_critical, thresholds)
     assert len(alerts_crit) == 1
     alert_c = alerts_crit[0]
@@ -216,17 +208,13 @@ def test_review_rate_alert_known_numbers_warning_and_critical() -> None:
 
 def test_error_rate_alert_known_numbers_warning_and_critical() -> None:
     """Verify error_rate alert triggers warning vs critical with known numbers."""
-    thresholds = AlertThresholds(max_error_rate=0.05)
+    thresholds = AlertThresholds(max_error_rate=0.05, min_requests=50)
 
     # 1. Warning: slightly past threshold (7/100 = 0.07 > 0.05, but < 0.10)
-    metrics_warning = {
-        "requests_total": 100,
-        "triage_total": 50,
-        "errors_total": 7,
-        "needs_review_rate": 0.10,
-        "feedback_total": 0,
-        "live_accuracy": None,
-    }
+    metrics_warning = make_metrics(
+        requests_total=100,
+        errors_total=7,
+    )
     alerts_warn = evaluate_alerts(metrics_warning, thresholds)
     assert len(alerts_warn) == 1
     alert_w = alerts_warn[0]
@@ -236,14 +224,10 @@ def test_error_rate_alert_known_numbers_warning_and_critical() -> None:
     assert alert_w.severity == SEVERITY_WARNING
 
     # 2. Critical: far past threshold (12/100 = 0.12 >= 0.10)
-    metrics_critical = {
-        "requests_total": 100,
-        "triage_total": 50,
-        "errors_total": 12,
-        "needs_review_rate": 0.10,
-        "feedback_total": 0,
-        "live_accuracy": None,
-    }
+    metrics_critical = make_metrics(
+        requests_total=100,
+        errors_total=12,
+    )
     alerts_crit = evaluate_alerts(metrics_critical, thresholds)
     assert len(alerts_crit) == 1
     alert_c = alerts_crit[0]
@@ -255,20 +239,15 @@ def test_error_rate_alert_known_numbers_warning_and_critical() -> None:
 
 def test_all_alerts_fire_simultaneously() -> None:
     """Verify all three alerts trigger simultaneously when every threshold is breached."""
-    thresholds = AlertThresholds(
-        min_accuracy=0.80,
-        max_review_rate=0.30,
-        max_error_rate=0.05,
-        min_feedback=20,
+    thresholds = AlertThresholds()
+    unhealthy_metrics = make_metrics(
+        requests_total=200,
+        triage_total=100,
+        errors_total=25,  # 25/200 = 0.125 >= 0.10 -> critical
+        needs_review_rate=0.35,  # > 0.30, < 0.40 -> warning
+        feedback_total=50,
+        live_accuracy=0.60,  # < 0.70 -> critical
     )
-    unhealthy_metrics = {
-        "requests_total": 200,
-        "triage_total": 100,
-        "errors_total": 25,  # 25/200 = 0.125 >= 0.10 -> critical
-        "needs_review_rate": 0.35,  # > 0.30, < 0.40 -> warning
-        "feedback_total": 50,
-        "live_accuracy": 0.60,  # < 0.70 -> critical
-    }
 
     alerts = evaluate_alerts(unhealthy_metrics, thresholds)
     assert len(alerts) == 3
@@ -300,12 +279,16 @@ def test_get_alert_thresholds_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ALERT_MAX_REVIEW_RATE", raising=False)
     monkeypatch.delenv("ALERT_MAX_ERROR_RATE", raising=False)
     monkeypatch.delenv("ALERT_MIN_FEEDBACK", raising=False)
+    monkeypatch.delenv("ALERT_MIN_TRIAGE", raising=False)
+    monkeypatch.delenv("ALERT_MIN_REQUESTS", raising=False)
 
     thresholds = get_alert_thresholds()
     assert thresholds.min_accuracy == 0.80
     assert thresholds.max_review_rate == 0.30
     assert thresholds.max_error_rate == 0.05
     assert thresholds.min_feedback == 20
+    assert thresholds.min_triage == 20
+    assert thresholds.min_requests == 50
 
 
 def test_get_alert_thresholds_custom_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -313,13 +296,17 @@ def test_get_alert_thresholds_custom_env(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("ALERT_MIN_ACCURACY", "0.85")
     monkeypatch.setenv("ALERT_MAX_REVIEW_RATE", "0.25")
     monkeypatch.setenv("ALERT_MAX_ERROR_RATE", "0.02")
-    monkeypatch.setenv("ALERT_MIN_FEEDBACK", "50")
+    monkeypatch.setenv("ALERT_MIN_FEEDBACK", "30")
+    monkeypatch.setenv("ALERT_MIN_TRIAGE", "40")
+    monkeypatch.setenv("ALERT_MIN_REQUESTS", "100")
 
     thresholds = get_alert_thresholds()
     assert thresholds.min_accuracy == 0.85
     assert thresholds.max_review_rate == 0.25
     assert thresholds.max_error_rate == 0.02
-    assert thresholds.min_feedback == 50
+    assert thresholds.min_feedback == 30
+    assert thresholds.min_triage == 40
+    assert thresholds.min_requests == 100
 
 
 @pytest.mark.parametrize(
@@ -337,6 +324,10 @@ def test_get_alert_thresholds_custom_env(monkeypatch: pytest.MonkeyPatch) -> Non
         ("ALERT_MIN_FEEDBACK", "-1"),
         ("ALERT_MIN_FEEDBACK", "12.5"),
         ("ALERT_MIN_FEEDBACK", "none"),
+        ("ALERT_MIN_TRIAGE", "-5"),
+        ("ALERT_MIN_TRIAGE", "xyz"),
+        ("ALERT_MIN_REQUESTS", "-10"),
+        ("ALERT_MIN_REQUESTS", "foo"),
     ],
 )
 def test_get_alert_thresholds_bad_env_fails_fast(
@@ -394,21 +385,27 @@ def test_get_alerts_contract_and_empty_list_when_healthy(
         assert checked_dt.tzinfo is not None
 
 
-def test_get_alerts_fires_alert_when_threshold_breached(
+def test_get_alerts_fails_fast_if_thresholds_missing(
     auth_headers: dict[str, str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify GET /alerts returns active alerts when metric thresholds are breached."""
-    # Set a very strict review rate threshold to trigger review alert
-    monkeypatch.setenv("ALERT_MAX_REVIEW_RATE", "0.01")
-    monkeypatch.setenv("ALERT_MIN_FEEDBACK", "20")
-
+    """Verify GET /alerts fails fast with RuntimeError if thresholds invariant is violated."""
     with TestClient(app) as client:
-        # Submit a ticket that triggers needs_review (confidence fallback or low confidence)
-        client.post(
-            "/triage",
-            headers=auth_headers,
-            json={"ticket_id": "T-ALERT-1", "body": "random unclassifiable query"},
+        # Simulate missing thresholds in state
+        client.app.state.alert_thresholds = None
+        with pytest.raises(RuntimeError, match="Alert thresholds are not initialized"):
+            client.get("/alerts", headers=auth_headers)
+
+
+def test_get_alerts_fires_alert_when_threshold_breached_and_sample_met(
+    auth_headers: dict[str, str],
+) -> None:
+    """Verify GET /alerts returns active alert when threshold is breached and sample size met."""
+    with TestClient(app) as client:
+        # Populate counters above min_triage (20) with high review rate
+        client.app.state.counters.requests_total = 25
+        client.app.state.counters.triage_total = 25
+        client.app.state.counters.needs_review_total = (
+            10  # 10/25 = 0.40 >= 0.40 -> critical
         )
 
         res = client.get("/alerts", headers=auth_headers)
@@ -420,8 +417,5 @@ def test_get_alerts_fires_alert_when_threshold_breached(
             a for a in data["alerts"] if a["name"] == ALERT_NAME_REVIEW_RATE
         ]
         assert len(review_alerts) == 1
-        alert = review_alerts[0]
-        assert alert["name"] == "review_rate"
-        assert alert["threshold"] == 0.01
-        assert alert["value"] > 0.01
-        assert alert["severity"] in (SEVERITY_WARNING, SEVERITY_CRITICAL)
+        assert review_alerts[0]["value"] == 0.40
+        assert review_alerts[0]["severity"] == SEVERITY_CRITICAL

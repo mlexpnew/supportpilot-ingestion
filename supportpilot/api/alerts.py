@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any
 
 from pydantic import BaseModel, Field
+
+from supportpilot.api.models import MetricsResponse
 
 ALERT_NAME_ACCURACY: str = "accuracy"
 ALERT_NAME_REVIEW_RATE: str = "review_rate"
@@ -19,6 +20,8 @@ DEFAULT_MIN_ACCURACY: float = 0.80
 DEFAULT_MAX_REVIEW_RATE: float = 0.30
 DEFAULT_MAX_ERROR_RATE: float = 0.05
 DEFAULT_MIN_FEEDBACK: int = 20
+DEFAULT_MIN_TRIAGE: int = 20
+DEFAULT_MIN_REQUESTS: int = 50
 
 
 class Alert(BaseModel):
@@ -49,6 +52,8 @@ class AlertThresholds:
     max_review_rate: float = DEFAULT_MAX_REVIEW_RATE
     max_error_rate: float = DEFAULT_MAX_ERROR_RATE
     min_feedback: int = DEFAULT_MIN_FEEDBACK
+    min_triage: int = DEFAULT_MIN_TRIAGE
+    min_requests: int = DEFAULT_MIN_REQUESTS
 
 
 def _parse_float_env(
@@ -97,6 +102,8 @@ def get_alert_thresholds() -> AlertThresholds:
       - ALERT_MAX_REVIEW_RATE (default: 0.30)
       - ALERT_MAX_ERROR_RATE (default: 0.05)
       - ALERT_MIN_FEEDBACK (default: 20)
+      - ALERT_MIN_TRIAGE (default: 20)
+      - ALERT_MIN_REQUESTS (default: 50)
     """
     return AlertThresholds(
         min_accuracy=_parse_float_env("ALERT_MIN_ACCURACY", DEFAULT_MIN_ACCURACY),
@@ -105,17 +112,13 @@ def get_alert_thresholds() -> AlertThresholds:
         ),
         max_error_rate=_parse_float_env("ALERT_MAX_ERROR_RATE", DEFAULT_MAX_ERROR_RATE),
         min_feedback=_parse_int_env("ALERT_MIN_FEEDBACK", DEFAULT_MIN_FEEDBACK),
+        min_triage=_parse_int_env("ALERT_MIN_TRIAGE", DEFAULT_MIN_TRIAGE),
+        min_requests=_parse_int_env("ALERT_MIN_REQUESTS", DEFAULT_MIN_REQUESTS),
     )
 
 
-def _extract_metric(metrics: Any, key: str, default: Any = None) -> Any:
-    if isinstance(metrics, dict):
-        return metrics.get(key, default)
-    return getattr(metrics, key, default)
-
-
 def evaluate_alerts(
-    metrics: Any,
+    metrics: MetricsResponse,
     thresholds: AlertThresholds,
 ) -> list[Alert]:
     """Pure function evaluating current operational metrics against boundary thresholds.
@@ -125,76 +128,69 @@ def evaluate_alerts(
          Triggers when live_accuracy < min_accuracy.
          Severity: critical if accuracy < min_accuracy - 0.10 (e.g. < 0.70); otherwise warning.
 
-      2. Needs Review Rate alert: only evaluated if triage_total > 0.
+      2. Needs Review Rate alert: only evaluated if triage_total >= min_triage (default 20).
          Triggers when needs_review_rate > max_review_rate.
          Severity: critical if needs_review_rate >= max_review_rate + 0.10 (e.g. >= 0.40); otherwise warning.
 
-      3. Error Rate alert: only evaluated if requests_total > 0.
+      3. Error Rate alert: only evaluated if requests_total >= min_requests (default 50).
          Triggers when error_rate (errors_total / requests_total) > max_error_rate.
-         Severity: critical if error_rate >= max_error_rate * 2 (e.g. >= 0.10); otherwise warning.
+         Severity: critical if error_rate >= max_error_rate * 2.0 (e.g. >= 0.10); otherwise warning.
     """
     alerts: list[Alert] = []
 
-    # 1. Accuracy Alert
-    feedback_total: int = int(_extract_metric(metrics, "feedback_total", 0) or 0)
-    live_accuracy = _extract_metric(metrics, "live_accuracy", None)
-
-    if feedback_total >= thresholds.min_feedback and live_accuracy is not None:
-        acc_float = float(live_accuracy)
-        if acc_float < thresholds.min_accuracy:
-            # Slightly past threshold -> warning; far past (e.g. accuracy < 0.70) -> critical
+    # 1. Accuracy Alert (only if feedback_total >= min_feedback)
+    if (
+        metrics.feedback_total >= thresholds.min_feedback
+        and metrics.live_accuracy is not None
+    ):
+        acc = float(metrics.live_accuracy)
+        if acc < thresholds.min_accuracy:
             critical_boundary = thresholds.min_accuracy - 0.10
             severity = (
-                SEVERITY_CRITICAL if acc_float < critical_boundary else SEVERITY_WARNING
+                SEVERITY_CRITICAL if acc < critical_boundary else SEVERITY_WARNING
             )
             alerts.append(
                 Alert(
                     name=ALERT_NAME_ACCURACY,
-                    value=round(acc_float, 4),
+                    value=round(acc, 4),
                     threshold=thresholds.min_accuracy,
                     severity=severity,
                 )
             )
 
-    # 2. Needs Review Rate Alert
-    triage_total: int = int(_extract_metric(metrics, "triage_total", 0) or 0)
-    needs_review_rate = _extract_metric(metrics, "needs_review_rate", None)
-
-    if triage_total > 0 and needs_review_rate is not None:
-        review_rate_float = float(needs_review_rate)
-        if review_rate_float > thresholds.max_review_rate:
+    # 2. Needs Review Rate Alert (only if triage_total >= min_triage)
+    if metrics.triage_total >= thresholds.min_triage:
+        review_rate = float(metrics.needs_review_rate)
+        if review_rate > thresholds.max_review_rate:
             critical_boundary = thresholds.max_review_rate + 0.10
             severity = (
                 SEVERITY_CRITICAL
-                if review_rate_float >= critical_boundary
+                if review_rate >= critical_boundary
                 else SEVERITY_WARNING
             )
             alerts.append(
                 Alert(
                     name=ALERT_NAME_REVIEW_RATE,
-                    value=round(review_rate_float, 4),
+                    value=round(review_rate, 4),
                     threshold=thresholds.max_review_rate,
                     severity=severity,
                 )
             )
 
-    # 3. Error Rate Alert
-    requests_total: int = int(_extract_metric(metrics, "requests_total", 0) or 0)
-    errors_total: int = int(_extract_metric(metrics, "errors_total", 0) or 0)
-
-    if requests_total > 0:
-        error_rate_float = round(errors_total / requests_total, 4)
-        if error_rate_float > thresholds.max_error_rate:
+    # 3. Error Rate Alert (only if requests_total >= min_requests)
+    if metrics.requests_total >= thresholds.min_requests:
+        error_rate = round(metrics.errors_total / metrics.requests_total, 4)
+        if error_rate > thresholds.max_error_rate:
             critical_boundary = thresholds.max_error_rate * 2.0
             severity = (
                 SEVERITY_CRITICAL
-                if error_rate_float >= critical_boundary
+                if error_rate >= critical_boundary
                 else SEVERITY_WARNING
             )
             alerts.append(
                 Alert(
                     name=ALERT_NAME_ERROR_RATE,
-                    value=error_rate_float,
+                    value=error_rate,
                     threshold=thresholds.max_error_rate,
                     severity=severity,
                 )

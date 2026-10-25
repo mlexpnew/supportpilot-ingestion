@@ -20,10 +20,12 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator
 
 from supportpilot.api.alerts import (
+    AlertThresholds,
     AlertsResponse,
     evaluate_alerts,
     get_alert_thresholds,
 )
+from supportpilot.api.models import MetricsResponse
 from supportpilot.feedback import (
     MAX_ID_LENGTH,
     FeedbackRequest,
@@ -254,17 +256,6 @@ class TriageResponse(BaseModel):
     model_version: str
 
 
-class MetricsResponse(BaseModel):
-    requests_total: int
-    triage_total: int
-    errors_total: int
-    avg_latency_ms: float
-    needs_review_rate: float
-    rate_limited_total: int
-    feedback_total: int = 0
-    live_accuracy: float | None = None
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging()
@@ -470,9 +461,13 @@ def get_label_metrics(req: Request) -> dict[str, Any]:
 )
 def get_alerts(req: Request) -> AlertsResponse:
     metrics = get_metrics(req)
-    thresholds = getattr(req.app.state, "alert_thresholds", None)
+    thresholds: AlertThresholds | None = getattr(
+        req.app.state, "alert_thresholds", None
+    )
     if thresholds is None:
-        thresholds = get_alert_thresholds()
+        raise RuntimeError(
+            "Alert thresholds are not initialized. Service startup invariant violated."
+        )
     active_alerts = evaluate_alerts(metrics, thresholds)
     return AlertsResponse(
         alerts=active_alerts,

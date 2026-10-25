@@ -139,12 +139,19 @@ All configuration settings are read dynamically at application startup:
 | `TRIAGE_THRESHOLD` | `float` | `0.35` | Minimum classification confidence required to avoid manual human review. Predictions below this cutoff mark `needs_review: true`. Must be between `0.0` and `1.0`. |
 | `TRIAGE_MODEL_PATH`| `string`| `models/triage_model.joblib` | Filesystem path to the serialized trained model artifact. |
 | `LOG_LEVEL` | `string` | `INFO` | Application and server log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). Invalid values fail fast at startup. |
+| `ALERT_MIN_ACCURACY` | `float` | `0.80` | Accuracy alert threshold. Must be between `0.0` and `1.0`. |
+| `ALERT_MAX_REVIEW_RATE` | `float` | `0.30` | Needs review rate alert threshold. Must be between `0.0` and `1.0`. |
+| `ALERT_MAX_ERROR_RATE` | `float` | `0.05` | Error rate alert threshold. Must be between `0.0` and `1.0`. |
+| `ALERT_MIN_FEEDBACK` | `int` | `20` | Minimum feedback sample size before evaluating accuracy alert. Must be integer $\ge 0$. |
+| `ALERT_MIN_TRIAGE` | `int` | `20` | Minimum triage sample size before evaluating review rate alert. Must be integer $\ge 0$. |
+| `ALERT_MIN_REQUESTS` | `int` | `50` | Minimum requests sample size before evaluating error rate alert. Must be integer $\ge 0$. |
 | `PORT` | `int` | `8000` | Port on which the Uvicorn ASGI server listens. |
 
 ### Validation & Fail-Fast Guarantees
 - **Missing or Empty API Keys**: If `TRIAGE_API_KEYS` is missing, blank, or contains no non-empty comma-separated keys, startup fails immediately with `ValueError`.
 - **Missing Database URL**: In production, if `DATABASE_URL` is missing and `ALLOW_SQLITE_FALLBACK != 1`, startup fails immediately with `RuntimeError`.
 - **Invalid Log Level**: If `LOG_LEVEL` is not a valid standard level, startup fails immediately with `ValueError`.
+- **Invalid Alert Threshold**: If any `ALERT_*` variable is non-numeric or out of range, startup fails immediately with `ValueError`.
 - **Invalid Float / Format**: If `TRIAGE_THRESHOLD` is not a valid float, startup fails immediately with `ValueError`.
 - **Out of Range**: If `TRIAGE_THRESHOLD` is outside `[0.0, 1.0]`, startup fails fast with `ValueError`.
 - **Missing Model File**: If the model artifact cannot be located at `TRIAGE_MODEL_PATH`, startup fails fast with `FileNotFoundError`.
@@ -361,3 +368,28 @@ Because Render's free tier spins down after ~15 minutes of inactivity, polling `
 - **Pilot Viability**: For the duration of this single-service pilot, keeping the container continuously awake is acceptable because Render provides 750 free instance hours per month, which covers one continuous service (24h × 31d = 744h).
 - **Operational Warning**: This reduction of cold starts is an incidental side effect of the external monitor. If the uptime monitor is ever paused, deleted, or reduced to a polling interval >15 minutes, the service will return to spinning down when idle and ~50-second cold-start delays will immediately return.
 - **Production Path**: The permanent, SLA-backed solution for production remains upgrading to a dedicated paid instance ($7/month Starter).
+
+---
+
+## 9. Model Health Alerts & Metrics Lifecycles (SP-112 Part C)
+
+The `GET /alerts` endpoint continuously checks model and operational quality against configurable boundary thresholds:
+
+### Metric Lifecycles: "Since Last Restart" vs Persistent
+It is critical to distinguish the source and lifecycle of the underlying metrics to prevent false alarms:
+
+| Metric | Source | Lifecycle | Minimum Sample Before Alerting |
+| :--- | :--- | :--- | :--- |
+| `live_accuracy` | PostgreSQL (`feedback` & `predictions` tables) | **Persistent**: Survives redeployments and instance restarts | `ALERT_MIN_FEEDBACK=20` rows |
+| `needs_review_rate` | In-memory counter (`Counters`) | **Ephemeral ("Since Last Restart")**: Resets to `0` upon each deployment | `ALERT_MIN_TRIAGE=20` tickets |
+| `error_rate` | In-memory counters (`errors_total / requests_total`) | **Ephemeral ("Since Last Restart")**: Resets to `0` upon each deployment | `ALERT_MIN_REQUESTS=50` requests |
+
+### False Alarm Prevention
+Immediately following a container restart or deployment, small sample sizes produce extreme statistical variance (e.g. 1 ticket requiring review out of 1 total ticket yields a 100% review rate). To eliminate day-one false alarms:
+- **Accuracy Alert**: Never fires until at least 20 human feedback entries have been recorded (`feedback_total >= 20`).
+- **Review Rate Alert**: Never fires until at least 20 tickets have been triaged since the last restart (`triage_total >= 20`).
+- **Error Rate Alert**: Never fires until at least 50 HTTP requests have been served since the last restart (`requests_total >= 50`).
+
+### Alert Severities
+- **Warning**: Metric is slightly past the threshold (e.g. accuracy between 0.70 and 0.80, or review rate between 0.30 and 0.40).
+- **Critical**: Metric is far past the threshold (e.g. accuracy $< 0.70$, review rate $\ge 0.40$, or error rate $\ge 0.10$).
