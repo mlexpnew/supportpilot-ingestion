@@ -324,3 +324,34 @@ If an incorrect environment variable (such as an overly strict `TRIAGE_THRESHOLD
 2. Update the variable to the safe baseline (`TRIAGE_THRESHOLD=0.35`).
 3. Click **Save Changes**.
 4. Render triggers an automatic rolling redeploy with the corrected environment variable.
+
+---
+
+## 8. Uptime Monitoring & Free-Tier Cold Starts (SP-112 Part B)
+
+### External Uptime Monitor Configuration
+To monitor availability and detect service interruptions proactively, an external uptime monitor (e.g., UptimeRobot or Better Stack) is configured:
+
+| Configuration Item | Setting | Details |
+| :--- | :--- | :--- |
+| **Monitor Type** | HTTP(s) GET | Polls endpoint and expects `HTTP 200 OK` |
+| **URL** | `https://supportpilot-ingestion.onrender.com/health` | Public, unauthenticated health endpoint |
+| **Monitoring Interval** | Every 5 minutes (`*/5 * * * *`) | Balanced frequency avoiding excessive free-tier polling overhead |
+| **Alert Threshold** | 2 consecutive failures | Prevents transient network blips from triggering false positives |
+| **Alert Destination** | Email notification | Immediate notification upon 2 failed checks |
+
+### Free-Tier Cold Start Analysis & Production Recommendation
+
+> [!WARNING]
+> **Free-Tier Cold Start Behavior (~50s latency spike)**
+> On Render's Free instance tier, the container automatically spins down ("sleeps") after 15 minutes of inactivity. When a subsequent request arrives, the service takes approximately **50 seconds** to wake up:
+> 1. Container spinning up from idle state (~15–20s)
+> 2. Database connection pool initialization and Alembic schema validation (~10s)
+> 3. Triage classification model unpickling and loading into memory (~15–20s)
+
+#### Pilot Impact
+- Support agents submitting ticket triage or feedback requests after idle periods encounter a ~50-second freeze, resulting in poor perceived responsiveness and potential gateway timeouts in downstream client systems.
+
+#### Recommended Fix: Paid Instance
+- **Production Solution**: Upgrade the Render Web Service to a paid instance tier (Starter plan at $7/month or higher). Paid instances run continuously without idle spindown, eliminating cold starts entirely and ensuring sub-50ms triage response times 24/7.
+- **Architectural Policy**: Do not attempt to "hack around" cold starts with synthetic ping loops or scheduled keep-alive scripts. Render monitors and restricts synthetic keep-alive patterns on free tiers, and synthetic pings obscure real system idle metrics. A dedicated instance tier is the professional engineering standard.
