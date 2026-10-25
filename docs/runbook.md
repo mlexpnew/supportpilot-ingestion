@@ -2,7 +2,12 @@
 
 Production operations and emergency incident response procedures for SupportPilot.
 
+- **On call (pilot week 26 Oct – 1 Nov)**: Chandini
+- **How to reach**: mlexpnew@gmail.com / Slack: @chandini
+- **Backup**: Dev
+
 ---
+
 
 ## Quick Operational Links
 
