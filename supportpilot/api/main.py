@@ -26,6 +26,7 @@ from supportpilot.feedback import (
     LabelMetric,
     normalize_ticket_id,
 )
+from supportpilot.logging_config import setup_logging
 from supportpilot.preprocessing.redact import redact_text
 from supportpilot.triage.model import (
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -259,6 +260,7 @@ class MetricsResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    setup_logging()
     model_file = get_model_path()
     if not model_file.exists():
         raise FileNotFoundError(
@@ -350,32 +352,33 @@ async def request_id_middleware(request: Request, call_next: Any) -> Response:
         request_id = str(uuid.uuid4())
     request.state.request_id = request_id
 
-    logger.info(
-        "request_id=%s method=%s path=%s",
-        request_id,
-        request.method,
-        request.url.path,
-        extra={
-            "request_id": request_id,
-            "method": request.method,
-            "path": request.url.path,
-        },
-    )
-
+    t0 = time.perf_counter()
+    status_code = 500
     try:
         response: Response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Request-ID"] = request_id
+        return response
     except Exception:
-        logger.error(
-            "request_id=%s method=%s path=%s unhandled error",
-            request_id,
-            request.method,
-            request.url.path,
-            extra={"request_id": request_id},
-        )
+        status_code = 500
         raise
-
-    response.headers["X-Request-ID"] = request_id
-    return response
+    finally:
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        logger.info(
+            "request_id=%s path=%s method=%s status=%d latency_ms=%.2f",
+            request_id,
+            request.url.path,
+            request.method,
+            status_code,
+            latency_ms,
+            extra={
+                "request_id": request_id,
+                "path": request.url.path,
+                "method": request.method,
+                "status": status_code,
+                "latency_ms": latency_ms,
+            },
+        )
 
 
 @app.get("/health")
