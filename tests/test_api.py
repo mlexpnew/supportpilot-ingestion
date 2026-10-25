@@ -440,7 +440,9 @@ def test_triage_logging_only_ticket_id_label_latency_and_never_body(
     api_records = [r for r in caplog.records if r.name == "supportpilot.api.main"]
     assert len(api_records) >= 1
 
-    triage_record = api_records[-1]
+    triage_records = [r for r in api_records if "ticket_id=" in r.getMessage()]
+    assert len(triage_records) >= 1
+    triage_record = triage_records[-1]
     msg = triage_record.getMessage()
 
     assert "ticket_id=T-AUDIT-999" in msg

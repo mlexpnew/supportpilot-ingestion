@@ -11,6 +11,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,13 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator
 
+from supportpilot.api.alerts import (
+    AlertThresholds,
+    AlertsResponse,
+    evaluate_alerts,
+    get_alert_thresholds,
+)
+from supportpilot.api.models import MetricsResponse
 from supportpilot.feedback import (
     MAX_ID_LENGTH,
     FeedbackRequest,
@@ -26,6 +34,7 @@ from supportpilot.feedback import (
     LabelMetric,
     normalize_ticket_id,
 )
+from supportpilot.logging_config import setup_logging
 from supportpilot.preprocessing.redact import redact_text
 from supportpilot.triage.model import (
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -43,6 +52,7 @@ REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 EXCLUDED_METRIC_PATHS: set[str] = {
     "/health",
+    "/alerts",
     "/metrics",
     "/metrics/labels",
     "/docs",
@@ -246,19 +256,9 @@ class TriageResponse(BaseModel):
     model_version: str
 
 
-class MetricsResponse(BaseModel):
-    requests_total: int
-    triage_total: int
-    errors_total: int
-    avg_latency_ms: float
-    needs_review_rate: float
-    rate_limited_total: int
-    feedback_total: int = 0
-    live_accuracy: float | None = None
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    setup_logging()
     model_file = get_model_path()
     if not model_file.exists():
         raise FileNotFoundError(
@@ -289,11 +289,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.counters = Counters()
     app.state.api_keys = get_api_keys()
     app.state.rate_limits = {}
+    app.state.alert_thresholds = get_alert_thresholds()
     yield
     app.state.model = None
     app.state.threshold = None
     app.state.api_keys = set()
     app.state.rate_limits = {}
+    app.state.alert_thresholds = None
     if getattr(app.state, "feedback_store", None) is not None:
         app.state.feedback_store.close()
     app.state.feedback_store = None
@@ -311,6 +313,7 @@ app.state.counters = Counters()
 app.state.api_keys = set()
 app.state.rate_limits = {}
 app.state.feedback_store = None
+app.state.alert_thresholds = None
 
 
 @app.middleware("http")
@@ -350,32 +353,33 @@ async def request_id_middleware(request: Request, call_next: Any) -> Response:
         request_id = str(uuid.uuid4())
     request.state.request_id = request_id
 
-    logger.info(
-        "request_id=%s method=%s path=%s",
-        request_id,
-        request.method,
-        request.url.path,
-        extra={
-            "request_id": request_id,
-            "method": request.method,
-            "path": request.url.path,
-        },
-    )
-
+    t0 = time.perf_counter()
+    status_code = 500
     try:
         response: Response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Request-ID"] = request_id
+        return response
     except Exception:
-        logger.error(
-            "request_id=%s method=%s path=%s unhandled error",
-            request_id,
-            request.method,
-            request.url.path,
-            extra={"request_id": request_id},
-        )
+        status_code = 500
         raise
-
-    response.headers["X-Request-ID"] = request_id
-    return response
+    finally:
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        logger.info(
+            "request_id=%s path=%s method=%s status=%d latency_ms=%.2f",
+            request_id,
+            request.url.path,
+            request.method,
+            status_code,
+            latency_ms,
+            extra={
+                "request_id": request_id,
+                "path": request.url.path,
+                "method": request.method,
+                "status": status_code,
+                "latency_ms": latency_ms,
+            },
+        )
 
 
 @app.get("/health")
@@ -448,6 +452,27 @@ def get_label_metrics(req: Request) -> dict[str, Any]:
             "Feedback store is not initialized. Service startup invariant violated."
         )
     return feedback_store.get_label_metrics()
+
+
+@app.get(
+    "/alerts",
+    response_model=AlertsResponse,
+    dependencies=[Depends(get_api_key), Depends(rate_limit)],
+)
+def get_alerts(req: Request) -> AlertsResponse:
+    metrics = get_metrics(req)
+    thresholds: AlertThresholds | None = getattr(
+        req.app.state, "alert_thresholds", None
+    )
+    if thresholds is None:
+        raise RuntimeError(
+            "Alert thresholds are not initialized. Service startup invariant violated."
+        )
+    active_alerts = evaluate_alerts(metrics, thresholds)
+    return AlertsResponse(
+        alerts=active_alerts,
+        checked_at=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 @app.post(

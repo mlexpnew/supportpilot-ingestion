@@ -58,7 +58,9 @@ Interactive OpenAPI documentation is available at `http://localhost:8000/docs`.
 - **API Key Generation**: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
 - **Rate Limiting**: 60 requests/minute per key sliding window (returns 429 with `Retry-After`).
 - *Note: In-memory limits only work for a single instance.*  
-For environment variables, key rotation, rate limit architecture, cloud deployment, and rollback guides, see [docs/deployment.md](docs/deployment.md).
+For environment variables, key rotation, rate limit architecture, cloud deployment, and rollback guides, see [docs/deployment.md](docs/deployment.md).  
+For on-call emergency response and step-by-step incident resolution, see the [Operations Runbook](docs/runbook.md).
+
 
 ## CLI Usage
 

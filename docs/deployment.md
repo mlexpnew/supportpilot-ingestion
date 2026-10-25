@@ -138,14 +138,29 @@ All configuration settings are read dynamically at application startup:
 | `ALLOW_SQLITE_FALLBACK` | `int` | `0` | If set to `1`, allows fallback to local SQLite when `DATABASE_URL` is omitted (local dev only). Missing `DATABASE_URL` fails fast in production. |
 | `TRIAGE_THRESHOLD` | `float` | `0.35` | Minimum classification confidence required to avoid manual human review. Predictions below this cutoff mark `needs_review: true`. Must be between `0.0` and `1.0`. |
 | `TRIAGE_MODEL_PATH`| `string`| `models/triage_model.joblib` | Filesystem path to the serialized trained model artifact. |
+| `LOG_LEVEL` | `string` | `INFO` | Application and server log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). Invalid values fail fast at startup. |
+| `ALERT_MIN_ACCURACY` | `float` | `0.80` | Accuracy alert threshold. Must be between `0.0` and `1.0`. |
+| `ALERT_MAX_REVIEW_RATE` | `float` | `0.30` | Needs review rate alert threshold. Must be between `0.0` and `1.0`. |
+| `ALERT_MAX_ERROR_RATE` | `float` | `0.05` | Error rate alert threshold. Must be between `0.0` and `1.0`. |
+| `ALERT_MIN_FEEDBACK` | `int` | `20` | Minimum feedback sample size before evaluating accuracy alert. Must be integer $\ge 0$. |
+| `ALERT_MIN_TRIAGE` | `int` | `20` | Minimum triage sample size before evaluating review rate alert. Must be integer $\ge 0$. |
+| `ALERT_MIN_REQUESTS` | `int` | `50` | Minimum requests sample size before evaluating error rate alert. Must be integer $\ge 0$. |
 | `PORT` | `int` | `8000` | Port on which the Uvicorn ASGI server listens. |
 
 ### Validation & Fail-Fast Guarantees
 - **Missing or Empty API Keys**: If `TRIAGE_API_KEYS` is missing, blank, or contains no non-empty comma-separated keys, startup fails immediately with `ValueError`.
 - **Missing Database URL**: In production, if `DATABASE_URL` is missing and `ALLOW_SQLITE_FALLBACK != 1`, startup fails immediately with `RuntimeError`.
+- **Invalid Log Level**: If `LOG_LEVEL` is not a valid standard level, startup fails immediately with `ValueError`.
+- **Invalid Alert Threshold**: If any `ALERT_*` variable is non-numeric or out of range, startup fails immediately with `ValueError`.
 - **Invalid Float / Format**: If `TRIAGE_THRESHOLD` is not a valid float, startup fails immediately with `ValueError`.
 - **Out of Range**: If `TRIAGE_THRESHOLD` is outside `[0.0, 1.0]`, startup fails fast with `ValueError`.
 - **Missing Model File**: If the model artifact cannot be located at `TRIAGE_MODEL_PATH`, startup fails fast with `FileNotFoundError`.
+
+### Structured Logging & Observability
+- **JSON Format**: Application logs are formatted as single-line JSON objects with `timestamp` (UTC ISO 8601), `level`, `logger`, `message`, and any contextual `extra` fields.
+- **Request Logging**: Uvicorn access logging is disabled (`--no-access-log`). The request-ID middleware logs exactly one structured JSON line per request with `request_id`, `path`, `method`, `status`, and `latency_ms`.
+- **Alembic Startup Logs**: The pre-server migration command (`alembic upgrade head`) prints plain-text startup migration status lines to stdout prior to Uvicorn booting. This is normal and acceptable.
+- **Privacy Sanitization**: Logs pass through a sensitive data filter that automatically masks credentials, database URLs, API keys (`X-API-Key`), and ticket bodies (`[REDACTED]`), while preserving audit `api_key_hash`.
 
 ---
 
@@ -285,7 +300,8 @@ Once deployed on Render, verify endpoints:
 
 ## 7. Rollback
 
-In the event of an incident or degraded release, use one of the following rollback procedures:
+In the event of an incident or degraded release, use one of the following rollback procedures (see also the [Operations Runbook](runbook.md) for incident management workflows):
+
 
 ### Option A: Render Dashboard Instant Rollback (Zero Downtime)
 1. Open the **SupportPilot** service in the [Render Dashboard](https://dashboard.render.com).
@@ -295,20 +311,24 @@ In the event of an incident or degraded release, use one of the following rollba
 5. Select **Rollback to this deploy**.
 6. Render will instantly switch traffic back to the previous healthy container image without re-building.
 
-### Option B: Git Revert (Standard Pipeline)
-To revert via source control and re-run standard CI validation:
-1. Revert the problematic commit on your local branch:
+### Option B: Git Revert via PR (Protected Branch Workflow)
+Direct push to `main` is blocked by GitHub branch protection. To revert via PR:
+1. Pull latest `main` branch and create a revert branch:
    ```bash
-   git fetch origin
-   git checkout main
-   git revert <bad-commit-sha>
+   git checkout main && git pull origin main
+   git checkout -b revert/rollback-<bad-commit-sha>
    ```
-2. Push the revert commit:
+2. Revert the problematic commit:
    ```bash
-   git push origin main
+   git revert <bad-commit-sha> --no-edit
    ```
-3. GitHub Actions CI will validate the reverted code.
-4. Render will detect the new commit and automatically build and deploy the reverted version.
+3. Push the branch and open a PR:
+   ```bash
+   git push -u origin revert/rollback-<bad-commit-sha>
+   gh pr create --title "revert: rollback <bad-commit-sha>" --body "Emergency rollback of degraded commit <bad-commit-sha>"
+   ```
+4. Wait for CI to turn green and team approval, then merge the PR. Render will detect the new commit on `main` and automatically build and deploy the reverted version.
+
 
 ### Option C: Environment Variable Rollback
 If an incorrect environment variable (such as an overly strict `TRIAGE_THRESHOLD`) caused degraded behavior:
@@ -316,3 +336,65 @@ If an incorrect environment variable (such as an overly strict `TRIAGE_THRESHOLD
 2. Update the variable to the safe baseline (`TRIAGE_THRESHOLD=0.35`).
 3. Click **Save Changes**.
 4. Render triggers an automatic rolling redeploy with the corrected environment variable.
+
+---
+
+## 8. Uptime Monitoring & Free-Tier Cold Starts (SP-112 Part B)
+
+### External Uptime Monitor Configuration
+To monitor availability and detect service interruptions proactively, an external uptime monitor (e.g., UptimeRobot or Better Stack) is configured:
+
+| Configuration Item | Setting | Details |
+| :--- | :--- | :--- |
+| **Monitor Type** | HTTP(s) GET | Polls endpoint and expects `HTTP 200 OK` |
+| **URL** | `https://supportpilot-ingestion.onrender.com/health` | Public, unauthenticated health endpoint |
+| **Monitoring Interval** | Every 5 minutes (`*/5 * * * *`) | Balanced frequency avoiding excessive free-tier polling overhead |
+| **Alert Threshold** | 2 consecutive failures | Prevents transient network blips from triggering false positives |
+| **Alert Destination** | Email notification | Immediate notification upon 2 failed checks |
+
+### Free-Tier Cold Start Analysis & Production Recommendation
+
+> [!WARNING]
+> **Free-Tier Cold Start Behavior (~50s latency spike)**
+> On Render's Free instance tier, the container automatically spins down ("sleeps") after 15 minutes of inactivity. When a subsequent request arrives, the service takes approximately **50 seconds** to wake up:
+> 1. Container spinning up from idle state (~15–20s)
+> 2. Database connection pool initialization and Alembic schema validation (~10s)
+> 3. Triage classification model unpickling and loading into memory (~15–20s)
+
+#### Pilot Impact
+- Support agents submitting ticket triage or feedback requests after idle periods encounter a ~50-second freeze, resulting in poor perceived responsiveness and potential gateway timeouts in downstream client systems.
+
+#### Recommended Fix: Paid Instance
+- **Production Solution**: Upgrade the Render Web Service to a paid instance tier (Starter plan at $7/month or higher). Paid instances run continuously without idle spindown, eliminating cold starts entirely and ensuring sub-50ms triage response times 24/7.
+- **Architectural Policy**: Upgrading to a paid instance is the standard engineering fix for production workloads.
+
+### Known Side Effect: Free-Tier Keep-Alive Behavior
+Because Render's free tier spins down after ~15 minutes of inactivity, polling `/health` every 5 minutes means the service receives incoming traffic every 5 minutes and effectively remains awake permanently.
+- **Pilot Viability**: For the duration of this single-service pilot, keeping the container continuously awake is acceptable because Render provides 750 free instance hours per month, which covers one continuous service (24h × 31d = 744h).
+- **Operational Warning**: This reduction of cold starts is an incidental side effect of the external monitor. If the uptime monitor is ever paused, deleted, or reduced to a polling interval >15 minutes, the service will return to spinning down when idle and ~50-second cold-start delays will immediately return.
+- **Production Path**: The permanent, SLA-backed solution for production remains upgrading to a dedicated paid instance ($7/month Starter).
+
+---
+
+## 9. Model Health Alerts & Metrics Lifecycles (SP-112 Part C)
+
+The `GET /alerts` endpoint continuously checks model and operational quality against configurable boundary thresholds:
+
+### Metric Lifecycles: "Since Last Restart" vs Persistent
+It is critical to distinguish the source and lifecycle of the underlying metrics to prevent false alarms:
+
+| Metric | Source | Lifecycle | Minimum Sample Before Alerting |
+| :--- | :--- | :--- | :--- |
+| `live_accuracy` | PostgreSQL (`feedback` & `predictions` tables) | **Persistent**: Survives redeployments and instance restarts | `ALERT_MIN_FEEDBACK=20` rows |
+| `needs_review_rate` | In-memory counter (`Counters`) | **Ephemeral ("Since Last Restart")**: Resets to `0` upon each deployment | `ALERT_MIN_TRIAGE=20` tickets |
+| `error_rate` | In-memory counters (`errors_total / requests_total`) | **Ephemeral ("Since Last Restart")**: Resets to `0` upon each deployment | `ALERT_MIN_REQUESTS=50` requests |
+
+### False Alarm Prevention
+Immediately following a container restart or deployment, small sample sizes produce extreme statistical variance (e.g. 1 ticket requiring review out of 1 total ticket yields a 100% review rate). To eliminate day-one false alarms:
+- **Accuracy Alert**: Never fires until at least 20 human feedback entries have been recorded (`feedback_total >= 20`).
+- **Review Rate Alert**: Never fires until at least 20 tickets have been triaged since the last restart (`triage_total >= 20`).
+- **Error Rate Alert**: Never fires until at least 50 HTTP requests have been served since the last restart (`requests_total >= 50`).
+
+### Alert Severities
+- **Warning**: Metric is slightly past the threshold (e.g. accuracy between 0.70 and 0.80, or review rate between 0.30 and 0.40).
+- **Critical**: Metric is far past the threshold (e.g. accuracy $< 0.70$, review rate $\ge 0.40$, or error rate $\ge 0.10$).
