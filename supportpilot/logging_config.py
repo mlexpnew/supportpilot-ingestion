@@ -80,10 +80,8 @@ VALID_LOG_LEVELS: dict[str, int] = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
     "WARNING": logging.WARNING,
-    "WARN": logging.WARNING,
     "ERROR": logging.ERROR,
     "CRITICAL": logging.CRITICAL,
-    "FATAL": logging.CRITICAL,
 }
 
 
@@ -230,9 +228,7 @@ def get_log_level() -> int:
 
     normalized = raw_level.strip().upper()
     if not normalized or normalized not in VALID_LOG_LEVELS:
-        valid_options = ", ".join(
-            k for k in VALID_LOG_LEVELS if k not in ("WARN", "FATAL")
-        )
+        valid_options = ", ".join(VALID_LOG_LEVELS.keys())
         raise ValueError(
             f"Invalid LOG_LEVEL '{raw_level}'. Expected one of: {valid_options}."
         )

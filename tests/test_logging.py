@@ -170,6 +170,8 @@ def test_get_log_level_valid_levels(
         "",
         "   ",
         "NONE",
+        "WARN",
+        "FATAL",
     ],
 )
 def test_get_log_level_invalid_value_fails_fast(
