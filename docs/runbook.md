@@ -199,6 +199,7 @@ pbpaste | python3 -c "import sys,hashlib;print(hashlib.sha256(sys.stdin.read().s
 - Startup failures logged with `RuntimeError` (e.g. missing required env vars, invalid `TRIAGE_THRESHOLD`, or failed Alembic migration).
 - Immediate spike in HTTP 500/502/503 responses following a deployment.
 - High triage latency or unexpected regression in core endpoint behavior.
+- Deploy stuck after Alembic (missing `"migrations complete"` in startup logs) → check `pg_stat_activity` for locks.
 
 ### Check
 ```bash
@@ -209,6 +210,9 @@ curl -i https://supportpilot-ingestion.onrender.com/health
 # Navigate to: SupportPilot Web Service -> Deploys -> Select latest deploy -> View Logs
 
 # 3. Check GitHub Actions CI run on latest commit for unexpected step failures
+
+# 4. Container stuck after Alembic → check pg_stat_activity for locks:
+psql "$EXTERNAL_DATABASE_URL" -c "SELECT pid, usename, state, wait_event_type, wait_event, query FROM pg_stat_activity WHERE wait_event_type = 'Lock' OR state != 'idle';"
 ```
 
 ### Fix

@@ -1794,3 +1794,14 @@ def test_postgres_test_isolation_truncates_tables(
         mock_conn.execute.assert_called()
         sql_arg = str(mock_conn.execute.call_args[0][0])
         assert "TRUNCATE feedback, predictions CASCADE;" in sql_arg
+
+
+def test_alembic_postgres_migration_sets_lock_timeout() -> None:
+    """Verify migrations/env.py sets lock_timeout = '30s' on PostgreSQL connections."""
+    from pathlib import Path
+
+    env_path = Path(__file__).parents[1] / "migrations" / "env.py"
+    assert env_path.exists()
+    content = env_path.read_text(encoding="utf-8")
+    assert "SET lock_timeout = '30s'" in content
+    assert 'dialect.name == "postgresql"' in content
