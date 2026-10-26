@@ -1822,9 +1822,11 @@ def test_version_no_auth_needed() -> None:
         data = response.json()
         assert "git_sha" in data
         assert "model_version" in data
+        assert "started_at" in data
         assert "deployed_at" in data
         assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
-        assert data["deployed_at"] is not None
+        assert data["started_at"] is not None
+        assert data["deployed_at"] == data["started_at"]
 
 
 def test_version_render_git_commit_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1893,15 +1895,21 @@ def test_version_unknown_string_returns_unknown(
 
 
 def test_version_deployed_at_stored_in_lifespan() -> None:
-    """Verify deployed_at is recorded once at startup in lifespan and remains immutable."""
+    """Verify started_at and deployed_at are recorded once at startup in lifespan and remain immutable."""
     with FastAPITestClient(app) as client:
         res1 = client.get("/version")
         assert res1.status_code == 200
-        deployed_at_1 = res1.json()["deployed_at"]
+        data1 = res1.json()
+        started_at_1 = data1["started_at"]
+        deployed_at_1 = data1["deployed_at"]
 
         res2 = client.get("/version")
         assert res2.status_code == 200
-        deployed_at_2 = res2.json()["deployed_at"]
+        data2 = res2.json()
+        started_at_2 = data2["started_at"]
+        deployed_at_2 = data2["deployed_at"]
 
+        assert started_at_1 == started_at_2
         assert deployed_at_1 == deployed_at_2
-        assert deployed_at_1 is not None
+        assert started_at_1 == deployed_at_1
+        assert started_at_1 is not None

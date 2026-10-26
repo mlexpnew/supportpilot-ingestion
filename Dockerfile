@@ -36,9 +36,6 @@ FROM python:3.11-slim AS runner
 
 WORKDIR /app
 
-ARG GIT_SHA=unknown
-ENV GIT_SHA=$GIT_SHA
-
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
@@ -65,5 +62,8 @@ EXPOSE 8000
 # Healthcheck using Python standard library (no curl needed in runtime image)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
 
 CMD ["sh", "-c", "alembic upgrade head && echo \"migrations complete\" && exec uvicorn supportpilot.api.main:app --host 0.0.0.0 --port 8000 --no-access-log --log-level $(echo ${LOG_LEVEL:-info} | tr '[:upper:]' '[:lower:]' | sed 's/^warn$/warning/')"]

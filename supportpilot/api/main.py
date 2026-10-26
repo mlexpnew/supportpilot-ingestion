@@ -303,13 +303,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.api_keys = get_api_keys()
     app.state.rate_limits = {}
     app.state.alert_thresholds = get_alert_thresholds()
-    app.state.deployed_at = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
+    app.state.started_at = started_at
+    app.state.deployed_at = started_at
     yield
     app.state.model = None
     app.state.threshold = None
     app.state.api_keys = set()
     app.state.rate_limits = {}
     app.state.alert_thresholds = None
+    app.state.started_at = None
     app.state.deployed_at = None
     if getattr(app.state, "feedback_store", None) is not None:
         app.state.feedback_store.close()
@@ -329,6 +332,7 @@ app.state.api_keys = set()
 app.state.rate_limits = {}
 app.state.feedback_store = None
 app.state.alert_thresholds = None
+app.state.started_at = None
 app.state.deployed_at = None
 
 
@@ -418,11 +422,14 @@ def get_version(req: Request) -> VersionResponse:
     model = getattr(req.app.state, "model", None)
     model_version = getattr(model, "version", None) if model is not None else None
     git_sha = get_git_sha()
-    deployed_at = getattr(req.app.state, "deployed_at", None)
+    started_at = getattr(req.app.state, "started_at", None) or getattr(
+        req.app.state, "deployed_at", None
+    )
     return VersionResponse(
         git_sha=git_sha,
         model_version=model_version,
-        deployed_at=deployed_at,
+        started_at=started_at,
+        deployed_at=started_at,
     )
 
 
