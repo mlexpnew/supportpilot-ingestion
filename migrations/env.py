@@ -3,7 +3,7 @@ import sys
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 
 from supportpilot.feedback.store import (
     get_feedback_db_path,
@@ -69,6 +69,8 @@ def run_migrations_online() -> None:
     connectable = config.attributes.get("connection", None)
 
     if connectable is not None:
+        if connectable.dialect.name == "postgresql":
+            connectable.execute(text("SET lock_timeout = '30s'"))
         context.configure(
             connection=connectable,
             target_metadata=target_metadata,
@@ -88,6 +90,8 @@ def run_migrations_online() -> None:
         )
 
         with connectable.connect() as connection:
+            if connection.dialect.name == "postgresql":
+                connection.execute(text("SET lock_timeout = '30s'"))
             context.configure(
                 connection=connection,
                 target_metadata=target_metadata,
