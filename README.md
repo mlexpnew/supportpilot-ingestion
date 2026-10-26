@@ -1,5 +1,7 @@
 # SupportPilot Ingestion
 
+![CI](https://github.com/mlexpnew/supportpilot-ingestion/actions/workflows/ci.yml/badge.svg?branch=main)
+
 Streaming JSONL ticket ingestion, validation, and deduplication service built with Python and Pydantic v2.
 
 ## Python Version
