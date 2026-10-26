@@ -16,3 +16,11 @@ class MetricsResponse(BaseModel):
     rate_limited_total: int
     feedback_total: int = 0
     live_accuracy: float | None = None
+
+
+class VersionResponse(BaseModel):
+    """Deployment version and runtime metadata."""
+
+    git_sha: str
+    model_version: str | None
+    deployed_at: str | None = None

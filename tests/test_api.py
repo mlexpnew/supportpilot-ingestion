@@ -1807,3 +1807,101 @@ def test_logging_key_string_never_appears_in_captured_logs(
             if isinstance(val, str):
                 assert valid_key not in val
                 assert wrong_key not in val
+
+
+# =====================================================================
+# Version Endpoint Tests (SP-113 Part A)
+# =====================================================================
+
+
+def test_version_no_auth_needed() -> None:
+    """Verify GET /version is public: accessible without X-API-Key header."""
+    with FastAPITestClient(app) as client:
+        response = client.get("/version")
+        assert response.status_code == 200
+        data = response.json()
+        assert "git_sha" in data
+        assert "model_version" in data
+        assert "deployed_at" in data
+        assert re.match(r"^triage-v1\.0\.0-\d{8}$", data["model_version"])
+        assert data["deployed_at"] is not None
+
+
+def test_version_render_git_commit_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify RENDER_GIT_COMMIT is read and truncated to first 7 characters."""
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "151f1664e48f3e70fbcae06933c5deb6df894671")
+    with FastAPITestClient(app) as client:
+        response = client.get("/version")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["git_sha"] == "151f166"
+
+
+def test_version_git_sha_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify GIT_SHA is used when RENDER_GIT_COMMIT is absent and truncated to 7 characters."""
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    monkeypatch.setenv("GIT_SHA", "eb0e6b15b475d8f4c61f1e7dcc73c35cdd9d92ee")
+    with FastAPITestClient(app) as client:
+        response = client.get("/version")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["git_sha"] == "eb0e6b1"
+
+
+def test_version_render_git_commit_takes_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify RENDER_GIT_COMMIT is prioritized over GIT_SHA."""
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "abcdef123456789")
+    monkeypatch.setenv("GIT_SHA", "9876543210fedcba")
+    with FastAPITestClient(app) as client:
+        response = client.get("/version")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["git_sha"] == "abcdef1"
+
+
+def test_version_nothing_set_returns_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify git_sha defaults to 'unknown' when neither env var is set."""
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    monkeypatch.delenv("GIT_SHA", raising=False)
+    with FastAPITestClient(app) as client:
+        response = client.get("/version")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["git_sha"] == "unknown"
+
+
+def test_version_unknown_string_returns_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify git_sha is 'unknown' when env var is explicitly 'unknown' or empty whitespace."""
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    monkeypatch.setenv("GIT_SHA", "unknown")
+    with FastAPITestClient(app) as client:
+        response = client.get("/version")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["git_sha"] == "unknown"
+
+    monkeypatch.setenv("GIT_SHA", "   ")
+    with FastAPITestClient(app) as client:
+        response = client.get("/version")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["git_sha"] == "unknown"
+
+
+def test_version_deployed_at_stored_in_lifespan() -> None:
+    """Verify deployed_at is recorded once at startup in lifespan and remains immutable."""
+    with FastAPITestClient(app) as client:
+        res1 = client.get("/version")
+        assert res1.status_code == 200
+        deployed_at_1 = res1.json()["deployed_at"]
+
+        res2 = client.get("/version")
+        assert res2.status_code == 200
+        deployed_at_2 = res2.json()["deployed_at"]
+
+        assert deployed_at_1 == deployed_at_2
+        assert deployed_at_1 is not None
