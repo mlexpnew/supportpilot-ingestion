@@ -122,27 +122,35 @@ curl -s -H "X-API-Key: $TRIAGE_API_KEY" https://supportpilot-ingestion.onrender.
 
 ### Fix
 1. **Verify sample size qualification**: Confirm `feedback_total >= 20` (alerts are suppressed below 20 feedback entries to avoid small-sample noise).
-2. **Export human feedback corrections**:
+2. **Execute Champion/Challenger retraining pipeline (SP-113)**:
    ```bash
-   python -m supportpilot.feedback export --output data/feedback_export.jsonl
-   ```
-3. **Join feedback with original and pilot datasets**:
-   ```bash
-   python -m supportpilot.feedback join \
+   python -m supportpilot.triage.retrain \
+     --base data/triage_labeled.jsonl \
      --feedback data/feedback_export.jsonl \
-     --original data/triage_labeled.jsonl \
-     --redacted out_redacted/redacted.jsonl \
-     --output data/triage_retrain.jsonl
+     --pilot out_redacted/redacted.jsonl \
+     --out models/
    ```
-4. **Trigger model retraining**:
+3. **Inspect comparison report**:
+   - Check printed summary table and `reports/compare_<YYYYMMDD>.json`.
+   - Verify challenger passes promotion rule: $\Delta \text{Macro F1} \ge 0.02$ and no label recall drops by $> 0.05$.
+4. **Promote Challenger via single config change (Arjun's rule)**:
+   - In [Render Dashboard](https://dashboard.render.com) -> SupportPilot Web Service -> **Environment**.
+   - Update `TRIAGE_MODEL_PATH` to the challenger model file:
+     ```text
+     TRIAGE_MODEL_PATH=models/triage-v1.1.0-YYYYMMDD.joblib
+     ```
+   - Click **Save Changes** (triggers rolling restart with new model; zero code change).
+5. **Post-promotion verification**:
    ```bash
-   python -m supportpilot.triage --train
+   curl -s https://supportpilot-ingestion.onrender.com/version | jq .
+   # Verify model_version reflects the newly promoted challenger
    ```
-5. **Verify retrained model quality and test contract**:
-   ```bash
-   pytest tests/test_triage.py
-   ```
-6. **Deploy retrained model**: Commit updated `models/triage_model.joblib`, open PR, obtain review approvals, and merge to trigger automated Render deployment.
+6. **Instant Rollback Path (if needed)**:
+   - In Render Environment, point `TRIAGE_MODEL_PATH` back to the champion:
+     ```text
+     TRIAGE_MODEL_PATH=models/triage_model.joblib
+     ```
+   - Click **Save Changes** to instantly restore the champion model.
 
 ### Notify
 - **Rohan** (ML Lead): Review misclassified ticket clusters, validate class distributions in feedback export, and approve retrained model metrics.
