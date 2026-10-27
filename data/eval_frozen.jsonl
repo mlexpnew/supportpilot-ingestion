@@ -1,0 +1,60 @@
+{"ticket_id": "EV-001", "body": "My package tracking has been stuck in transit for four days without any scan.", "label": "delivery"}
+{"ticket_id": "EV-002", "body": "Delivery driver marked parcel delivered but I never received anything at my doorstep.", "label": "delivery"}
+{"ticket_id": "EV-003", "body": "Can I redirect the shipment to my workplace address before the courier attempts delivery?", "label": "delivery"}
+{"ticket_id": "EV-004", "body": "bhai mera courier kab tak pahuchega? 5 din se delayed hai", "label": "delivery"}
+{"ticket_id": "EV-005", "body": "The delivery agent refused to deliver to the 4th floor and left the parcel with security.", "label": "delivery"}
+{"ticket_id": "EV-006", "body": "Express delivery was promised within 24 hours but order is still not dispatched.", "label": "delivery"}
+{"ticket_id": "EV-007", "body": "Tracking number shows invalid or not found on courier tracking portal.", "label": "delivery"}
+{"ticket_id": "EV-008", "body": "Shipment arrived damaged with outer cardboard carton ripped open and items exposed.", "label": "delivery"}
+{"ticket_id": "EV-009", "body": "Courier boy did not call and updated customer unavailable on the delivery status.", "label": "delivery"}
+{"ticket_id": "EV-010", "body": "Please provide the phone number of the delivery hub handling my order dispatch.", "label": "delivery"}
+{"ticket_id": "EV-011", "body": "I was charged twice on my credit card [CARD] for a single checkout transaction.", "label": "billing"}
+{"ticket_id": "EV-012", "body": "Why did my monthly subscription auto-renew without any prior notification or reminder?", "label": "billing"}
+{"ticket_id": "EV-013", "body": "Please send the official GST tax invoice for my recent purchase to [EMAIL].", "label": "billing"}
+{"ticket_id": "EV-014", "body": "The discount promo code was accepted at checkout but the final deduction was not applied.", "label": "billing"}
+{"ticket_id": "EV-015", "body": "card se paise cut gaye par order confirm nahi hua, billing issue please check", "label": "billing"}
+{"ticket_id": "EV-016", "body": "There is an unknown recurring fee of 499 rupees on my monthly bank statement.", "label": "billing"}
+{"ticket_id": "EV-017", "body": "Need to update the corporate billing address and company PAN details on our invoice.", "label": "billing"}
+{"ticket_id": "EV-018", "body": "My payment via UPI failed but the bank balance shows the transaction amount debited.", "label": "billing"}
+{"ticket_id": "EV-019", "body": "Incorrect tax rate calculated on digital services order, please adjust billing.", "label": "billing"}
+{"ticket_id": "EV-020", "body": "Why was an international transaction fee charged when billing is in Indian rupees?", "label": "billing"}
+{"ticket_id": "EV-021", "body": "The courier picked up my returned item three days ago, when will my refund be initiated?", "label": "refund"}
+{"ticket_id": "EV-022", "body": "refund status shows processed on your portal but money has not hit my bank account.", "label": "refund"}
+{"ticket_id": "EV-023", "body": "mera refund abhi tak account me credit kyu nahi hua? 10 din ho gaye return approved huye", "label": "refund"}
+{"ticket_id": "EV-024", "body": "Only partial refund amount was received, delivery charge of 150 rupees was withheld.", "label": "refund"}
+{"ticket_id": "EV-025", "body": "Please share the bank ARN or UTR reference number for the processed refund.", "label": "refund"}
+{"ticket_id": "EV-026", "body": "Returned product was received at warehouse yesterday, please expedite the refund credit.", "label": "refund"}
+{"ticket_id": "EV-027", "body": "Refund was sent to an expired debit card, how can I redirect it to my active savings account?", "label": "refund"}
+{"ticket_id": "EV-028", "body": "Order was cancelled by seller due to out of stock, awaiting full refund to wallet.", "label": "refund"}
+{"ticket_id": "EV-029", "body": "Store credit was issued instead of original payment method refund as requested.", "label": "refund"}
+{"ticket_id": "EV-030", "body": "return package delivered to hub last week, please initiate refund payment without further delay", "label": "refund"}
+{"ticket_id": "EV-031", "body": "Please cancel my order 98712 immediately before it leaves the fulfillment warehouse.", "label": "cancellation"}
+{"ticket_id": "EV-032", "body": "I ordered the wrong size by accident, cancel this item so I can place a new order.", "label": "cancellation"}
+{"ticket_id": "EV-033", "body": "Unable to find the cancel order button in my account dashboard, please cancel from your end.", "label": "cancellation"}
+{"ticket_id": "EV-034", "body": "order galti se place ho gaya hai, please cancel kardo dispatch se pehle", "label": "cancellation"}
+{"ticket_id": "EV-035", "body": "Cancel only item 2 from my order combo and keep the remaining items active.", "label": "cancellation"}
+{"ticket_id": "EV-036", "body": "Accidental duplicate order created due to payment timeout, cancel the second order.", "label": "cancellation"}
+{"ticket_id": "EV-037", "body": "Stop delivery and cancel the order as the delivery date is too late for my event.", "label": "cancellation"}
+{"ticket_id": "EV-038", "body": "I want to cancel my annual membership plan and prevent subsequent renewals.", "label": "cancellation"}
+{"ticket_id": "EV-039", "body": "Cancel shipment request submitted two hours ago, please confirm cancellation status.", "label": "cancellation"}
+{"ticket_id": "EV-040", "body": "Please revoke order authorization and cancel dispatch immediately.", "label": "cancellation"}
+{"ticket_id": "EV-041", "body": "I am not receiving the OTP on mobile [PHONE] to sign in to my account.", "label": "account"}
+{"ticket_id": "EV-042", "body": "Password reset link sent to my email [EMAIL] has expired or does not load.", "label": "account"}
+{"ticket_id": "EV-043", "body": "Need to update my registered phone number because I lost my old SIM card.", "label": "account"}
+{"ticket_id": "EV-044", "body": "My account has been locked due to multiple incorrect password attempts, please unlock.", "label": "account"}
+{"ticket_id": "EV-045", "body": "login nahi ho raha hai app me, invalid credentials error dikha raha hai", "label": "account"}
+{"ticket_id": "EV-046", "body": "How do I permanently delete my account and erase all stored personal information?", "label": "account"}
+{"ticket_id": "EV-047", "body": "Two-factor authentication code from authenticator app is showing invalid token error.", "label": "account"}
+{"ticket_id": "EV-048", "body": "Suspicious login alert received from unrecognized IP location, please secure profile.", "label": "account"}
+{"ticket_id": "EV-049", "body": "Can I merge my two separate accounts registered under work and personal emails?", "label": "account"}
+{"ticket_id": "EV-050", "body": "Unable to edit my profile name and saved contact details in account settings.", "label": "account"}
+{"ticket_id": "EV-051", "body": "Do you offer corporate gifting packages or bulk discounts for festive season?", "label": "other"}
+{"ticket_id": "EV-052", "body": "Where can I find your company privacy policy and customer terms of service?", "label": "other"}
+{"ticket_id": "EV-053", "body": "Are the packaging materials used in your shipments 100 percent recyclable?", "label": "other"}
+{"ticket_id": "EV-054", "body": "I would like to submit a partnership proposal to sell our products on your marketplace.", "label": "other"}
+{"ticket_id": "EV-055", "body": "What are the working hours and telephone numbers for your customer support call center?", "label": "other"}
+{"ticket_id": "EV-056", "body": "Great experience with your customer service representative Priya, wanted to share feedback.", "label": "other"}
+{"ticket_id": "EV-057", "body": "Do you have any physical retail experience centers or showrooms located in Bangalore?", "label": "other"}
+{"ticket_id": "EV-058", "body": "Where can I report a software bug found in your mobile application navigation bar?", "label": "other"}
+{"ticket_id": "EV-059", "body": "Looking for manufacturer warranty information regarding electronic accessories.", "label": "other"}
+{"ticket_id": "EV-060", "body": "aapke company ka head office kahan pe hai aur contact email kya hai?", "label": "other"}
