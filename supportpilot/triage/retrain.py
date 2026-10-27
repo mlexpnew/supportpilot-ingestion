@@ -57,6 +57,11 @@ class PromotionDecision:
         return "challenger" if self.promoted else "champion"
 
 
+def normalize_text(text: str) -> str:
+    """Normalize text for leakage detection: lowercase and collapse consecutive whitespace."""
+    return " ".join(text.lower().split())
+
+
 def bump_model_version(
     champion_version: str | None = None,
     date_str: str | None = None,
@@ -66,13 +71,15 @@ def bump_model_version(
     Example:
         triage-v1.0.0-20261026 -> triage-v1.1.0-YYYYMMDD
     """
+    if not champion_version or not champion_version.strip():
+        raise ValueError(
+            "Champion version is required to bump version. Cannot be empty or None."
+        )
+
     if date_str is None:
         today = datetime.now(timezone.utc).strftime("%Y%m%d")
     else:
         today = date_str.replace("-", "").strip()
-
-    if not champion_version:
-        return f"triage-v1.1.0-{today}"
 
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", champion_version)
     if match:
@@ -80,7 +87,9 @@ def bump_model_version(
         minor = int(match.group(2))
         return f"triage-v{major}.{minor + 1}.0-{today}"
 
-    return f"triage-v1.1.0-{today}"
+    raise ValueError(
+        f"Champion version '{champion_version}' does not contain a valid semver pattern (X.Y.Z)."
+    )
 
 
 def verify_eval_frozen_isolation(
@@ -94,8 +103,14 @@ def verify_eval_frozen_isolation(
     """
     t_path = Path(training_path)
     e_path = Path(eval_path)
-    if not t_path.exists() or not e_path.exists():
-        return
+    if not t_path.exists():
+        raise FileNotFoundError(
+            f"Training dataset not found for leakage check: {t_path}"
+        )
+    if not e_path.exists():
+        raise FileNotFoundError(
+            f"Frozen evaluation dataset not found for leakage check: {e_path}"
+        )
 
     train_ids: set[str] = set()
     train_texts: set[str] = set()
@@ -104,24 +119,24 @@ def verify_eval_frozen_isolation(
             line_str = line.strip()
             if line_str:
                 item = json.loads(line_str)
-                if "ticket_id" in item:
-                    train_ids.add(item["ticket_id"])
-                if "body" in item:
-                    train_texts.add(item["body"])
+                if "ticket_id" in item and item["ticket_id"]:
+                    train_ids.add(str(item["ticket_id"]).strip())
+                if "body" in item and item["body"]:
+                    train_texts.add(normalize_text(item["body"]))
 
     with open(e_path, "r", encoding="utf-8") as f:
         for line in f:
             line_str = line.strip()
             if line_str:
                 item = json.loads(line_str)
-                tid = item.get("ticket_id")
+                tid = str(item["ticket_id"]).strip() if item.get("ticket_id") else None
                 body = item.get("body")
                 if tid and tid in train_ids:
                     raise RuntimeError(
                         f"Data leakage detected! Sacred evaluation ticket {tid} "
                         f"found in training data {t_path}."
                     )
-                if body and body in train_texts:
+                if body and normalize_text(body) in train_texts:
                     raise RuntimeError(
                         f"Data leakage detected! Sacred evaluation ticket text "
                         f"found in training data {t_path}."
@@ -335,6 +350,7 @@ def retrain_pipeline(
     eval_dataset: Path | str = DEFAULT_EVAL_PATH,
     champion_path: Path | str = DEFAULT_MODEL_PATH,
     reports_dir: Path | str = DEFAULT_REPORTS_DIR,
+    expected_champion_version: str | None = None,
 ) -> dict[str, Any]:
     """Execute end-to-end retraining pipeline with Champion/Challenger evaluation.
 
@@ -393,21 +409,33 @@ def retrain_pipeline(
         # 2. Sacred frozen evaluation set verification (fail-fast if data leaks)
         verify_eval_frozen_isolation(training_data_path, eval_p)
 
-        # 3. Load or train champion
+        # 3. Load active champion (must exist; never invent a baseline during retraining)
         champ_p = Path(champion_path)
-        if champ_p.exists():
-            champion = TriageClassifier.load(champ_p)
-        else:
-            logger.info(
-                "Champion model not found at %s. Training baseline champion...", champ_p
-            )
-            champion = train_model(
-                data_path=base_p,
-                save_path=champ_p,
-                version="1.0.0",
+        if not champ_p.exists():
+            raise FileNotFoundError(
+                f"Champion model not found at: {champ_p}. "
+                "Retraining requires comparing against an existing production champion model. "
+                "Refusing to invent an unverified baseline champion."
             )
 
-        champion_version = champion.version or "triage-v1.0.0-20261026"
+        champion = TriageClassifier.load(champ_p)
+        champion_version = champion.version
+        if not champion_version or not champion_version.strip():
+            raise ValueError(
+                f"Champion model at '{champ_p}' is missing a version in its metadata. "
+                "Corrupt or unversioned champion."
+            )
+
+        if (
+            expected_champion_version
+            and champion_version != expected_champion_version.strip()
+        ):
+            raise ValueError(
+                f"Champion version mismatch: expected '{expected_champion_version.strip()}' "
+                f"(copied from production /version), but champion model at '{champ_p}' "
+                f"has version '{champion_version}'. The comparison must use the exact "
+                "model that production serves."
+            )
 
         # 4. Bump version automatically for challenger
         challenger_version = bump_model_version(champion_version)
@@ -571,6 +599,12 @@ def main() -> int:
         default=DEFAULT_REPORTS_DIR,
         help="Directory to save compare_<date>.json reports.",
     )
+    parser.add_argument(
+        "--expected-champion-version",
+        type=str,
+        default=None,
+        help="Expected model version of production champion (copied from /version). Retraining aborts on mismatch.",
+    )
 
     args = parser.parse_args()
 
@@ -582,6 +616,7 @@ def main() -> int:
         eval_dataset=args.eval,
         champion_path=args.champion,
         reports_dir=args.reports,
+        expected_champion_version=args.expected_champion_version,
     )
 
     print(results["summary_table"])

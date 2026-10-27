@@ -15,25 +15,31 @@ This runbook outlines when to retrain the triage classifier, how to execute the 
 
 ## 2. How to Run the Retraining Pipeline
 
-The retraining CLI executes feedback export, join, challenger training, version bumping, and fair evaluation on the frozen evaluation set in a single command.
+The retraining CLI executes feedback export, join, challenger training, version bumping, and fair evaluation on the frozen evaluation set in a single command. Always pass `--expected-champion-version` (obtained from production `GET /version`) to ensure the comparison uses the exact model that production is serving.
 
 ```bash
+# 1. Fetch active production model version from /version endpoint
+CURRENT_VER=$(curl -s https://supportpilot.onrender.com/version | jq -r .model_version)
+
+# 2. Run retraining pipeline with champion check
 python -m supportpilot.triage.retrain \
   --base data/triage_labeled.jsonl \
   --feedback data/feedback_export.jsonl \
   --pilot data/sample_tickets.jsonl \
-  --out models/
+  --out models/ \
+  --expected-champion-version "$CURRENT_VER"
 ```
 
-### Pipeline Steps (Automated):
-1. **Feedback Export**: Exports human feedback corrections (`ticket_id` + `correct_label`) from the PostgreSQL feedback store.
-2. **Deterministic Join**: Relabels existing training tickets and appends newly reviewed pilot tickets using the SP-110 join utility.
-3. **Data Isolation Check**: Validates that the sacred frozen evaluation set (`data/eval_frozen.jsonl`) has **zero overlap** with the training set (fails fast if data leakage is detected).
-4. **Version Bumping**: Automatically increments the minor semantic version (`triage-v1.0.0-...` -> `triage-v1.1.0-YYYYMMDD`).
-5. **Challenger Training**: Fits the TF-IDF + Logistic Regression pipeline on the augmented dataset.
-6. **Startup Pre-Validation**: Verifies version regex and ensures trained classes match `LABELS`.
-7. **Fair Comparison**: Evaluates both Champion and Challenger on `data/eval_frozen.jsonl`.
-8. **Report Generation**: Writes `reports/compare_<YYYYMMDD>.json` and outputs a human-readable summary table.
+### Pipeline Safety Invariants & Steps (Automated):
+1. **Production Champion Verification**: Verifies `--expected-champion-version` matches the local champion model file. If there is a mismatch or the champion file is missing, it **fails fast** (never invents an unverified baseline).
+2. **Metadata Integrity**: Validates that the champion has an explicit, valid semantic version (no magic fallbacks).
+3. **Normalized Data Isolation Check**: Validates that the sacred frozen evaluation set (`data/eval_frozen.jsonl`) has **zero overlap** with training data. Text comparison normalizes lowercase and collapses whitespace so casing or space differences cannot slip through. Fails fast if either file is missing or any leakage is detected.
+4. **Deterministic Join**: Relabels existing training tickets and appends newly reviewed pilot tickets using the SP-110 join utility.
+5. **Version Bumping**: Automatically increments the minor semantic version (`triage-v1.0.0-...` -> `triage-v1.1.0-YYYYMMDD`).
+6. **Challenger Training**: Fits the TF-IDF + Logistic Regression pipeline on the augmented dataset without overwriting the champion file.
+7. **Startup Pre-Validation**: Verifies version regex and ensures trained classes match service `LABELS`.
+8. **Fair Comparison**: Evaluates both Champion and Challenger on `data/eval_frozen.jsonl`.
+9. **Report Generation**: Writes `reports/compare_<YYYYMMDD>.json` and outputs a human-readable summary table.
 
 ---
 

@@ -124,11 +124,15 @@ curl -s -H "X-API-Key: $TRIAGE_API_KEY" https://supportpilot-ingestion.onrender.
 1. **Verify sample size qualification**: Confirm `feedback_total >= 20` (alerts are suppressed below 20 feedback entries to avoid small-sample noise).
 2. **Execute Champion/Challenger retraining pipeline (SP-113)**:
    ```bash
+   # Query active production model version from /version
+   CURRENT_VER=$(curl -s https://supportpilot-ingestion.onrender.com/version | jq -r .model_version)
+
    python -m supportpilot.triage.retrain \
      --base data/triage_labeled.jsonl \
      --feedback data/feedback_export.jsonl \
      --pilot out_redacted/redacted.jsonl \
-     --out models/
+     --out models/ \
+     --expected-champion-version "$CURRENT_VER"
    ```
 3. **Inspect comparison report**:
    - Check printed summary table and `reports/compare_<YYYYMMDD>.json`.

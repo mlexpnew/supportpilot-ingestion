@@ -1,5 +1,5 @@
 {
-  "date": "2026-10-27T05:43:30.380562+00:00",
+  "date": "2026-10-27T06:14:14.361390+00:00",
   "eval_dataset": "data/eval_frozen.jsonl",
   "eval_samples": 60,
   "champion": {

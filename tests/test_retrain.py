@@ -18,6 +18,7 @@ import collections
 import json
 from pathlib import Path
 import re
+from typing import Any
 import pytest
 
 from supportpilot.triage import LABELS
@@ -40,10 +41,13 @@ def test_bump_model_version_minor() -> None:
     assert bumped == "triage-v1.1.0-20261027"
 
 
-def test_bump_model_version_when_champion_none() -> None:
-    """Verify default version bumps to v1.1.0-YYYYMMDD when no champion version provided."""
-    bumped = bump_model_version(None, "20261027")
-    assert bumped == "triage-v1.1.0-20261027"
+def test_bump_model_version_when_champion_none_raises_value_error() -> None:
+    """Verify bump_model_version fails fast when champion version is missing or empty."""
+    with pytest.raises(ValueError, match="Champion version is required"):
+        bump_model_version(None, "20261027")
+
+    with pytest.raises(ValueError, match="Champion version is required"):
+        bump_model_version("   ", "20261027")
 
 
 def test_bump_model_version_subsequent_retrain() -> None:
@@ -225,7 +229,7 @@ def test_verify_eval_frozen_isolation_detects_data_leak(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="Data leakage detected.*EV-LEAK-1"):
         verify_eval_frozen_isolation(train_leak_id, eval_file)
 
-    # 2. Leaked body text
+    # 2. Leaked body text (exact match)
     train_leak_text = tmp_path / "train_leak_text.jsonl"
     train_leak_text.write_text(
         json.dumps(
@@ -236,9 +240,37 @@ def test_verify_eval_frozen_isolation_detects_data_leak(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="Data leakage detected.*ticket text"):
         verify_eval_frozen_isolation(train_leak_text, eval_file)
 
+    # 3. Leaked body text with different casing and collapsed whitespace
+    train_leak_norm = tmp_path / "train_leak_norm.jsonl"
+    train_leak_norm.write_text(
+        json.dumps(
+            {
+                "ticket_id": "TR-1000",
+                "body": "   where   is   MY   parcel?  \n",
+                "label": "delivery",
+            }
+        )
+        + "\n"
+    )
+    with pytest.raises(RuntimeError, match="Data leakage detected.*ticket text"):
+        verify_eval_frozen_isolation(train_leak_norm, eval_file)
+
+
+def test_verify_eval_frozen_isolation_missing_files_fails_fast(tmp_path: Path) -> None:
+    """Verify verify_eval_frozen_isolation fails fast on missing datasets."""
+    missing_train = tmp_path / "nonexistent_train.jsonl"
+    missing_eval = tmp_path / "nonexistent_eval.jsonl"
+    real_eval = Path("data/eval_frozen.jsonl")
+
+    with pytest.raises(FileNotFoundError, match="Training dataset not found"):
+        verify_eval_frozen_isolation(missing_train, real_eval)
+
+    with pytest.raises(FileNotFoundError, match="Frozen evaluation dataset not found"):
+        verify_eval_frozen_isolation("data/triage_labeled.jsonl", missing_eval)
+
 
 # =====================================================================
-# 4. End-to-End Retraining and Champion Protection Tests
+# 4. End-to-End Retraining, Champion Invariants & Expected Version Tests
 # =====================================================================
 
 
@@ -282,3 +314,97 @@ def test_retrain_pipeline_never_overwrites_champion(tmp_path: Path) -> None:
     assert "challenger" in report_data
     assert "decision" in report_data
     assert "eval_dataset" in report_data
+
+
+def test_retrain_missing_champion_fails_fast(tmp_path: Path) -> None:
+    """Verify missing champion file raises FileNotFoundError instead of inventing a baseline."""
+    missing_champ = tmp_path / "nonexistent_champion.joblib"
+    out_dir = tmp_path / "models"
+
+    with pytest.raises(
+        FileNotFoundError, match="Refusing to invent an unverified baseline champion"
+    ):
+        retrain_pipeline(
+            base_dataset="data/triage_labeled.jsonl",
+            output_dir=out_dir,
+            eval_dataset="data/eval_frozen.jsonl",
+            champion_path=missing_champ,
+        )
+
+
+def test_retrain_unversioned_champion_fails_fast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify champion with missing version metadata fails fast."""
+    import joblib
+    from supportpilot.triage.model import train_model, TriageClassifier
+
+    champ_file = tmp_path / "broken_champion.joblib"
+    train_model("data/triage_labeled.jsonl", save_path=champ_file, version="1.0.0")
+    classifier = TriageClassifier.load(champ_file)
+
+    # 1. Missing version in serialized file raises ValueError on load
+    joblib.dump(
+        {"pipeline": classifier.pipeline, "metadata": {"labels": list(LABELS)}},
+        champ_file,
+    )
+    out_dir = tmp_path / "models"
+    with pytest.raises(ValueError, match="Missing 'version' in model file"):
+        retrain_pipeline(
+            base_dataset="data/triage_labeled.jsonl",
+            output_dir=out_dir,
+            eval_dataset="data/eval_frozen.jsonl",
+            champion_path=champ_file,
+        )
+
+    # 2. Champion object with empty version string fails fast in retrain_pipeline
+    def mock_load(path: Any) -> Any:
+        classifier.version = ""
+        return classifier
+
+    monkeypatch.setattr(TriageClassifier, "load", mock_load)
+    with pytest.raises(ValueError, match="missing a version in its metadata"):
+        retrain_pipeline(
+            base_dataset="data/triage_labeled.jsonl",
+            output_dir=out_dir,
+            eval_dataset="data/eval_frozen.jsonl",
+            champion_path=champ_file,
+        )
+
+
+def test_retrain_expected_champion_version_check(tmp_path: Path) -> None:
+    """Verify --expected-champion-version succeeds on match and aborts on mismatch."""
+    champ_file = tmp_path / "triage_model.joblib"
+    out_dir = tmp_path / "models"
+    reports_dir = tmp_path / "reports"
+
+    from supportpilot.triage.model import train_model, TriageClassifier
+
+    train_model("data/triage_labeled.jsonl", save_path=champ_file, version="1.0.0")
+    loaded = TriageClassifier.load(champ_file)
+    actual_version = loaded.version
+    assert actual_version is not None
+
+    # Mismatch must fail fast
+    with pytest.raises(
+        ValueError, match="Champion version mismatch: expected 'triage-v1.0.0-20261023'"
+    ):
+        retrain_pipeline(
+            base_dataset="data/triage_labeled.jsonl",
+            output_dir=out_dir,
+            eval_dataset="data/eval_frozen.jsonl",
+            champion_path=champ_file,
+            reports_dir=reports_dir,
+            expected_champion_version="triage-v1.0.0-20261023",
+        )
+
+    # Match must succeed
+    results = retrain_pipeline(
+        base_dataset="data/triage_labeled.jsonl",
+        output_dir=out_dir,
+        eval_dataset="data/eval_frozen.jsonl",
+        champion_path=champ_file,
+        reports_dir=reports_dir,
+        expected_champion_version=actual_version,
+    )
+    assert results["champion_version"] == actual_version
