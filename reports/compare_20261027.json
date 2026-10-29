@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-27T06:14:14.361390+00:00",
+  "eval_dataset": "data/eval_frozen.jsonl",
+  "eval_samples": 60,
+  "champion": {
+    "version": "triage-v1.0.0-20261022",
+    "path": "models/triage_model.joblib",
+    "macro_f1": 0.9666,
+    "macro_recall": 0.9667,
+    "macro_precision": 0.9697,
+    "needs_review_rate": 0.35,
+    "per_label_recall": {
+      "delivery": 0.9,
+      "billing": 1.0,
+      "refund": 0.9,
+      "cancellation": 1.0,
+      "account": 1.0,
+      "other": 1.0
+    }
+  },
+  "challenger": {
+    "version": "triage-v1.1.0-20261027",
+    "path": "models/triage-v1.1.0-20261027.joblib",
+    "macro_f1": 0.9666,
+    "macro_recall": 0.9667,
+    "macro_precision": 0.9697,
+    "needs_review_rate": 0.35,
+    "per_label_recall": {
+      "delivery": 0.9,
+      "billing": 1.0,
+      "refund": 0.9,
+      "cancellation": 1.0,
+      "account": 1.0,
+      "other": 1.0
+    }
+  },
+  "comparison": {
+    "f1_improvement": 0.0,
+    "f1_improved": false,
+    "no_recall_regressed": true,
+    "regressed_labels": [],
+    "per_label_recall_diff": {
+      "delivery": 0.0,
+      "billing": 0.0,
+      "refund": 0.0,
+      "cancellation": 0.0,
+      "account": 0.0,
+      "other": 0.0
+    }
+  },
+  "decision": {
+    "promoted": false,
+    "winner": "champion",
+    "reasons": [
+      "Macro F1 improvement (+0.0000) is below required threshold (+0.0200)",
+      "No label recall dropped by more than 5.00%"
+    ]
+  }
+}

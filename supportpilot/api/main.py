@@ -25,7 +25,7 @@ from supportpilot.api.alerts import (
     evaluate_alerts,
     get_alert_thresholds,
 )
-from supportpilot.api.models import MetricsResponse
+from supportpilot.api.models import MetricsResponse, VersionResponse
 from supportpilot.feedback import (
     MAX_ID_LENGTH,
     FeedbackRequest,
@@ -52,6 +52,7 @@ REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 EXCLUDED_METRIC_PATHS: set[str] = {
     "/health",
+    "/version",
     "/alerts",
     "/metrics",
     "/metrics/labels",
@@ -71,6 +72,18 @@ class Counters:
     total_latency_ms: float = 0.0
     needs_review_total: int = 0
     rate_limited_total: int = 0
+
+
+def get_git_sha() -> str:
+    """Resolve Git commit SHA: check RENDER_GIT_COMMIT first, then GIT_SHA, else 'unknown'.
+
+    Returns the first 7 characters if known, or 'unknown'.
+    """
+    raw_sha = os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_SHA") or "unknown"
+    raw_sha = raw_sha.strip()
+    if not raw_sha or raw_sha == "unknown":
+        return "unknown"
+    return raw_sha[:7]
 
 
 def get_model_path() -> Path:
@@ -290,12 +303,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.api_keys = get_api_keys()
     app.state.rate_limits = {}
     app.state.alert_thresholds = get_alert_thresholds()
+    app.state.started_at = datetime.now(timezone.utc).isoformat()
     yield
     app.state.model = None
     app.state.threshold = None
     app.state.api_keys = set()
     app.state.rate_limits = {}
     app.state.alert_thresholds = None
+    app.state.started_at = None
     if getattr(app.state, "feedback_store", None) is not None:
         app.state.feedback_store.close()
     app.state.feedback_store = None
@@ -314,6 +329,7 @@ app.state.api_keys = set()
 app.state.rate_limits = {}
 app.state.feedback_store = None
 app.state.alert_thresholds = None
+app.state.started_at = None
 
 
 @app.middleware("http")
@@ -391,6 +407,23 @@ def health(req: Request) -> dict[str, object]:
         "model_loaded": model is not None,
         "model_version": version,
     }
+
+
+@app.get(
+    "/version",
+    response_model=VersionResponse,
+)
+def get_version(req: Request) -> VersionResponse:
+    """Return Git commit SHA, active model version, and startup timestamp (public)."""
+    model = getattr(req.app.state, "model", None)
+    model_version = getattr(model, "version", None) if model is not None else None
+    git_sha = get_git_sha()
+    started_at = getattr(req.app.state, "started_at", None)
+    return VersionResponse(
+        git_sha=git_sha,
+        model_version=model_version,
+        started_at=started_at,
+    )
 
 
 @app.get(

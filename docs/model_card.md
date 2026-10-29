@@ -135,3 +135,13 @@ Automated triage must not misroute ambiguous tickets silently. The model incorpo
 1. **PII Safety**: The classifier is trained exclusively on PII-redacted text. Downstream callers must route tickets through `supportpilot.preprocessing` (SP-102) to sanitize credit cards, phone numbers, and email addresses prior to classification.
 2. **Script Limitations**: The baseline model supports English and Romanized Hindi (Hinglish). Tickets submitted in non-Latin scripts (Devanagari, Tamil, etc.) require upstream language identification and transliteration.
 3. **Data Drift**: New marketing campaigns, seasonal coupon codes, or carrier partnerships may introduce unmodeled tokens. Monthly re-training or threshold monitoring is recommended.
+
+---
+
+## 8. Model History
+
+| Version | Date | Data Size | Macro F1 | Notes |
+|---|---|---|---|---|
+| `triage-v1.0.0-20261022` | 2026-10-22 | 180 | 0.8471 | Baseline production champion model trained on initial labeled dataset (`data/triage_labeled.jsonl`). |
+| `triage-v1.1.0-20261027` | 2026-10-27 | 180 | 0.9666 | First challenger candidate evaluated on sacred frozen evaluation set (`data/eval_frozen.jsonl`). |
+
