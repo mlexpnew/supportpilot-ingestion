@@ -25,6 +25,7 @@ from supportpilot.triage import LABELS
 from supportpilot.triage.retrain import (
     bump_model_version,
     evaluate_promotion_rule,
+    main,
     retrain_pipeline,
     verify_eval_frozen_isolation,
 )
@@ -408,3 +409,48 @@ def test_retrain_expected_champion_version_check(tmp_path: Path) -> None:
         expected_champion_version=actual_version,
     )
     assert results["champion_version"] == actual_version
+
+
+def test_retrain_warns_loudly_when_expected_champion_version_missing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Verify retrain_pipeline logs a loud safety warning when expected_champion_version is omitted."""
+    champ_file = tmp_path / "triage_model.joblib"
+    out_dir = tmp_path / "models"
+    reports_dir = tmp_path / "reports"
+
+    from supportpilot.triage.model import train_model
+    import logging
+
+    train_model("data/triage_labeled.jsonl", save_path=champ_file, version="1.0.0")
+
+    with caplog.at_level(logging.WARNING):
+        retrain_pipeline(
+            base_dataset="data/triage_labeled.jsonl",
+            output_dir=out_dir,
+            eval_dataset="data/eval_frozen.jsonl",
+            champion_path=champ_file,
+            reports_dir=reports_dir,
+            expected_champion_version=None,
+        )
+    assert "SAFETY WARNING: 'expected_champion_version' is missing!" in caplog.text
+
+
+def test_cli_requires_expected_champion_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify CLI fails fast when --expected-champion-version is not provided."""
+    import sys
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "retrain",
+            "--base",
+            "data/triage_labeled.jsonl",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 2

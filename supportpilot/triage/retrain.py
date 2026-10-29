@@ -1,7 +1,7 @@
 """Retraining pipeline with Champion/Challenger evaluation and promotion (SP-113).
 
 Usage:
-    python -m supportpilot.triage.retrain --base data/triage_labeled.jsonl --feedback data/feedback_export.jsonl --pilot data/sample_tickets.jsonl --out models/
+    python -m supportpilot.triage.retrain --base data/triage_labeled.jsonl --feedback data/feedback_export.jsonl --pilot data/sample_tickets.jsonl --out models/ --expected-champion-version "$CURRENT_VER"
 """
 
 from __future__ import annotations
@@ -426,10 +426,12 @@ def retrain_pipeline(
                 "Corrupt or unversioned champion."
             )
 
-        if (
-            expected_champion_version
-            and champion_version != expected_champion_version.strip()
-        ):
+        if not expected_champion_version or not expected_champion_version.strip():
+            logger.warning(
+                "SAFETY WARNING: 'expected_champion_version' is missing! "
+                "Retraining without verifying against the production champion version is dangerous."
+            )
+        elif champion_version != expected_champion_version.strip():
             raise ValueError(
                 f"Champion version mismatch: expected '{expected_champion_version.strip()}' "
                 f"(copied from production /version), but champion model at '{champ_p}' "
@@ -602,7 +604,7 @@ def main() -> int:
     parser.add_argument(
         "--expected-champion-version",
         type=str,
-        default=None,
+        required=True,
         help="Expected model version of production champion (copied from /version). Retraining aborts on mismatch.",
     )
 

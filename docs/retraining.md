@@ -15,7 +15,7 @@ This runbook outlines when to retrain the triage classifier, how to execute the 
 
 ## 2. How to Run the Retraining Pipeline
 
-The retraining CLI executes feedback export, join, challenger training, version bumping, and fair evaluation on the frozen evaluation set in a single command. Always pass `--expected-champion-version` (obtained from production `GET /version`) to ensure the comparison uses the exact model that production is serving.
+The retraining CLI executes feedback export, join, challenger training, version bumping, and fair evaluation on the frozen evaluation set in a single command. The `--expected-champion-version` flag (obtained from production `GET /version`) is required to ensure the comparison uses the exact model that production is serving (safety checks that can be skipped get skipped).
 
 ```bash
 # 1. Fetch active production model version from /version endpoint
@@ -88,6 +88,9 @@ The promotion decision follows Rohan's strict fair test rule:
 - **`PROMOTED`**: Both criteria satisfied. The challenger is proven superior and safe to deploy.
 - **`REJECTED` (Sub-threshold improvement)**: Macro F1 improved by less than +0.02 (or tie). The model change is within noise threshold. Champion is retained.
 - **`REJECTED` (Per-label regression)**: Macro F1 improved overall, but one category suffered a $> 5.0\%$ recall drop. Champion is retained to prevent category-specific regressions.
+
+> [!NOTE]
+> **Identical Scores in Initial Runs**: Champion and challenger currently tie with identical metrics because no real human feedback or new pilot data has been incorporated yet, training both models on the same underlying baseline data. This is expected behavior and does not mean the pipeline is broken; evaluation scores will diverge once verified agent corrections are joined.
 
 ---
 
