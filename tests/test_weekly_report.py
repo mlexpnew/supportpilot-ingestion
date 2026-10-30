@@ -306,6 +306,19 @@ def test_generate_weekly_report_writes_file_and_cli(
     code = main()
     assert code == 0
 
+    # Also test CLI default dates (omitting --from and --to)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "weekly.py",
+            "--out",
+            str(out_dir),
+        ],
+    )
+    code_default = main()
+    assert code_default == 0
+
     store.close()
 
 

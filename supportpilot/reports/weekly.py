@@ -7,6 +7,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime, timedelta
 import logging
 from pathlib import Path
 
@@ -400,6 +401,10 @@ def generate_weekly_report(
 
 def main() -> int:
     """CLI entrypoint for weekly pilot report generation."""
+    now = datetime.now(UTC)
+    default_to = now.strftime("%Y-%m-%d")
+    default_from = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+
     parser = argparse.ArgumentParser(
         description="Generate SupportPilot weekly pilot report (SP-114 Part B)."
     )
@@ -407,15 +412,15 @@ def main() -> int:
         "--from",
         dest="from_date",
         type=str,
-        required=True,
-        help="Start date in YYYY-MM-DD format (e.g. 2026-10-26)",
+        default=default_from,
+        help=f"Start date in YYYY-MM-DD format (default: 7 days ago, {default_from})",
     )
     parser.add_argument(
         "--to",
         dest="to_date",
         type=str,
-        required=True,
-        help="End date in YYYY-MM-DD format (e.g. 2026-11-01)",
+        default=default_to,
+        help=f"End date in YYYY-MM-DD format (default: today, {default_to})",
     )
     parser.add_argument(
         "--out",

@@ -134,7 +134,7 @@ def create_feedback_engine(
     if db_path is not None:
         return _sqlite_engine(db_path), "sqlite"
 
-    env_url = os.getenv("DATABASE_URL")
+    env_url = os.getenv("REPORT_DATABASE_URL") or os.getenv("DATABASE_URL")
     if env_url is not None and env_url.strip():
         norm_url = normalize_database_url(env_url)
         engine = create_engine(norm_url, pool_size=5, pool_pre_ping=True)
@@ -151,7 +151,7 @@ def create_feedback_engine(
     )
     if not allow_fallback:
         raise RuntimeError(
-            "DATABASE_URL is not set and SQLite fallback is disabled. "
+            "DATABASE_URL or REPORT_DATABASE_URL is not set and SQLite fallback is disabled. "
             "Set DATABASE_URL to a valid database connection string, "
             "or set ALLOW_SQLITE_FALLBACK=1 for local development."
         )
