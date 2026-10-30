@@ -593,36 +593,31 @@ class FeedbackStore:
         else:
             start_str = str(start).strip()
 
-        end_is_exclusive = False
         if isinstance(end, datetime):
             end_str = end.isoformat()
         elif isinstance(end, date_type):
             next_day = end + timedelta(days=1)
             end_str = next_day.isoformat()
-            end_is_exclusive = True
         else:
             end_clean = str(end).strip()
             if len(end_clean) == 10:  # YYYY-MM-DD
                 parsed_d = datetime.strptime(end_clean, "%Y-%m-%d").date()
                 next_day = parsed_d + timedelta(days=1)
                 end_str = next_day.isoformat()
-                end_is_exclusive = True
             else:
                 end_str = end_clean
 
-        # Predictions filter
-        pred_where = [self.predictions.c.created_at >= start_str]
-        if end_is_exclusive:
-            pred_where.append(self.predictions.c.created_at < end_str)
-        else:
-            pred_where.append(self.predictions.c.created_at <= end_str)
+        # Predictions filter: start inclusive, end exclusive
+        pred_where = [
+            self.predictions.c.created_at >= start_str,
+            self.predictions.c.created_at < end_str,
+        ]
 
-        # Feedback filter
-        fb_where = [self.feedback.c.created_at >= start_str]
-        if end_is_exclusive:
-            fb_where.append(self.feedback.c.created_at < end_str)
-        else:
-            fb_where.append(self.feedback.c.created_at <= end_str)
+        # Feedback filter: start inclusive, end exclusive
+        fb_where = [
+            self.feedback.c.created_at >= start_str,
+            self.feedback.c.created_at < end_str,
+        ]
 
         with self.engine.connect() as conn:
             # 2. Prediction aggregates: per-label count and needs_review tracking

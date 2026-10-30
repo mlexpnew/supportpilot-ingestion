@@ -109,6 +109,7 @@ Actionable next steps based on pilot metrics:
 
 ## 6. Limitations & Operational Caveats
 
-1. **Feedback Lag**: Live accuracy reflects only tickets that human agents have inspected and submitted feedback for. If agents do not submit feedback for a batch of tickets, accuracy reflects only the verified subset.
-2. **Cold-Start Bias**: During early pilot days or low volume periods, a single misclassification can skew raw ratios. Always rely on the sample size annotations (`n=X`) and minimum thresholds before deciding to retrain or adjust cutoffs.
-3. **Time Zone Boundaries**: Production database timestamps are stored in UTC (ISO 8601). While daily aggregates are grouped by UTC calendar date, reports clearly annotate the IST conversion offset (+5:30) for India-based operational teams.
+1. **In-Memory Metrics Excluded (Persistent Storage Only)**: The report queries persistent PostgreSQL tables (`predictions` and `feedback`) directly. It deliberately excludes the volatile in-memory counters served by `GET /metrics`, which reset to zero on container restarts or during Render free-tier cold starts. This ensures consistent historical accounting across deployments.
+2. **Feedback Lag**: Live accuracy reflects only tickets that human agents have inspected and submitted feedback for. If agents do not submit feedback for a batch of tickets, accuracy reflects only the verified subset.
+3. **Cold-Start Bias**: During early pilot days or low volume periods, a single misclassification can skew raw ratios. Always rely on the sample size annotations (`n=X`) and minimum thresholds before deciding to retrain or adjust cutoffs.
+4. **Time Zone Boundaries**: Production database timestamps are stored in UTC (ISO 8601). While daily aggregates are grouped by UTC calendar date, reports clearly annotate the IST conversion offset (+5:30) for India-based operational teams.

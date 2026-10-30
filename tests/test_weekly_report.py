@@ -407,3 +407,116 @@ def test_generate_charts_output(tmp_path: Path) -> None:
     assert "per_label_recall" in chart_dict
     assert (tmp_path / "bundled" / chart_dict["daily_volume"]).exists()
     assert (tmp_path / "bundled" / chart_dict["per_label_recall"]).exists()
+
+
+def test_seeded_db_exact_counts_recall_version_list_and_no_pii(
+    tmp_path: Path,
+) -> None:
+    """Verify seeded DB produces exact counts, recall, model versions list, and zero PII."""
+    db_file = tmp_path / "test_seeded_pilot.db"
+    init_db(db_file)
+    store = FeedbackStore(db_file)
+
+    try:
+        # Seed 30 predictions across 3 distinct model versions:
+        # 10 delivery with v1.0.0
+        for i in range(10):
+            store.save_prediction(
+                ticket_id=f"T-PII-SECRET-{i:03d}",
+                predicted_label="delivery",
+                confidence=0.95,
+                model_version="v1.0.0",
+                created_at=f"2026-10-26T10:{i:02d}:00+00:00",
+                needs_review=False,
+            )
+
+        # 10 billing with v1.1.0 (5 high conf, 5 low conf needs_review)
+        for i in range(10):
+            store.save_prediction(
+                ticket_id=f"T-PII-SECRET-{i + 10:03d}",
+                predicted_label="billing",
+                confidence=0.35 if i < 5 else 0.88,
+                model_version="v1.1.0",
+                created_at=f"2026-10-27T10:{i:02d}:00+00:00",
+                needs_review=(i < 5),
+            )
+
+        # 10 refund with v1.2.0
+        for i in range(10):
+            store.save_prediction(
+                ticket_id=f"T-PII-SECRET-{i + 20:03d}",
+                predicted_label="refund",
+                confidence=0.90,
+                model_version="v1.2.0",
+                created_at=f"2026-10-28T10:{i:02d}:00+00:00",
+                needs_review=False,
+            )
+
+        # Seed 25 verified feedback records (meets >= 20 threshold):
+        # 10 delivery feedback: 9 agreed, 1 disagreed -> recall 0.90
+        for i in range(10):
+            store.save_feedback(
+                ticket_id=f"T-PII-SECRET-{i:03d}",
+                correct_label="delivery" if i < 9 else "other",
+                agent_id="AG-100",
+                created_at="2026-10-29T10:00:00+00:00",
+            )
+
+        # 10 billing feedback: 8 agreed, 2 disagreed -> recall 0.80
+        for i in range(10):
+            store.save_feedback(
+                ticket_id=f"T-PII-SECRET-{i + 10:03d}",
+                correct_label="billing" if i < 8 else "account",
+                agent_id="AG-100",
+                created_at="2026-10-29T11:00:00+00:00",
+            )
+
+        # 5 refund feedback: 5 agreed -> recall 1.00
+        for i in range(5):
+            store.save_feedback(
+                ticket_id=f"T-PII-SECRET-{i + 20:03d}",
+                correct_label="refund",
+                agent_id="AG-100",
+                created_at="2026-10-29T12:00:00+00:00",
+            )
+
+        # Generate report
+        out_dir = tmp_path / "reports"
+        report_file, content = generate_weekly_report(
+            from_date="2026-10-26",
+            to_date="2026-11-01",
+            output_path=out_dir,
+            store=store,
+        )
+
+        assert report_file.exists()
+
+        # 1. Assert exact counts
+        assert "- **Total Tickets Triaged**: 30" in content
+        assert "- **Total Human Feedback Records**: 25" in content
+        assert "- **Agent Agreed**: 22" in content  # 9 + 8 + 5 = 22
+        assert "needs_review`)**: 5 tickets (16.7%)" in content
+
+        # 2. Assert live accuracy
+        assert "88.0%" in content  # 22 / 25 = 88.0%
+
+        # 3. Assert exact model version list (all 3 versions listed)
+        assert "`v1.0.0`" in content
+        assert "`v1.1.0`" in content
+        assert "`v1.2.0`" in content
+
+        # 4. Assert per-label recall with sample sizes
+        assert "1.00 (n=9)" in content  # delivery (9 agreed out of 9 ground-truth)
+        assert "1.00 (n=8)" in content  # billing (8 agreed out of 8 ground-truth)
+        assert "1.00 (n=5)" in content  # refund (5 agreed out of 5 ground-truth)
+        assert (
+            "Not enough data (n=2)" in content
+        )  # account (2 ground-truth samples < 5)
+        assert "Not enough data (n=1)" in content  # other (1 ground-truth sample < 5)
+
+        # 5. Zero-PII Invariant: No ticket IDs or customer text in the output
+        assert "T-PII-SECRET" not in content
+        assert "T-" not in content
+        assert "AG-100" not in content
+    finally:
+        store.close()

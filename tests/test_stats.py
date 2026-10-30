@@ -299,6 +299,62 @@ def test_get_stats_date_boundaries_inclusive_and_exclusive(tmp_path: Path) -> No
         store.close()
 
 
+def test_get_stats_start_inclusive_end_exclusive(tmp_path: Path) -> None:
+    """Verify get_stats strictly includes start timestamp (>=) and excludes end timestamp (<)."""
+    db_file = tmp_path / "test_start_inc_end_exc.db"
+    init_db(db_file)
+    store = FeedbackStore(db_file)
+
+    try:
+        # Row 1: Exactly at start boundary (2026-10-26T00:00:00+00:00) -> INCLUDED
+        store.save_prediction(
+            "T-START-EXACT",
+            "delivery",
+            0.9,
+            "v1",
+            created_at="2026-10-26T00:00:00+00:00",
+        )
+        # Row 2: Mid-range ticket -> INCLUDED
+        store.save_prediction(
+            "T-MID",
+            "billing",
+            0.9,
+            "v1",
+            created_at="2026-10-28T12:00:00+00:00",
+        )
+        # Row 3: Exactly at end boundary (2026-11-01T00:00:00+00:00) -> EXCLUDED
+        store.save_prediction(
+            "T-END-EXACT",
+            "refund",
+            0.9,
+            "v1",
+            created_at="2026-11-01T00:00:00+00:00",
+        )
+
+        # Test with timestamp strings: start inclusive, end exclusive
+        stats = store.get_stats(
+            "2026-10-26T00:00:00+00:00",
+            "2026-11-01T00:00:00+00:00",
+        )
+
+        assert stats.total_triaged == 2
+        assert stats.predictions_by_label["delivery"] == 1
+        assert stats.predictions_by_label["billing"] == 1
+        assert stats.predictions_by_label["refund"] == 0
+
+        # Test with datetime objects: start inclusive, end exclusive
+        stats_dt = store.get_stats(
+            datetime(2026, 10, 26, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 11, 1, 0, 0, 0, tzinfo=timezone.utc),
+        )
+        assert stats_dt.total_triaged == 2
+        assert stats_dt.predictions_by_label["delivery"] == 1
+        assert stats_dt.predictions_by_label["billing"] == 1
+        assert stats_dt.predictions_by_label["refund"] == 0
+    finally:
+        store.close()
+
+
 def test_triage_api_persists_needs_review(auth_headers: dict[str, str]) -> None:
     """Verify POST /triage persists needs_review value into predictions table."""
     from supportpilot.api.main import app
