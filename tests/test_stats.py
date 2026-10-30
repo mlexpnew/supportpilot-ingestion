@@ -334,3 +334,65 @@ def test_triage_api_persists_needs_review(auth_headers: dict[str, str]) -> None:
         assert saved2 is not None
         assert saved2["needs_review"] == data2["needs_review"]
         assert saved2["needs_review"] is True
+
+
+def test_get_stats_null_needs_review_excluded_from_rate(tmp_path: Path) -> None:
+    """Verify historical rows with NULL needs_review are excluded from review rate."""
+    db_file = tmp_path / "test_null_nr.db"
+    init_db(db_file)
+    store = FeedbackStore(db_file)
+
+    try:
+        # 1. Old historical row (pre-migration / untracked): needs_review is None
+        store.save_prediction(
+            ticket_id="T-OLD-1",
+            predicted_label="delivery",
+            confidence=0.9,
+            model_version="v1",
+            created_at="2026-10-26T10:00:00+00:00",
+            needs_review=None,
+        )
+        store.save_prediction(
+            ticket_id="T-OLD-2",
+            predicted_label="billing",
+            confidence=0.8,
+            model_version="v1",
+            created_at="2026-10-27T10:00:00+00:00",
+            needs_review=None,
+        )
+
+        # 2. New rows where needs_review was tracked (starting 2026-10-29)
+        # 2 tracked rows: 1 flagged (needs_review=True), 1 not flagged (needs_review=False)
+        store.save_prediction(
+            ticket_id="T-NEW-1",
+            predicted_label="delivery",
+            confidence=0.3,
+            model_version="v1",
+            created_at="2026-10-29T11:00:00+00:00",
+            needs_review=True,
+        )
+        store.save_prediction(
+            ticket_id="T-NEW-2",
+            predicted_label="refund",
+            confidence=0.95,
+            model_version="v1",
+            created_at="2026-10-30T12:00:00+00:00",
+            needs_review=False,
+        )
+
+        stats = store.get_stats("2026-10-26", "2026-11-01")
+
+        # Total tickets triaged = 4 (2 old + 2 new)
+        assert stats.total_triaged == 4
+
+        # Tracked tickets = 2 (only the new ones)
+        assert stats.needs_review_tracked == 2
+        assert stats.needs_review_count == 1
+
+        # Review rate must be 1 / 2 = 50.0% (NOT 1 / 4 = 25.0%)
+        assert stats.needs_review_rate == 0.50
+
+        # First tracked date is 2026-10-29
+        assert stats.first_tracked_date == "2026-10-29"
+    finally:
+        store.close()

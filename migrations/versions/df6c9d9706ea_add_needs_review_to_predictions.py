@@ -26,8 +26,7 @@ def upgrade() -> None:
             sa.Column(
                 "needs_review",
                 sa.Boolean(),
-                nullable=False,
-                server_default=sa.false(),
+                nullable=True,
             )
         )
 

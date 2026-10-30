@@ -10,14 +10,14 @@ import argparse
 import logging
 from pathlib import Path
 
+from supportpilot.api.alerts import get_alert_thresholds
 from supportpilot.feedback.models import DateRangeStats
 from supportpilot.feedback.store import FeedbackStore, get_feedback_store
 from supportpilot.triage import LABELS
 
 logger = logging.getLogger(__name__)
 
-MIN_FEEDBACK_THRESHOLD: int = 20
-MIN_TRIAGE_THRESHOLD: int = 20
+MIN_LABEL_SAMPLES: int = 5
 
 
 def render_markdown(
@@ -33,6 +33,10 @@ def render_markdown(
     Zero PII (aggregates only).
     """
     charts = chart_paths or {}
+    thresholds = get_alert_thresholds()
+    min_feedback = thresholds.min_feedback
+    min_triage = thresholds.min_triage
+
     versions_str = (
         ", ".join(f"`{v}`" for v in stats.model_versions)
         if stats.model_versions
@@ -41,11 +45,11 @@ def render_markdown(
 
     # 1. Summary: 3 bullets answering "is it working?"
     # Bullet 1: Accuracy verdict
-    if stats.feedback_total < MIN_FEEDBACK_THRESHOLD:
+    if stats.feedback_total < min_feedback:
         bullet_accuracy = (
             f"**Accuracy Verdict**: Not enough data to judge (only {stats.feedback_total} "
             f"feedback correction{'s' if stats.feedback_total != 1 else ''} collected; "
-            f"minimum {MIN_FEEDBACK_THRESHOLD} required to judge accuracy)."
+            f"minimum {min_feedback} required to judge accuracy)."
         )
     else:
         acc_pct = (
@@ -61,11 +65,11 @@ def render_markdown(
         )
 
     # Bullet 2: Volume & Automation
-    if stats.total_triaged < MIN_TRIAGE_THRESHOLD:
+    if stats.total_triaged < min_triage:
         bullet_volume = (
             f"**Operational Volume**: Not enough data to judge (only {stats.total_triaged} "
             f"ticket{'s' if stats.total_triaged != 1 else ''} triaged; "
-            f"minimum {MIN_TRIAGE_THRESHOLD} required for operational assessment)."
+            f"minimum {min_triage} required for operational assessment)."
         )
     else:
         bullet_volume = (
@@ -75,7 +79,7 @@ def render_markdown(
         )
 
     # Bullet 3: Weak spots & readiness
-    # Identify lowest recall label among those with feedback
+    # Identify lowest recall label among those with at least MIN_LABEL_SAMPLES feedback
     evaluated_labels = [
         (
             lbl,
@@ -83,10 +87,10 @@ def render_markdown(
             stats.per_label_feedback[lbl]["total"],
         )
         for lbl in LABELS
-        if stats.per_label_feedback.get(lbl, {}).get("total", 0) > 0
+        if stats.per_label_feedback.get(lbl, {}).get("total", 0) >= MIN_LABEL_SAMPLES
     ]
 
-    if stats.feedback_total < MIN_FEEDBACK_THRESHOLD:
+    if stats.feedback_total < min_feedback:
         bullet_weakspots = (
             "**Model Health & Focus**: Feedback volume is too thin to confirm category regressions; "
             "continue gathering verified agent corrections during pilot operations before drawing conclusions."
@@ -103,14 +107,14 @@ def render_markdown(
         )
     else:
         bullet_weakspots = (
-            "**Model Health & Focus**: All triaged categories operating normally "
-            "with zero reported misclassifications."
+            f"**Model Health & Focus**: No category has reached the minimum sample size (n >= {MIN_LABEL_SAMPLES}) "
+            "to identify specific weak spots; continue gathering verified feedback across categories."
         )
 
     lines: list[str] = [
         f"# SupportPilot Pilot Report: {stats.start} to {stats.end}",
         "",
-        f"- **Reporting Period**: {stats.start} to {stats.end}",
+        f"- **Reporting Period**: {stats.start} to {stats.end} (Days are in UTC; IST is UTC+5:30)",
         f"- **Model Version(s)**: {versions_str}",
         "",
         "---",
@@ -129,13 +133,13 @@ def render_markdown(
         f"- **Active Model Version(s)**: {versions_str}",
     ]
 
-    if stats.total_triaged < MIN_TRIAGE_THRESHOLD:
+    if stats.total_triaged < min_triage:
         lines.extend(
             [
-                f"- **Human Review Required (`needs_review`)**: {stats.needs_review_count} tickets (Not enough data to judge review rate; minimum {MIN_TRIAGE_THRESHOLD} tickets required)",
+                f"- **Human Review Required (`needs_review`)**: {stats.needs_review_count} tickets (Not enough data to judge review rate; minimum {min_triage} tickets required)",
                 "",
                 "> [!NOTE]",
-                f"> **Low Sample Size**: Only {stats.total_triaged} tickets triaged during this window (below the {MIN_TRIAGE_THRESHOLD}-ticket threshold). "
+                f"> **Low Sample Size**: Only {stats.total_triaged} tickets triaged during this window (below the {min_triage}-ticket threshold). "
                 "Traffic metrics represent early pilot activity rather than steady-state distribution.",
                 "",
             ]
@@ -144,6 +148,15 @@ def render_markdown(
         lines.extend(
             [
                 f"- **Human Review Required (`needs_review`)**: {stats.needs_review_count} tickets ({stats.needs_review_rate:.1%})",
+                "",
+            ]
+        )
+
+    if stats.needs_review_tracked < stats.total_triaged:
+        first_date_str = stats.first_tracked_date if stats.first_tracked_date else "N/A"
+        lines.extend(
+            [
+                f"Review rate based on {stats.needs_review_tracked} of {stats.total_triaged} tickets; tracking started {first_date_str}.",
                 "",
             ]
         )
@@ -170,7 +183,9 @@ def render_markdown(
                 "",
                 "### Daily Triage Volume",
                 "",
-                "| Date | Tickets Triaged |",
+                "Days are in UTC; IST is UTC+5:30.",
+                "",
+                "| Date (UTC) | Tickets Triaged |",
                 "| :--- | :--- |",
             ]
         )
@@ -197,14 +212,14 @@ def render_markdown(
         ]
     )
 
-    if stats.feedback_total < MIN_FEEDBACK_THRESHOLD:
+    if stats.feedback_total < min_feedback:
         lines.extend(
             [
-                f"- **Live Accuracy**: Not enough data to judge (only {stats.feedback_total} feedback corrections; minimum {MIN_FEEDBACK_THRESHOLD} required)",
+                f"- **Live Accuracy**: Not enough data to judge (only {stats.feedback_total} feedback corrections; minimum {min_feedback} required)",
                 "",
                 "> [!WARNING]",
                 f"> **Not Enough Data to Judge Accuracy**: Only {stats.feedback_total} feedback corrections recorded in this period. "
-                f"A minimum of {MIN_FEEDBACK_THRESHOLD} human corrections is required before accuracy metrics are statistically reliable. "
+                f"A minimum of {min_feedback} human corrections is required before accuracy metrics are statistically reliable. "
                 "Presenting preliminary percentages would be misleading.",
                 "",
             ]
@@ -241,26 +256,25 @@ def render_markdown(
         agr = info["agreed"]
         rec = info["recall"]
 
-        if tot == 0:
-            rec_display = "N/A"
-            assessment = "No feedback samples"
-        elif stats.feedback_total < MIN_FEEDBACK_THRESHOLD:
-            rec_display = "Not enough data to judge"
-            assessment = f"Thin data ({tot} sample{'s' if tot != 1 else ''})"
+        if tot < MIN_LABEL_SAMPLES:
+            rec_display = f"Not enough data (n={tot})"
+            assessment = f"Thin data (n={tot})"
         else:
-            rec_display = f"{rec:.1%}" if rec is not None else "0.0%"
+            rec_display = (
+                f"{rec:.2f} (n={tot})" if rec is not None else f"0.00 (n={tot})"
+            )
             assessment = "Pass (>= 75%)" if (rec or 0) >= 0.75 else "Degraded (< 75%)"
 
         lines.append(f"| `{lbl}` | {tot} | {agr} | {rec_display} | {assessment} |")
 
     lines.append("")
 
-    if stats.feedback_total < MIN_FEEDBACK_THRESHOLD:
+    if stats.feedback_total < min_feedback:
         lines.extend(
             [
                 "> [!NOTE]",
                 f"> Category-level recall numbers are withheld because overall feedback volume ({stats.feedback_total}) "
-                f"is below the statistical minimum of {MIN_FEEDBACK_THRESHOLD}. Individual misclassifications at this stage "
+                f"is below the statistical minimum of {min_feedback}. Individual misclassifications at this stage "
                 "represent anecdotal samples rather than systematic failure modes.",
                 "",
             ]
@@ -273,6 +287,14 @@ def render_markdown(
                 f"The model struggles most with `{weakest_label}` where recall is **{rec_str}** "
                 f"across {weakest_tot} verified tickets. Tickets in this category often contain cross-boundary overlap "
                 "or ambiguous customer phrasing.",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "> [!NOTE]",
+                f"> No category currently has >= {MIN_LABEL_SAMPLES} ground-truth samples to reliably identify systematic weak spots.",
                 "",
             ]
         )
@@ -294,11 +316,11 @@ def render_markdown(
         ]
     )
 
-    if stats.feedback_total < MIN_FEEDBACK_THRESHOLD:
+    if stats.feedback_total < min_feedback:
         lines.append(
-            f"1. **Accelerate Feedback Collection**: We have collected {stats.feedback_total}/{MIN_FEEDBACK_THRESHOLD} "
+            f"1. **Accelerate Feedback Collection**: We have collected {stats.feedback_total}/{min_feedback} "
             "corrections. Instruct pilot agents to continue reviewing ambiguous tickets so the feedback sample reaches "
-            "the 20-sample mark for statistically valid evaluation."
+            f"the {min_feedback}-sample mark for statistically valid evaluation."
         )
     else:
         if (stats.live_accuracy or 0) < 0.80:
@@ -312,7 +334,7 @@ def render_markdown(
                 "Continue weekly tracking to detect category drift."
             )
 
-    if stats.total_triaged >= MIN_TRIAGE_THRESHOLD and stats.needs_review_rate > 0.25:
+    if stats.total_triaged >= min_triage and stats.needs_review_rate > 0.25:
         lines.append(
             f"2. **Calibrate Confidence Cutoff**: The human review rate is currently {stats.needs_review_rate:.1%}, "
             "which exceeds the 25.0% threshold. Consider tuning the confidence cutoff once more verified tickets are collected."

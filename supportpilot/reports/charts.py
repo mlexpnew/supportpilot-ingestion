@@ -80,13 +80,13 @@ def generate_daily_volume_chart(
 
     # Styling
     ax.set_title(
-        f"Daily Ticket Volume ({stats.start} to {stats.end})",
+        f"Daily Ticket Volume (UTC) ({stats.start} to {stats.end})",
         fontsize=13,
         fontweight="bold",
         pad=15,
         color="#0f172a",
     )
-    ax.set_xlabel("Date", fontsize=10, labelpad=8, color="#334155")
+    ax.set_xlabel("Date (UTC)", fontsize=10, labelpad=8, color="#334155")
     ax.set_ylabel("Tickets Triaged", fontsize=10, labelpad=8, color="#334155")
     ax.set_xticks(x_indices)
     ax.set_xticklabels(dates, rotation=35, ha="right", fontsize=9)
@@ -124,10 +124,13 @@ def generate_label_recall_chart(
 
     for lbl in labels:
         rec = stats.per_label_recall.get(lbl)
-        if rec is None:
+        info = stats.per_label_feedback.get(lbl, {})
+        tot = info.get("total", 0) if isinstance(info, dict) else 0
+
+        if tot < 5 or rec is None:
             values.append(0.0)
-            colors.append("#cbd5e1")  # Light slate for missing data
-            text_labels.append("No data")
+            colors.append("#cbd5e1")  # Light slate for missing or small sample data
+            text_labels.append("n<5" if tot > 0 else "No data")
         else:
             pct = rec * 100.0
             values.append(pct)
@@ -179,7 +182,7 @@ def generate_label_recall_chart(
             va="bottom",
             fontsize=9,
             fontweight="bold",
-            color="#334155" if txt == "No data" else "#0f172a",
+            color="#334155" if txt in ("No data", "n<5") else "#0f172a",
         )
 
     # Styling

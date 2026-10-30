@@ -52,7 +52,7 @@ predictions = Table(
     Column("confidence", Float, nullable=False),
     Column("model_version", String(64), nullable=False),
     Column("created_at", String(64), nullable=False),
-    Column("needs_review", Boolean, nullable=False, server_default=func.false()),
+    Column("needs_review", Boolean, nullable=True),
     Index("idx_predictions_predicted_label", "predicted_label"),
 )
 
@@ -257,7 +257,7 @@ class FeedbackStore:
         confidence: float,
         model_version: str,
         created_at: str | None = None,
-        needs_review: bool = False,
+        needs_review: bool | None = None,
     ) -> None:
         """Record a triage prediction.
 
@@ -266,13 +266,14 @@ class FeedbackStore:
         """
         ticket_id = normalize_ticket_id(ticket_id)
         ts = created_at or datetime.now(UTC).isoformat()
+        nr_val = bool(needs_review) if needs_review is not None else None
         stmt = self._insert(self.predictions).values(
             ticket_id=ticket_id,
             predicted_label=predicted_label,
             confidence=float(confidence),
             model_version=model_version,
             created_at=ts,
-            needs_review=bool(needs_review),
+            needs_review=nr_val,
         )
         stmt = stmt.on_conflict_do_update(
             index_elements=[self.predictions.c.ticket_id],
@@ -624,7 +625,7 @@ class FeedbackStore:
             fb_where.append(self.feedback.c.created_at <= end_str)
 
         with self.engine.connect() as conn:
-            # 2. Prediction aggregates: per-label count and needs_review
+            # 2. Prediction aggregates: per-label count and needs_review tracking
             pred_agg_stmt = (
                 select(
                     self.predictions.c.predicted_label,
@@ -636,6 +637,22 @@ class FeedbackStore:
                             else_=0,
                         )
                     ).label("label_needs_review"),
+                    func.count(
+                        case(
+                            (
+                                self.predictions.c.needs_review.isnot(None),
+                                self.predictions.c.ticket_id,
+                            )
+                        )
+                    ).label("label_needs_review_tracked"),
+                    func.min(
+                        case(
+                            (
+                                self.predictions.c.needs_review.isnot(None),
+                                self.predictions.c.created_at,
+                            )
+                        )
+                    ).label("label_first_tracked"),
                 )
                 .where(*pred_where)
                 .group_by(self.predictions.c.predicted_label)
@@ -643,6 +660,8 @@ class FeedbackStore:
 
             predictions_by_label: dict[str, int] = {lbl: 0 for lbl in LABELS}
             needs_review_count = 0
+            needs_review_tracked = 0
+            first_tracked_dates: list[str] = []
             total_triaged = 0
 
             for row in conn.execute(pred_agg_stmt).mappings():
@@ -653,13 +672,27 @@ class FeedbackStore:
                     if row["label_needs_review"] is not None
                     else 0
                 )
+                nrt = (
+                    int(row["label_needs_review_tracked"])
+                    if row["label_needs_review_tracked"] is not None
+                    else 0
+                )
+                ft = row["label_first_tracked"]
+                if ft is not None:
+                    first_tracked_dates.append(str(ft))
+
                 predictions_by_label[lbl] = cnt
                 total_triaged += cnt
                 needs_review_count += nr
+                needs_review_tracked += nrt
+
+            first_tracked_date = (
+                str(min(first_tracked_dates))[:10] if first_tracked_dates else None
+            )
 
             needs_review_rate = (
-                round(needs_review_count / total_triaged, 4)
-                if total_triaged > 0
+                round(needs_review_count / needs_review_tracked, 4)
+                if needs_review_tracked > 0
                 else 0.0
             )
 
@@ -756,6 +789,8 @@ class FeedbackStore:
             per_label_feedback=per_label_feedback,
             model_versions=model_versions,
             daily_triage_counts=daily_triage_counts,
+            needs_review_tracked=needs_review_tracked,
+            first_tracked_date=first_tracked_date,
         )
 
     def close(self) -> None:

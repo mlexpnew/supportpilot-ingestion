@@ -109,6 +109,8 @@ class DateRangeStats:
     per_label_feedback: dict[str, dict[str, Any]]
     model_versions: list[str]
     daily_triage_counts: dict[str, int] = field(default_factory=dict)
+    needs_review_tracked: int = 0
+    first_tracked_date: str | None = None
 
     @property
     def tickets_triaged(self) -> int:

@@ -123,6 +123,110 @@ def test_render_markdown_sufficient_data_shows_exact_metrics() -> None:
     assert "`triage-v1.0.0-20261022`" in md
     assert "`triage-v1.1.0-20261027`" in md
 
+    # 5. Fix 2: Per-label sample sizes and threshold
+    # account has n=2 (< 5) -> "Not enough data (n=2)"
+    assert "Not enough data (n=2)" in md
+    # delivery has n=10 (>= 5) -> "0.90 (n=10)"
+    assert "0.90 (n=10)" in md
+    # other has n=5 (>= 5) -> "0.60 (n=5)"
+    assert "0.60 (n=5)" in md
+
+    # 6. Time zone UTC notice
+    assert "Days are in UTC; IST is UTC+5:30." in md
+    assert "Date (UTC)" in md
+
+
+def test_render_markdown_tracked_review_rate_notice() -> None:
+    """Verify that when tracked < total, the report explicitly notes partial tracking."""
+    stats = DateRangeStats(
+        start="2026-10-26",
+        end="2026-11-01",
+        total_triaged=100,
+        predictions_by_label={"delivery": 100},
+        needs_review_count=18,
+        needs_review_rate=0.36,  # 18 / 50 = 36%
+        feedback_total=30,
+        feedback_agreed=27,
+        live_accuracy=0.90,
+        per_label_recall={"delivery": 0.90},
+        per_label_feedback={"delivery": {"total": 30, "agreed": 27, "recall": 0.90}},
+        model_versions=["v1"],
+        daily_triage_counts={"2026-10-26": 50, "2026-10-29": 50},
+        needs_review_tracked=50,
+        first_tracked_date="2026-10-29",
+    )
+
+    md = render_markdown(stats)
+    assert "Review rate based on 50 of 100 tickets; tracking started 2026-10-29." in md
+
+    # When tracked == total, the notice should not appear
+    stats_full = DateRangeStats(
+        start="2026-10-26",
+        end="2026-11-01",
+        total_triaged=100,
+        predictions_by_label={"delivery": 100},
+        needs_review_count=36,
+        needs_review_rate=0.36,
+        feedback_total=30,
+        feedback_agreed=27,
+        live_accuracy=0.90,
+        per_label_recall={"delivery": 0.90},
+        per_label_feedback={"delivery": {"total": 30, "agreed": 27, "recall": 0.90}},
+        model_versions=["v1"],
+        daily_triage_counts={"2026-10-26": 100},
+        needs_review_tracked=100,
+        first_tracked_date="2026-10-26",
+    )
+    md_full = render_markdown(stats_full)
+    assert "Review rate based on" not in md_full
+
+
+def test_render_markdown_label_recall_sample_sizes() -> None:
+    """Verify that a label with n=1 shows 'Not enough data' and n=5 shows the number."""
+    stats = DateRangeStats(
+        start="2026-10-26",
+        end="2026-11-01",
+        total_triaged=50,
+        predictions_by_label={
+            lbl: 10 if lbl in ("delivery", "refund") else 0 for lbl in LABELS
+        },
+        needs_review_count=5,
+        needs_review_rate=0.10,
+        feedback_total=25,
+        feedback_agreed=20,
+        live_accuracy=0.80,
+        per_label_recall={
+            "delivery": 0.80,
+            "refund": 0.0,
+            "billing": None,
+            "cancellation": None,
+            "account": None,
+            "other": None,
+        },
+        per_label_feedback={
+            "delivery": {"total": 24, "agreed": 20, "recall": 0.8333},
+            "refund": {"total": 1, "agreed": 0, "recall": 0.0},
+            "billing": {"total": 0, "agreed": 0, "recall": None},
+            "cancellation": {"total": 0, "agreed": 0, "recall": None},
+            "account": {"total": 0, "agreed": 0, "recall": None},
+            "other": {"total": 0, "agreed": 0, "recall": None},
+        },
+        model_versions=["v1"],
+        daily_triage_counts={"2026-10-26": 50},
+        needs_review_tracked=50,
+        first_tracked_date="2026-10-26",
+    )
+
+    md = render_markdown(stats)
+
+    # refund has n=1 (< 5) -> "Not enough data (n=1)", NOT "0.0%"
+    assert "Not enough data (n=1)" in md
+    assert "0.0% (n=1)" not in md
+
+    # refund with n=1 must NOT be listed in "Where the model struggles"
+    assert "The model struggles most with `refund`" not in md
+    assert "Lowest recall observed in `refund`" not in md
+
 
 def test_generate_weekly_report_writes_file_and_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
