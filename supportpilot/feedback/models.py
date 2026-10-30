@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
 
 from supportpilot.triage import LABELS
@@ -84,3 +87,42 @@ class LabelMetric(BaseModel):
     total: int
     agreed: int
     recall: float | None = None
+
+
+@dataclass
+class DateRangeStats:
+    """Aggregated statistics for a date range from persistent storage (SP-114 Part A).
+
+    Kept strictly separate from formatting logic per Arjun's design principle.
+    """
+
+    start: str
+    end: str
+    total_triaged: int
+    predictions_by_label: dict[str, int]
+    needs_review_count: int
+    needs_review_rate: float
+    feedback_total: int
+    feedback_agreed: int
+    live_accuracy: float | None
+    per_label_recall: dict[str, float | None]
+    per_label_feedback: dict[str, dict[str, Any]]
+    model_versions: list[str]
+    daily_triage_counts: dict[str, int] = field(default_factory=dict)
+    needs_review_tracked: int = 0
+    first_tracked_date: str | None = None
+
+    @property
+    def tickets_triaged(self) -> int:
+        return self.total_triaged
+
+    @property
+    def per_label_counts(self) -> dict[str, int]:
+        return self.predictions_by_label
+
+    @property
+    def feedback_count(self) -> int:
+        return self.feedback_total
+
+
+PilotStats = DateRangeStats
