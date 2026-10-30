@@ -2,9 +2,11 @@
 
 from .models import (
     MAX_ID_LENGTH,
+    DateRangeStats,
     FeedbackRequest,
     FeedbackResponse,
     LabelMetric,
+    PilotStats,
     normalize_agent_id,
     normalize_ticket_id,
 )
@@ -20,10 +22,12 @@ from .store import (
 __all__ = [
     "DEFAULT_DB_PATH",
     "MAX_ID_LENGTH",
+    "DateRangeStats",
     "FeedbackRequest",
     "FeedbackResponse",
     "FeedbackStore",
     "LabelMetric",
+    "PilotStats",
     "RetrainJoinReport",
     "get_feedback_db_path",
     "get_feedback_store",

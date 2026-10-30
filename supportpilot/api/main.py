@@ -573,6 +573,7 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
             predicted_label=result["label"],
             confidence=result["confidence"],
             model_version=model.version,
+            needs_review=result["needs_review"],
         )
     except Exception:
         logger.exception(

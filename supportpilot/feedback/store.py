@@ -12,11 +12,12 @@ import json
 import logging
 import os
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, date as date_type, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     Column,
     Float,
     ForeignKey,
@@ -36,7 +37,7 @@ from sqlalchemy.engine import Engine
 
 from supportpilot.triage import LABELS
 
-from .models import normalize_agent_id, normalize_ticket_id
+from .models import DateRangeStats, normalize_agent_id, normalize_ticket_id
 
 DEFAULT_DB_PATH = Path("data/feedback.db")
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ predictions = Table(
     Column("confidence", Float, nullable=False),
     Column("model_version", String(64), nullable=False),
     Column("created_at", String(64), nullable=False),
+    Column("needs_review", Boolean, nullable=False, server_default=func.false()),
     Index("idx_predictions_predicted_label", "predicted_label"),
 )
 
@@ -255,6 +257,7 @@ class FeedbackStore:
         confidence: float,
         model_version: str,
         created_at: str | None = None,
+        needs_review: bool = False,
     ) -> None:
         """Record a triage prediction.
 
@@ -269,6 +272,7 @@ class FeedbackStore:
             confidence=float(confidence),
             model_version=model_version,
             created_at=ts,
+            needs_review=bool(needs_review),
         )
         stmt = stmt.on_conflict_do_update(
             index_elements=[self.predictions.c.ticket_id],
@@ -277,6 +281,7 @@ class FeedbackStore:
                 "confidence": stmt.excluded.confidence,
                 "model_version": stmt.excluded.model_version,
                 "created_at": stmt.excluded.created_at,
+                "needs_review": stmt.excluded.needs_review,
             },
             where=self.predictions.c.ticket_id.not_in(
                 select(self.feedback.c.ticket_id)
@@ -294,12 +299,16 @@ class FeedbackStore:
             self.predictions.c.confidence,
             self.predictions.c.model_version,
             self.predictions.c.created_at,
+            self.predictions.c.needs_review,
         ).where(self.predictions.c.ticket_id == ticket_id)
         with self.engine.connect() as conn:
             row = conn.execute(stmt).mappings().first()
             if row is None:
                 return None
-            return dict(row)
+            res = dict(row)
+            if "needs_review" in res:
+                res["needs_review"] = bool(res["needs_review"])
+            return res
 
     def has_prediction(self, ticket_id: str) -> bool:
         """Check whether a prediction exists for ticket_id."""
@@ -562,6 +571,192 @@ class FeedbackStore:
                 os.unlink(tmp_file)
             raise
         return count
+
+    def get_stats(
+        self,
+        start: datetime | date_type | str,
+        end: datetime | date_type | str,
+    ) -> DateRangeStats:
+        """Compute aggregated statistics for a date range from persistent storage (SP-114 Part A).
+
+        Zero-PII guarantee: only aggregates and metadata are queried and returned.
+        Meera's specification:
+        - Tickets triaged count, per-label counts, needs_review_rate
+        - Feedback count, live_accuracy, per-label recall
+        - Distinct model version(s) used
+        - Daily triage counts for charting
+        """
+        # 1. Normalize start and end boundaries
+        if isinstance(start, (datetime, date_type)):
+            start_str = start.isoformat()
+        else:
+            start_str = str(start).strip()
+
+        end_is_exclusive = False
+        if isinstance(end, datetime):
+            end_str = end.isoformat()
+        elif isinstance(end, date_type):
+            next_day = end + timedelta(days=1)
+            end_str = next_day.isoformat()
+            end_is_exclusive = True
+        else:
+            end_clean = str(end).strip()
+            if len(end_clean) == 10:  # YYYY-MM-DD
+                parsed_d = datetime.strptime(end_clean, "%Y-%m-%d").date()
+                next_day = parsed_d + timedelta(days=1)
+                end_str = next_day.isoformat()
+                end_is_exclusive = True
+            else:
+                end_str = end_clean
+
+        # Predictions filter
+        pred_where = [self.predictions.c.created_at >= start_str]
+        if end_is_exclusive:
+            pred_where.append(self.predictions.c.created_at < end_str)
+        else:
+            pred_where.append(self.predictions.c.created_at <= end_str)
+
+        # Feedback filter
+        fb_where = [self.feedback.c.created_at >= start_str]
+        if end_is_exclusive:
+            fb_where.append(self.feedback.c.created_at < end_str)
+        else:
+            fb_where.append(self.feedback.c.created_at <= end_str)
+
+        with self.engine.connect() as conn:
+            # 2. Prediction aggregates: per-label count and needs_review
+            pred_agg_stmt = (
+                select(
+                    self.predictions.c.predicted_label,
+                    func.count(self.predictions.c.ticket_id).label("label_count"),
+                    func.sum(
+                        case(
+                            (self.predictions.c.needs_review.is_(True), 1),
+                            (self.predictions.c.needs_review == 1, 1),
+                            else_=0,
+                        )
+                    ).label("label_needs_review"),
+                )
+                .where(*pred_where)
+                .group_by(self.predictions.c.predicted_label)
+            )
+
+            predictions_by_label: dict[str, int] = {lbl: 0 for lbl in LABELS}
+            needs_review_count = 0
+            total_triaged = 0
+
+            for row in conn.execute(pred_agg_stmt).mappings():
+                lbl = str(row["predicted_label"])
+                cnt = int(row["label_count"])
+                nr = (
+                    int(row["label_needs_review"])
+                    if row["label_needs_review"] is not None
+                    else 0
+                )
+                predictions_by_label[lbl] = cnt
+                total_triaged += cnt
+                needs_review_count += nr
+
+            needs_review_rate = (
+                round(needs_review_count / total_triaged, 4)
+                if total_triaged > 0
+                else 0.0
+            )
+
+            # 3. Distinct model versions in range
+            versions_stmt = (
+                select(self.predictions.c.model_version)
+                .where(*pred_where)
+                .distinct()
+                .order_by(self.predictions.c.model_version.asc())
+            )
+            model_versions = [
+                str(r[0]) for r in conn.execute(versions_stmt).all() if r[0] is not None
+            ]
+
+            # 4. Daily triage counts (tickets per day)
+            daily_stmt = (
+                select(
+                    func.substr(self.predictions.c.created_at, 1, 10).label("day"),
+                    func.count(self.predictions.c.ticket_id).label("count"),
+                )
+                .where(*pred_where)
+                .group_by(func.substr(self.predictions.c.created_at, 1, 10))
+                .order_by(func.substr(self.predictions.c.created_at, 1, 10).asc())
+            )
+            daily_triage_counts = {
+                str(r["day"]): int(r["count"])
+                for r in conn.execute(daily_stmt).mappings()
+            }
+
+            # 5. Feedback in range: total, agreed, live_accuracy, per-label recall
+            fb_stmt = (
+                select(
+                    self.feedback.c.correct_label,
+                    func.count(self.feedback.c.ticket_id).label("total"),
+                    func.sum(
+                        case(
+                            (
+                                self.predictions.c.predicted_label
+                                == self.feedback.c.correct_label,
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("agreed"),
+                )
+                .select_from(
+                    self.feedback.join(
+                        self.predictions,
+                        self.feedback.c.ticket_id == self.predictions.c.ticket_id,
+                    )
+                )
+                .where(*fb_where)
+                .group_by(self.feedback.c.correct_label)
+            )
+
+            per_label_feedback: dict[str, dict[str, Any]] = {
+                lbl: {"total": 0, "agreed": 0, "recall": None} for lbl in LABELS
+            }
+            per_label_recall: dict[str, float | None] = {lbl: None for lbl in LABELS}
+            feedback_total = 0
+            feedback_agreed = 0
+
+            for row in conn.execute(fb_stmt).mappings():
+                lbl = str(row["correct_label"])
+                tot = int(row["total"])
+                agr = int(row["agreed"]) if row["agreed"] is not None else 0
+                rec = round(agr / tot, 4) if tot > 0 else None
+                feedback_total += tot
+                feedback_agreed += agr
+                per_label_feedback[lbl] = {
+                    "total": tot,
+                    "agreed": agr,
+                    "recall": rec,
+                }
+                per_label_recall[lbl] = rec
+
+            live_accuracy = (
+                round(feedback_agreed / feedback_total, 4)
+                if feedback_total > 0
+                else None
+            )
+
+        return DateRangeStats(
+            start=str(start),
+            end=str(end),
+            total_triaged=total_triaged,
+            predictions_by_label=predictions_by_label,
+            needs_review_count=needs_review_count,
+            needs_review_rate=needs_review_rate,
+            feedback_total=feedback_total,
+            feedback_agreed=feedback_agreed,
+            live_accuracy=live_accuracy,
+            per_label_recall=per_label_recall,
+            per_label_feedback=per_label_feedback,
+            model_versions=model_versions,
+            daily_triage_counts=daily_triage_counts,
+        )
 
     def close(self) -> None:
         """Dispose of the SQLAlchemy engine and connection pool."""
