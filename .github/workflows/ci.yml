@@ -81,7 +81,7 @@ jobs:
       - name: Run feedback tests against Postgres
         env:
           DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/feedback_test
-        run: python -m pytest tests/test_feedback.py -q
+        run: python -m pytest tests/test_feedback.py tests/test_stats.py -q
 
   docker:
     runs-on: ubuntu-24.04
