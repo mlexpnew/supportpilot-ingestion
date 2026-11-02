@@ -41,7 +41,6 @@ jobs:
         env:
           REPORT_DATABASE_URL: ${{ secrets.REPORT_DATABASE_URL }}
           DATABASE_URL: ${{ secrets.REPORT_DATABASE_URL }}
-          ALLOW_SQLITE_FALLBACK: "1"
         run: |
           if [ -n "${{ inputs.from_date }}" ] && [ -n "${{ inputs.to_date }}" ]; then
             echo "Generating report for custom date range: ${{ inputs.from_date }} to ${{ inputs.to_date }}"
