@@ -140,6 +140,16 @@ def get_admin_api_keys() -> set[str]:
     return keys
 
 
+def validate_key_separation(client_keys: set[str], admin_keys: set[str]) -> None:
+    """Ensure client keys and admin keys never overlap (least privilege separation)."""
+    overlap = client_keys & admin_keys
+    if overlap:
+        raise ValueError(
+            "Security violation: ADMIN_API_KEYS and TRIAGE_API_KEYS must not overlap. "
+            f"Overlapping keys detected: {len(overlap)}"
+        )
+
+
 def validate_api_key(
     api_key: str | None,
     valid_keys: set[str] | None,
@@ -187,10 +197,12 @@ def get_api_key(
     valid_keys: set[str] = getattr(request.app.state, "api_keys", set())
     is_valid = validate_api_key(api_key, valid_keys)
 
+    # Usage tracking (SP-115 Part A & Sana table protection fix)
     try:
         feedback_store: Any = getattr(request.app.state, "feedback_store", None)
         if feedback_store is not None and hasattr(feedback_store, "record_key_usage"):
-            feedback_store.record_key_usage(key_hash=key_hash, ok=is_valid)
+            tracked_hash = key_hash if is_valid else "unknown"
+            feedback_store.record_key_usage(key_hash=tracked_hash, ok=is_valid)
     except Exception:
         logger.exception(
             "Failed to record API key usage for key_hash=%s",
@@ -229,7 +241,8 @@ def require_admin_key(
     try:
         feedback_store: Any = getattr(request.app.state, "feedback_store", None)
         if feedback_store is not None and hasattr(feedback_store, "record_key_usage"):
-            feedback_store.record_key_usage(key_hash=key_hash, ok=is_valid)
+            tracked_hash = key_hash if is_valid else "unknown"
+            feedback_store.record_key_usage(key_hash=tracked_hash, ok=is_valid)
     except Exception:
         logger.exception(
             "Failed to record API key usage for admin key_hash=%s",
@@ -371,6 +384,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.counters = Counters()
     app.state.api_keys = get_api_keys()
     app.state.admin_api_keys = get_admin_api_keys()
+    validate_key_separation(app.state.api_keys, app.state.admin_api_keys)
     app.state.rate_limits = {}
     app.state.alert_thresholds = get_alert_thresholds()
     app.state.started_at = datetime.now(timezone.utc).isoformat()
@@ -579,11 +593,13 @@ def get_alerts(req: Request) -> AlertsResponse:
     key_usage = feedback_store.get_key_usage() if feedback_store is not None else []
     client_keys: set[str] = getattr(req.app.state, "api_keys", set())
     client_key_hashes = {hash_api_key(k) for k in client_keys}
+    started_at = getattr(req.app.state, "started_at", None)
     active_alerts = evaluate_alerts(
         metrics,
         thresholds,
         key_usage=key_usage,
         client_key_hashes=client_key_hashes,
+        started_at=started_at,
     )
     return AlertsResponse(
         alerts=active_alerts,

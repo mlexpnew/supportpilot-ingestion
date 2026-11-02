@@ -7,8 +7,17 @@ from typing import Any
 from fastapi.testclient import TestClient
 import pytest
 
-from supportpilot.api.alerts import evaluate_alerts, get_alert_thresholds
-from supportpilot.api.main import app, get_admin_api_keys, hash_api_key
+from supportpilot.api.alerts import (
+    ALERT_NAME_NEVER_SEEN,
+    evaluate_alerts,
+    get_alert_thresholds,
+)
+from supportpilot.api.main import (
+    app,
+    get_admin_api_keys,
+    hash_api_key,
+    validate_key_separation,
+)
 from supportpilot.api.models import MetricsResponse
 from supportpilot.feedback.store import FeedbackStore, init_db
 
@@ -83,7 +92,7 @@ def test_api_tracks_key_usage_on_success_and_failure() -> None:
         assert records[0]["ok_count"] >= 1
         assert records[0]["auth_fail_count"] == 0
 
-        # 2. Failed auth with invalid key
+        # 2. Failed auth with invalid key -> collapsed into shared "unknown" row (table limit protection)
         bad_key = "wrong-invalid-secret-key"
         bad_hash = hash_api_key(bad_key)
 
@@ -94,10 +103,13 @@ def test_api_tracks_key_usage_on_success_and_failure() -> None:
         )
         assert res_bad.status_code == 401
 
-        bad_records = store.get_key_usage(bad_hash)
-        assert len(bad_records) == 1
-        assert bad_records[0]["auth_fail_count"] == 1
-        assert bad_records[0]["ok_count"] == 0
+        unknown_records = store.get_key_usage("unknown")
+        assert len(unknown_records) == 1
+        assert unknown_records[0]["auth_fail_count"] == 1
+        assert unknown_records[0]["ok_count"] == 0
+
+        # Verify no dedicated row was created for the bad hash (DoS protection)
+        assert len(store.get_key_usage(bad_hash)) == 0
 
         # Verify plaintext key is NOT stored in DB (Zero-PII / security check)
         all_records = store.get_key_usage()
@@ -106,15 +118,15 @@ def test_api_tracks_key_usage_on_success_and_failure() -> None:
             assert r["key_hash"] != valid_key
             assert len(r["key_hash"]) <= 64
 
-        # 3. Failed auth with missing key -> tracked as "none"
+        # 3. Failed auth with missing key -> also increments "unknown"
         res_none = client.post(
             "/triage",
             json={"ticket_id": "T-USAGE-003", "body": "Where is my delivery?"},
         )
         assert res_none.status_code == 401
-        none_records = store.get_key_usage("none")
-        assert len(none_records) == 1
-        assert none_records[0]["auth_fail_count"] >= 1
+        unknown_records_after = store.get_key_usage("unknown")
+        assert len(unknown_records_after) == 1
+        assert unknown_records_after[0]["auth_fail_count"] == 2
 
 
 def test_usage_tracking_failure_never_breaks_auth(
@@ -274,3 +286,86 @@ def test_stale_key_alert_fires_after_24h_faked_time() -> None:
         now=fake_now,
     )
     assert not any(a.name == "no_client_traffic" for a in alerts_recent)
+
+
+def test_unknown_keys_shared_row_prevents_table_growth() -> None:
+    """Verify failed attempts from multiple distinct random keys collapse into key_hash='unknown' (Sana DoS guard)."""
+    with TestClient(app) as client:
+        store: FeedbackStore = client.app.state.feedback_store
+
+        # Send 10 different random keys
+        for i in range(10):
+            res = client.post(
+                "/triage",
+                headers={"X-API-Key": f"random-attack-key-{i}"},
+                json={"ticket_id": f"T-ATTACK-{i}", "body": "Exploit attempt"},
+            )
+            assert res.status_code == 401
+
+        # Must have only ONE row for all failures with key_hash = "unknown"
+        unknown_records = store.get_key_usage("unknown")
+        assert len(unknown_records) == 1
+        assert unknown_records[0]["auth_fail_count"] == 10
+
+        # Verify no individual rows were created for any of the attack keys
+        all_records = store.get_key_usage()
+        for r in all_records:
+            assert not r["key_hash"].startswith("random-attack")
+
+
+def test_admin_and_client_keys_overlap_fails_fast() -> None:
+    """Verify startup fails fast if any key appears in both ADMIN_API_KEYS and TRIAGE_API_KEYS (Sana least privilege check)."""
+    client_keys = {"client-key-1", "shared-compromised-key"}
+    admin_keys = {"admin-key-1", "shared-compromised-key"}
+
+    with pytest.raises(
+        ValueError, match="ADMIN_API_KEYS and TRIAGE_API_KEYS must not overlap"
+    ):
+        validate_key_separation(client_keys, admin_keys)
+
+    # Disjoint keys must pass without error
+    validate_key_separation({"client-key-1"}, {"admin-key-1"})
+
+
+def test_never_seen_alert_fires_once_service_up_24h() -> None:
+    """Verify known client key with no usage row triggers alert 'never seen' once service has been up 24 h (pilot bug fix)."""
+    fake_now = datetime(2026, 11, 2, 12, 0, 0, tzinfo=timezone.utc)
+    service_started_stale = fake_now - timedelta(hours=26)
+    service_started_recent = fake_now - timedelta(hours=5)
+
+    thresholds = get_alert_thresholds()
+    metrics = MetricsResponse(
+        requests_total=0,
+        triage_total=0,
+        errors_total=0,
+        avg_latency_ms=0.0,
+        needs_review_rate=0.0,
+        rate_limited_total=0,
+    )
+    client_key_hashes = {"client_hash_never_called"}
+
+    # 1. Empty usage list, service up for 26h -> triggers 'never seen'
+    alerts_26h = evaluate_alerts(
+        metrics=metrics,
+        thresholds=thresholds,
+        key_usage=[],
+        client_key_hashes=client_key_hashes,
+        now=fake_now,
+        started_at=service_started_stale,
+    )
+    never_seen_alerts = [a for a in alerts_26h if a.name == ALERT_NAME_NEVER_SEEN]
+    assert len(never_seen_alerts) == 1
+    assert never_seen_alerts[0].severity == "warning"
+    assert never_seen_alerts[0].threshold == 24.0
+    assert never_seen_alerts[0].value == 26.0
+
+    # 2. Empty usage list, service up for only 5h -> does NOT trigger 'never seen'
+    alerts_5h = evaluate_alerts(
+        metrics=metrics,
+        thresholds=thresholds,
+        key_usage=[],
+        client_key_hashes=client_key_hashes,
+        now=fake_now,
+        started_at=service_started_recent,
+    )
+    assert not any(a.name == ALERT_NAME_NEVER_SEEN for a in alerts_5h)

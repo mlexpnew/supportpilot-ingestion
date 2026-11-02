@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,10 +12,13 @@ from pydantic import BaseModel, Field
 
 from supportpilot.api.models import MetricsResponse
 
+logger = logging.getLogger(__name__)
+
 ALERT_NAME_ACCURACY: str = "accuracy"
 ALERT_NAME_REVIEW_RATE: str = "review_rate"
 ALERT_NAME_ERROR_RATE: str = "error_rate"
 ALERT_NAME_NO_CLIENT_TRAFFIC: str = "no_client_traffic"
+ALERT_NAME_NEVER_SEEN: str = "never seen"
 
 SEVERITY_WARNING: str = "warning"
 SEVERITY_CRITICAL: str = "critical"
@@ -31,11 +35,12 @@ class Alert(BaseModel):
     """Active operational or model health alert."""
 
     name: str = Field(
-        description="Alert identifier (e.g. accuracy, review_rate, error_rate)"
+        description="Alert identifier (e.g. accuracy, review_rate, error_rate, no_client_traffic, never seen)"
     )
     value: float = Field(description="Observed metric value")
     threshold: float = Field(description="Configured boundary threshold value")
     severity: str = Field(description="Alert severity level: warning or critical")
+    message: str | None = Field(default=None, description="Optional diagnostic message")
 
 
 class AlertsResponse(BaseModel):
@@ -126,6 +131,7 @@ def evaluate_alerts(
     key_usage: list[dict[str, Any]] | None = None,
     client_key_hashes: set[str] | None = None,
     now: datetime | None = None,
+    started_at: str | datetime | None = None,
 ) -> list[Alert]:
     """Pure function evaluating current operational metrics against boundary thresholds.
 
@@ -142,9 +148,9 @@ def evaluate_alerts(
          Triggers when error_rate (errors_total / requests_total) > max_error_rate.
          Severity: critical if error_rate >= max_error_rate * 2.0 (e.g. >= 0.10); otherwise warning.
 
-      4. No Client Traffic alert (SP-115 Part B):
-         Triggers when any known client key has last_seen older than 24 hours.
-         Severity: warning.
+      4. Client Traffic alerts (SP-115 Part B & Part D):
+         - Stale key: any known client key with last_seen older than 24 hours -> warning: no_client_traffic.
+         - Never seen: any known client key with no row once service has been up 24 h -> warning: never seen.
     """
     alerts: list[Alert] = []
 
@@ -206,10 +212,26 @@ def evaluate_alerts(
                 )
             )
 
-    # 4. No Client Traffic Alert (any known client key with last_seen older than 24 h)
-    if client_key_hashes and key_usage:
-        usage_by_hash = {r["key_hash"]: r for r in key_usage if "key_hash" in r}
+    # 4. Client Traffic Alerts (SP-115 Part B & Never Seen fix)
+    if client_key_hashes:
+        usage_list = key_usage or []
+        usage_by_hash = {r["key_hash"]: r for r in usage_list if "key_hash" in r}
         curr_now = now or datetime.now(timezone.utc)
+
+        uptime_hours: float | None = None
+        if started_at is not None:
+            try:
+                if isinstance(started_at, datetime):
+                    started_dt = started_at
+                else:
+                    s_str = str(started_at).replace("Z", "+00:00")
+                    started_dt = datetime.fromisoformat(s_str)
+                if started_dt.tzinfo is None:
+                    started_dt = started_dt.replace(tzinfo=timezone.utc)
+                uptime_hours = (curr_now - started_dt).total_seconds() / 3600.0
+            except Exception as exc:
+                logger.warning("Failed parsing started_at=%s: %s", started_at, exc)
+
         for kh in sorted(client_key_hashes):
             r = usage_by_hash.get(kh)
             if r and r.get("last_seen"):
@@ -226,9 +248,26 @@ def evaluate_alerts(
                                 value=round(hours_inactive, 1),
                                 threshold=24.0,
                                 severity=SEVERITY_WARNING,
+                                message="stale traffic",
                             )
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Failed evaluating client traffic alert for key_hash=%s: %s",
+                        kh,
+                        exc,
+                    )
+            else:
+                # Key has no row (never seen) -> alert "never seen" if service up >= 24 h
+                if uptime_hours is not None and uptime_hours >= 24.0:
+                    alerts.append(
+                        Alert(
+                            name=ALERT_NAME_NEVER_SEEN,
+                            value=round(uptime_hours, 1),
+                            threshold=24.0,
+                            severity=SEVERITY_WARNING,
+                            message="never seen",
+                        )
+                    )
 
     return alerts
