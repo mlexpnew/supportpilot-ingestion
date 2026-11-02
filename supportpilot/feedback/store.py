@@ -628,7 +628,6 @@ class FeedbackStore:
                     func.sum(
                         case(
                             (self.predictions.c.needs_review.is_(True), 1),
-                            (self.predictions.c.needs_review == 1, 1),
                             else_=0,
                         )
                     ).label("label_needs_review"),
