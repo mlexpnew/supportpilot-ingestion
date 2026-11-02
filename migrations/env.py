@@ -79,6 +79,8 @@ def run_migrations_online() -> None:
 
         with context.begin_transaction():
             context.run_migrations()
+        if hasattr(connectable, "commit"):
+            connectable.commit()
     else:
         configuration = config.get_section(config.config_ini_section, {}) or {}
         configuration["sqlalchemy.url"] = get_url()
@@ -100,6 +102,7 @@ def run_migrations_online() -> None:
 
             with context.begin_transaction():
                 context.run_migrations()
+            connection.commit()
 
 
 if context.is_offline_mode():
