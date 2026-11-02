@@ -313,6 +313,12 @@ def test_generate_weekly_report_writes_file_and_cli(
     assert code == 0
 
     # Also test CLI default dates (omitting --from and --to)
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    expected_to = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    expected_from = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+
     monkeypatch.setattr(
         sys,
         "argv",
@@ -324,6 +330,8 @@ def test_generate_weekly_report_writes_file_and_cli(
     )
     code_default = main()
     assert code_default == 0
+    expected_default_file = out_dir / f"pilot_report_{expected_from}_{expected_to}.md"
+    assert expected_default_file.exists()
 
     store.close()
 
