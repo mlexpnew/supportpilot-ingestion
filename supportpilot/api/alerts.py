@@ -18,7 +18,7 @@ ALERT_NAME_ACCURACY: str = "accuracy"
 ALERT_NAME_REVIEW_RATE: str = "review_rate"
 ALERT_NAME_ERROR_RATE: str = "error_rate"
 ALERT_NAME_NO_CLIENT_TRAFFIC: str = "no_client_traffic"
-ALERT_NAME_NEVER_SEEN: str = "never seen"
+ALERT_NAME_NEVER_SEEN: str = "client_never_seen"
 
 SEVERITY_WARNING: str = "warning"
 SEVERITY_CRITICAL: str = "critical"
@@ -35,7 +35,7 @@ class Alert(BaseModel):
     """Active operational or model health alert."""
 
     name: str = Field(
-        description="Alert identifier (e.g. accuracy, review_rate, error_rate, no_client_traffic, never seen)"
+        description="Alert identifier (e.g. accuracy, review_rate, error_rate, no_client_traffic, client_never_seen)"
     )
     value: float = Field(description="Observed metric value")
     threshold: float = Field(description="Configured boundary threshold value")
@@ -150,7 +150,7 @@ def evaluate_alerts(
 
       4. Client Traffic alerts (SP-115 Part B & Part D):
          - Stale key: any known client key with last_seen older than 24 hours -> warning: no_client_traffic.
-         - Never seen: any known client key with no row once service has been up 24 h -> warning: never seen.
+         - Never seen: any known client key with no row once service has been up 24 h -> warning: client_never_seen.
     """
     alerts: list[Alert] = []
 

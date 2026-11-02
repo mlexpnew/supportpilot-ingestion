@@ -281,7 +281,7 @@ curl -s -H "X-API-Key: $TRIAGE_API_KEY" https://supportpilot-ingestion.onrender.
 ### Symptoms
 - Active warning alert returned by `GET /alerts`:
   * Stale client traffic (>24 h since last request): `{"name": "no_client_traffic", "value": <hours>, "threshold": 24.0, "severity": "warning"}`.
-  * Inactive client key (never sent traffic since deployment, service up >= 24 h): `{"name": "never seen", "value": <hours>, "threshold": 24.0, "severity": "warning"}`.
+  * Inactive client key (never sent traffic since deployment, service up >= 24 h): `{"name": "client_never_seen", "value": <hours>, "threshold": 24.0, "severity": "warning"}`.
 - Telemetry shows zero requests to `/triage` and `/feedback` from known client API keys for over 24 hours.
 - Expected ticket ingestion pipeline appears silent or dormant.
 
@@ -297,7 +297,7 @@ curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.c
 # - Look for the client key hash:
 #   * If last_seen is > 24 hours ago and auth_fail_count == 0: Client integration stopped sending traffic completely.
 #   * If shared "unknown" row auth_fail_count is high: Client is attempting requests with an invalid/expired key (getting 401s).
-#   * If client key_hash is completely missing from /usage: Client has never initiated a single request to this environment (triggers "never seen" alert after 24h).
+#   * If client key_hash is completely missing from /usage: Client has never initiated a single request to this environment (triggers "client_never_seen" alert after 24h).
 ```
 
 ### Fix
