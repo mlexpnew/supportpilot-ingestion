@@ -37,6 +37,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      - name: Run database migrations
+        env:
+          DATABASE_URL: ${{ secrets.REPORT_DATABASE_URL }}
+        run: alembic upgrade head
+
       - name: Generate report
         env:
           REPORT_DATABASE_URL: ${{ secrets.REPORT_DATABASE_URL }}
