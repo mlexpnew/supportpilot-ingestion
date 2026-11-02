@@ -703,18 +703,15 @@ class FeedbackStore:
 
             # 4. Daily triage counts (tickets per day)
             daily_stmt = (
-                select(
-                    func.substr(self.predictions.c.created_at, 1, 10).label("day"),
-                    func.count(self.predictions.c.ticket_id).label("count"),
-                )
+                select(self.predictions.c.created_at)
                 .where(*pred_where)
-                .group_by(func.substr(self.predictions.c.created_at, 1, 10))
-                .order_by(func.substr(self.predictions.c.created_at, 1, 10).asc())
+                .order_by(self.predictions.c.created_at.asc())
             )
-            daily_triage_counts = {
-                str(r["day"]): int(r["count"])
-                for r in conn.execute(daily_stmt).mappings()
-            }
+            daily_triage_counts: dict[str, int] = {}
+            for r in conn.execute(daily_stmt).scalars():
+                if r:
+                    d = str(r)[:10]
+                    daily_triage_counts[d] = daily_triage_counts.get(d, 0) + 1
 
             # 5. Feedback in range: total, agreed, live_accuracy, per-label recall
             fb_stmt = (
