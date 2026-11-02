@@ -25,7 +25,7 @@ from supportpilot.api.alerts import (
     evaluate_alerts,
     get_alert_thresholds,
 )
-from supportpilot.api.models import MetricsResponse, VersionResponse
+from supportpilot.api.models import KeyUsageItem, MetricsResponse, VersionResponse
 from supportpilot.feedback import (
     MAX_ID_LENGTH,
     FeedbackRequest,
@@ -56,6 +56,7 @@ EXCLUDED_METRIC_PATHS: set[str] = {
     "/alerts",
     "/metrics",
     "/metrics/labels",
+    "/usage",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -118,6 +119,22 @@ def get_api_keys() -> set[str]:
     if not keys:
         raise ValueError(
             "No API keys configured: TRIAGE_API_KEYS must contain at "
+            "least one valid key."
+        )
+    return keys
+
+
+def get_admin_api_keys() -> set[str]:
+    raw_keys = os.getenv("ADMIN_API_KEYS")
+    if raw_keys is None or not raw_keys.strip():
+        raise ValueError(
+            "No admin API keys configured: ADMIN_API_KEYS environment variable "
+            "is required."
+        )
+    keys = {k.strip() for k in raw_keys.split(",") if k.strip()}
+    if not keys:
+        raise ValueError(
+            "No admin API keys configured: ADMIN_API_KEYS must contain at "
             "least one valid key."
         )
     return keys
@@ -193,6 +210,45 @@ def get_api_key(
         )
     logger.info(
         "api_key_hash=%s authenticated",
+        key_hash,
+        extra={"api_key_hash": key_hash},
+    )
+    return api_key  # type: ignore[return-value]
+
+
+def require_admin_key(
+    request: Request,
+    api_key: str | None = Security(api_key_header),
+) -> str:
+    """FastAPI dependency requiring a valid admin API key from ADMIN_API_KEYS."""
+    key_hash = hash_api_key(api_key)
+    request.state.api_key_hash = key_hash
+    valid_admin_keys: set[str] = getattr(request.app.state, "admin_api_keys", set())
+    is_valid = validate_api_key(api_key, valid_admin_keys)
+
+    try:
+        feedback_store: Any = getattr(request.app.state, "feedback_store", None)
+        if feedback_store is not None and hasattr(feedback_store, "record_key_usage"):
+            feedback_store.record_key_usage(key_hash=key_hash, ok=is_valid)
+    except Exception:
+        logger.exception(
+            "Failed to record API key usage for admin key_hash=%s",
+            key_hash,
+            extra={"api_key_hash": key_hash},
+        )
+
+    if not is_valid:
+        logger.warning(
+            "api_key_hash=%s admin authentication failed",
+            key_hash,
+            extra={"api_key_hash": key_hash},
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+        )
+    logger.info(
+        "api_key_hash=%s admin authenticated",
         key_hash,
         extra={"api_key_hash": key_hash},
     )
@@ -314,6 +370,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.threshold = threshold
     app.state.counters = Counters()
     app.state.api_keys = get_api_keys()
+    app.state.admin_api_keys = get_admin_api_keys()
     app.state.rate_limits = {}
     app.state.alert_thresholds = get_alert_thresholds()
     app.state.started_at = datetime.now(timezone.utc).isoformat()
@@ -321,6 +378,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.model = None
     app.state.threshold = None
     app.state.api_keys = set()
+    app.state.admin_api_keys = set()
     app.state.rate_limits = {}
     app.state.alert_thresholds = None
     app.state.started_at = None
@@ -339,6 +397,7 @@ app = FastAPI(
 )
 app.state.counters = Counters()
 app.state.api_keys = set()
+app.state.admin_api_keys = set()
 app.state.rate_limits = {}
 app.state.feedback_store = None
 app.state.alert_thresholds = None
@@ -514,11 +573,38 @@ def get_alerts(req: Request) -> AlertsResponse:
         raise RuntimeError(
             "Alert thresholds are not initialized. Service startup invariant violated."
         )
-    active_alerts = evaluate_alerts(metrics, thresholds)
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    key_usage = feedback_store.get_key_usage() if feedback_store is not None else []
+    client_keys: set[str] = getattr(req.app.state, "api_keys", set())
+    client_key_hashes = {hash_api_key(k) for k in client_keys}
+    active_alerts = evaluate_alerts(
+        metrics,
+        thresholds,
+        key_usage=key_usage,
+        client_key_hashes=client_key_hashes,
+    )
     return AlertsResponse(
         alerts=active_alerts,
         checked_at=datetime.now(timezone.utc).isoformat(),
     )
+
+
+@app.get(
+    "/usage",
+    response_model=list[KeyUsageItem],
+    dependencies=[Depends(require_admin_key)],
+)
+def get_usage(req: Request) -> list[dict[str, Any]]:
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError(
+            "Feedback store is not initialized. Service startup invariant violated."
+        )
+    return feedback_store.get_key_usage()
 
 
 @app.post(

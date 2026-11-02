@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +14,7 @@ from supportpilot.api.models import MetricsResponse
 ALERT_NAME_ACCURACY: str = "accuracy"
 ALERT_NAME_REVIEW_RATE: str = "review_rate"
 ALERT_NAME_ERROR_RATE: str = "error_rate"
+ALERT_NAME_NO_CLIENT_TRAFFIC: str = "no_client_traffic"
 
 SEVERITY_WARNING: str = "warning"
 SEVERITY_CRITICAL: str = "critical"
@@ -120,6 +123,9 @@ def get_alert_thresholds() -> AlertThresholds:
 def evaluate_alerts(
     metrics: MetricsResponse,
     thresholds: AlertThresholds,
+    key_usage: list[dict[str, Any]] | None = None,
+    client_key_hashes: set[str] | None = None,
+    now: datetime | None = None,
 ) -> list[Alert]:
     """Pure function evaluating current operational metrics against boundary thresholds.
 
@@ -135,6 +141,10 @@ def evaluate_alerts(
       3. Error Rate alert: only evaluated if requests_total >= min_requests (default 50).
          Triggers when error_rate (errors_total / requests_total) > max_error_rate.
          Severity: critical if error_rate >= max_error_rate * 2.0 (e.g. >= 0.10); otherwise warning.
+
+      4. No Client Traffic alert (SP-115 Part B):
+         Triggers when any known client key has last_seen older than 24 hours.
+         Severity: warning.
     """
     alerts: list[Alert] = []
 
@@ -195,5 +205,30 @@ def evaluate_alerts(
                     severity=severity,
                 )
             )
+
+    # 4. No Client Traffic Alert (any known client key with last_seen older than 24 h)
+    if client_key_hashes and key_usage:
+        usage_by_hash = {r["key_hash"]: r for r in key_usage if "key_hash" in r}
+        curr_now = now or datetime.now(timezone.utc)
+        for kh in sorted(client_key_hashes):
+            r = usage_by_hash.get(kh)
+            if r and r.get("last_seen"):
+                try:
+                    ls_str = str(r["last_seen"]).replace("Z", "+00:00")
+                    ls_dt = datetime.fromisoformat(ls_str)
+                    if ls_dt.tzinfo is None:
+                        ls_dt = ls_dt.replace(tzinfo=timezone.utc)
+                    hours_inactive = (curr_now - ls_dt).total_seconds() / 3600.0
+                    if hours_inactive >= 24.0:
+                        alerts.append(
+                            Alert(
+                                name=ALERT_NAME_NO_CLIENT_TRAFFIC,
+                                value=round(hours_inactive, 1),
+                                threshold=24.0,
+                                severity=SEVERITY_WARNING,
+                            )
+                        )
+                except Exception:
+                    pass
 
     return alerts

@@ -24,3 +24,13 @@ class VersionResponse(BaseModel):
     git_sha: str
     model_version: str | None
     started_at: str | None = None
+
+
+class KeyUsageItem(BaseModel):
+    """Per-API-key usage tracking telemetry (SP-115)."""
+
+    key_hash: str
+    first_seen: str
+    last_seen: str
+    ok_count: int
+    auth_fail_count: int

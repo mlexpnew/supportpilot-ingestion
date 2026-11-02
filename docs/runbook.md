@@ -20,6 +20,7 @@ Production operations and emergency incident response procedures for SupportPilo
 | **Live Health Endpoint** | `https://supportpilot-ingestion.onrender.com/health` | Public unauthenticated liveness probe |
 | **Live Alerts Endpoint** | `https://supportpilot-ingestion.onrender.com/alerts` | Active health alerts (`X-API-Key` protected) |
 | **Live Metrics Endpoint** | `https://supportpilot-ingestion.onrender.com/metrics` | Operational counters, telemetry, and live accuracy |
+| **Live Usage Endpoint** | `https://supportpilot-ingestion.onrender.com/usage` | Per-key usage and auth diagnostics (Admin `X-API-Key` protected) |
 
 ---
 
@@ -272,3 +273,46 @@ curl -s -H "X-API-Key: $TRIAGE_API_KEY" https://supportpilot-ingestion.onrender.
 - **Dev** (Infrastructure Lead): Confirm Render container rollback stability and review failure logs.
 - **Sana** (Tech Lead): Convene incident review on why the regression passed CI checks or how branch protection was bypassed.
 - **Neha** (Support Lead): Confirm service restoration to support agents and client teams.
+
+---
+
+## Incident 6: Client Sends No Traffic
+
+### Symptoms
+- Active warning alert returned by `GET /alerts`: `{"name": "no_client_traffic", "value": <hours>, "threshold": 24.0, "severity": "warning"}`.
+- Telemetry shows zero requests to `/triage` and `/feedback` from known client API keys for over 24 hours.
+- Expected ticket ingestion pipeline appears silent or dormant.
+
+### Check
+```bash
+# 1. Query active alerts to identify inactive duration
+curl -s -H "X-API-Key: $TRIAGE_API_KEY" https://supportpilot-ingestion.onrender.com/alerts | jq .
+
+# 2. Query usage telemetry endpoint using an Admin API key
+curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.com/usage | jq .
+
+# 3. Analyze per-key usage statistics:
+# - Look for the client key hash:
+#   * If last_seen is > 24 hours ago and auth_fail_count == 0: Client integration stopped sending traffic completely.
+#   * If auth_fail_count > 0 and ok_count is not increasing: Client is attempting requests with an invalid/expired key (getting 401s).
+#   * If key_hash is completely missing from /usage: Client has never initiated a single request to this environment.
+```
+
+### Fix
+1. **If authentication failures are high (`auth_fail_count > 0`)**:
+   - The client may have misconfigured their API key header or is using an expired credential.
+   - Verify active keys in Render Web Service Environment under `TRIAGE_API_KEYS`.
+   - Re-issue or confirm the correct client API key with Neha.
+2. **If no requests are arriving (`last_seen > 24h` or key missing)**:
+   - Verify whether the client experienced an outage in their upstream ticket webhook or dispatch runner.
+   - Send the client integration team the onboarding diagnostic tool:
+     ```bash
+     export SUPPORTPILOT_API_KEY="client-key-here"
+     python examples/client_check.py
+     ```
+   - Review [Client Integration Guide](client-integration.md) with client engineers to resolve schema, network proxy, or payload size limits (10 KB).
+
+### Notify
+- **Neha** (Client & Support Lead): Contact client integration lead with diagnostic details from `/usage`.
+- **Sana** (API Tech Lead): Monitor `/usage` and `/alerts` once client confirms traffic resumption.
+
