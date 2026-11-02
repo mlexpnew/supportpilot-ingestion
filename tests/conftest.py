@@ -7,6 +7,7 @@ import pytest
 from supportpilot.triage.model import train_model
 
 TEST_API_KEYS: str = "test-key-1,test-key-2"
+TEST_ADMIN_API_KEYS: str = "test-admin-key-1,test-admin-key-2"
 
 
 @pytest.fixture(scope="session")
@@ -18,8 +19,9 @@ def model_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(autouse=True)
 def test_keys_env(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Set test API keys via TRIAGE_API_KEYS environment variable (Part D)."""
+    """Set test API keys via TRIAGE_API_KEYS and ADMIN_API_KEYS environment variables."""
     monkeypatch.setenv("TRIAGE_API_KEYS", TEST_API_KEYS)
+    monkeypatch.setenv("ADMIN_API_KEYS", TEST_ADMIN_API_KEYS)
     return TEST_API_KEYS
 
 
@@ -27,6 +29,7 @@ def test_keys_env(monkeypatch: pytest.MonkeyPatch) -> str:
 def _model_env(model_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRIAGE_MODEL_PATH", str(model_file))
     monkeypatch.setenv("TRIAGE_API_KEYS", TEST_API_KEYS)
+    monkeypatch.setenv("ADMIN_API_KEYS", TEST_ADMIN_API_KEYS)
 
 
 @pytest.fixture(autouse=True)
@@ -44,10 +47,13 @@ def feedback_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path | s
         try:
             with engine.begin() as conn:
                 if engine.dialect.name == "postgresql":
-                    conn.execute(text("TRUNCATE feedback, predictions CASCADE;"))
+                    conn.execute(
+                        text("TRUNCATE feedback, predictions, api_key_usage CASCADE;")
+                    )
                 else:
                     conn.execute(text("DELETE FROM feedback;"))
                     conn.execute(text("DELETE FROM predictions;"))
+                    conn.execute(text("DELETE FROM api_key_usage;"))
         finally:
             engine.dispose()
         return db_url.strip()
@@ -70,3 +76,9 @@ def test_keys() -> list[str]:
 def auth_headers() -> dict[str, str]:
     """Provide default authentication headers with a valid test key."""
     return {"X-API-Key": "test-key-1"}
+
+
+@pytest.fixture
+def admin_auth_headers() -> dict[str, str]:
+    """Provide default authentication headers with a valid admin test key."""
+    return {"X-API-Key": "test-admin-key-1"}

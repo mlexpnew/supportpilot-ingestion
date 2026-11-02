@@ -22,6 +22,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     MetaData,
     String,
     Table,
@@ -69,6 +70,16 @@ feedback = Table(
     Column("agent_id", String(64), nullable=False),
     Column("created_at", String(64), nullable=False),
     Index("idx_feedback_correct_label", "correct_label"),
+)
+
+api_key_usage = Table(
+    "api_key_usage",
+    metadata,
+    Column("key_hash", String(64), primary_key=True),
+    Column("first_seen", String(64), nullable=False),
+    Column("last_seen", String(64), nullable=False),
+    Column("ok_count", Integer, nullable=False, server_default="0"),
+    Column("auth_fail_count", Integer, nullable=False, server_default="0"),
 )
 
 
@@ -244,6 +255,7 @@ class FeedbackStore:
 
         self.predictions = predictions
         self.feedback = feedback
+        self.api_key_usage = api_key_usage
 
     def _insert(self, table: Table) -> Any:
         if self.engine.dialect.name == "sqlite":
@@ -783,6 +795,54 @@ class FeedbackStore:
             needs_review_tracked=needs_review_tracked,
             first_tracked_date=first_tracked_date,
         )
+
+    def record_key_usage(
+        self,
+        key_hash: str,
+        ok: bool,
+        timestamp: str | None = None,
+    ) -> None:
+        """Record or update API key usage statistics.
+
+        Zero-PII guarantee: records only the key hash, never the raw key.
+        Upsert: insert new row, or increment ok_count / auth_fail_count and update last_seen.
+        """
+        ts = timestamp or datetime.now(UTC).isoformat()
+        ok_inc = 1 if ok else 0
+        fail_inc = 0 if ok else 1
+
+        stmt = self._insert(self.api_key_usage).values(
+            key_hash=key_hash,
+            first_seen=ts,
+            last_seen=ts,
+            ok_count=ok_inc,
+            auth_fail_count=fail_inc,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[self.api_key_usage.c.key_hash],
+            set_={
+                "last_seen": ts,
+                "ok_count": self.api_key_usage.c.ok_count + ok_inc,
+                "auth_fail_count": self.api_key_usage.c.auth_fail_count + fail_inc,
+            },
+        )
+        with self.engine.begin() as conn:
+            conn.execute(stmt)
+
+    def get_key_usage(self, key_hash: str | None = None) -> list[dict[str, Any]]:
+        """Return usage records for a specific key_hash or all keys."""
+        stmt = select(
+            self.api_key_usage.c.key_hash,
+            self.api_key_usage.c.first_seen,
+            self.api_key_usage.c.last_seen,
+            self.api_key_usage.c.ok_count,
+            self.api_key_usage.c.auth_fail_count,
+        ).order_by(self.api_key_usage.c.last_seen.desc())
+        if key_hash is not None:
+            stmt = stmt.where(self.api_key_usage.c.key_hash == key_hash)
+
+        with self.engine.connect() as conn:
+            return [dict(row) for row in conn.execute(stmt).mappings()]
 
     def close(self) -> None:
         """Dispose of the SQLAlchemy engine and connection pool."""
