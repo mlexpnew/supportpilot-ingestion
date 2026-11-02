@@ -9,11 +9,16 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime, timedelta
 import logging
+import os
 from pathlib import Path
 
 from supportpilot.api.alerts import get_alert_thresholds
 from supportpilot.feedback.models import DateRangeStats
-from supportpilot.feedback.store import FeedbackStore, get_feedback_store
+from supportpilot.feedback.store import (
+    FeedbackStore,
+    get_feedback_store,
+    init_db,
+)
 from supportpilot.triage import LABELS
 
 logger = logging.getLogger(__name__)
@@ -366,7 +371,13 @@ def generate_weekly_report(
         (report_file_path, markdown_content)
     """
     if store is None:
-        store = get_feedback_store()
+        db_url = os.getenv("REPORT_DATABASE_URL") or os.getenv("DATABASE_URL")
+        if db_url and db_url.strip():
+            store = FeedbackStore(database_url=db_url.strip())
+        else:
+            store = get_feedback_store()
+            if store.db_type == "sqlite":
+                init_db(engine=store.engine)
 
     stats = store.get_stats(from_date, to_date)
 
