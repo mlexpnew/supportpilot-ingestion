@@ -41,12 +41,14 @@ jobs:
         env:
           REPORT_DATABASE_URL: ${{ secrets.REPORT_DATABASE_URL }}
           DATABASE_URL: ${{ secrets.REPORT_DATABASE_URL }}
+          FROM_DATE: ${{ inputs.from_date }}
+          TO_DATE: ${{ inputs.to_date }}
         run: |
-          if [ -n "${{ inputs.from_date }}" ] && [ -n "${{ inputs.to_date }}" ]; then
-            echo "Generating report for custom date range: ${{ inputs.from_date }} to ${{ inputs.to_date }}"
-            python -m supportpilot.reports.weekly --from "${{ inputs.from_date }}" --to "${{ inputs.to_date }}" --out reports/
+          if [ -n "$FROM_DATE" ] && [ -n "$TO_DATE" ]; then
+            echo "Generating report for custom date range: $FROM_DATE to $TO_DATE"
+            python -m supportpilot.reports.weekly --from "$FROM_DATE" --to "$TO_DATE" --out reports/
           else
-            echo "Generating report for the last 7 days"
+            echo "Generating report for default date range"
             python -m supportpilot.reports.weekly --out reports/
           fi
 

@@ -422,7 +422,7 @@ def main() -> int:
         return 1
 
     now = datetime.now(UTC)
-    default_to = now.strftime("%Y-%m-%d")
+    default_to = (now - timedelta(days=1)).strftime("%Y-%m-%d")
     default_from = (now - timedelta(days=7)).strftime("%Y-%m-%d")
 
     parser = argparse.ArgumentParser(
@@ -440,7 +440,7 @@ def main() -> int:
         dest="to_date",
         type=str,
         default=default_to,
-        help=f"End date in YYYY-MM-DD format (default: today, {default_to})",
+        help=f"End date in YYYY-MM-DD format (default: yesterday, {default_to})",
     )
     parser.add_argument(
         "--out",
