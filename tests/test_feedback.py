@@ -67,6 +67,7 @@ def test_init_db_creates_both_tables_and_indices(tmp_path: Path) -> None:
         "confidence",
         "model_version",
         "created_at",
+        "needs_review",
     ]
 
     # Verify feedback table columns and primary key (ticket_id is PK)

@@ -3,3 +3,5 @@ pytest==8.4.2
 ruff==0.14.0
 black==25.9.0
 httpx
+matplotlib==3.9.2
+
