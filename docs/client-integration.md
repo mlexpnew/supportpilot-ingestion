@@ -213,3 +213,4 @@ curl -s -X POST "https://supportpilot-ingestion.onrender.com/feedback" \
 
 - **Zero-PII Storage**: All incoming ticket text is scrubbed through PII redaction filters before inference. No raw ticket bodies, customer names, email addresses, or phone numbers are ever persisted in databases or application logs.
 - **Key Hashing**: API keys are authenticated using constant-time byte comparisons. Usage tracking records only an 8-character cryptographic SHA-256 hash prefix (`key_hash`), never raw keys.
+
