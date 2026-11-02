@@ -287,6 +287,14 @@ def test_generate_weekly_report_writes_file_and_cli(
     # Test CLI execution
     import sys
 
+    monkeypatch.setenv(
+        "REPORT_DATABASE_URL", "postgresql://mock:mock@localhost:5432/mock"
+    )
+    monkeypatch.setattr(
+        "supportpilot.reports.weekly.FeedbackStore",
+        lambda *args, **kwargs: store,
+    )
+
     monkeypatch.setattr(
         sys,
         "argv",
@@ -300,8 +308,6 @@ def test_generate_weekly_report_writes_file_and_cli(
             str(out_dir),
         ],
     )
-    # Monkeypatch store in weekly module
-    monkeypatch.setattr("supportpilot.reports.weekly.get_feedback_store", lambda: store)
 
     code = main()
     assert code == 0
@@ -320,6 +326,61 @@ def test_generate_weekly_report_writes_file_and_cli(
     assert code_default == 0
 
     store.close()
+
+
+def test_cli_missing_report_database_url_exits_nonzero_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify that if REPORT_DATABASE_URL is missing, CLI exits with non-zero code and writes no report file."""
+    monkeypatch.delenv("REPORT_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    out_dir = tmp_path / "reports_should_not_exist"
+    import sys
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "weekly.py",
+            "--from",
+            "2026-10-26",
+            "--to",
+            "2026-11-01",
+            "--out",
+            str(out_dir),
+        ],
+    )
+
+    code = main()
+    assert code != 0
+    captured = capsys.readouterr()
+    assert (
+        "REPORT_DATABASE_URL not set, refusing to generate a report from an empty database"
+        in captured.err
+    )
+    assert not out_dir.exists() or list(out_dir.glob("*.md")) == []
+
+
+def test_generate_weekly_report_missing_url_raises_runtime_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify generate_weekly_report raises RuntimeError if store is None and REPORT_DATABASE_URL is not set."""
+    monkeypatch.delenv("REPORT_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    out_dir = tmp_path / "reports_should_not_exist"
+    with pytest.raises(
+        RuntimeError,
+        match="REPORT_DATABASE_URL not set, refusing to generate a report from an empty database",
+    ):
+        generate_weekly_report(
+            from_date="2026-10-26",
+            to_date="2026-11-01",
+            output_path=out_dir,
+            store=None,
+        )
+    assert not out_dir.exists() or list(out_dir.glob("*.md")) == []
 
 
 def test_zero_pii_in_rendered_markdown() -> None:

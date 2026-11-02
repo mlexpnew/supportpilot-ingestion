@@ -11,14 +11,11 @@ from datetime import UTC, datetime, timedelta
 import logging
 import os
 from pathlib import Path
+import sys
 
 from supportpilot.api.alerts import get_alert_thresholds
 from supportpilot.feedback.models import DateRangeStats
-from supportpilot.feedback.store import (
-    FeedbackStore,
-    get_feedback_store,
-    init_db,
-)
+from supportpilot.feedback.store import FeedbackStore
 from supportpilot.triage import LABELS
 
 logger = logging.getLogger(__name__)
@@ -370,48 +367,60 @@ def generate_weekly_report(
     Returns:
         (report_file_path, markdown_content)
     """
+    close_store_after = False
     if store is None:
-        db_url = os.getenv("REPORT_DATABASE_URL") or os.getenv("DATABASE_URL")
-        if db_url and db_url.strip():
-            store = FeedbackStore(database_url=db_url.strip())
-        else:
-            store = get_feedback_store()
-            if store.db_type == "sqlite":
-                init_db(engine=store.engine)
-
-    stats = store.get_stats(from_date, to_date)
-
-    out = Path(output_path)
-    if out.suffix == ".md":
-        report_file = out
-    else:
-        out.mkdir(parents=True, exist_ok=True)
-        clean_from = from_date.replace(":", "-")
-        clean_to = to_date.replace(":", "-")
-        report_file = out / f"pilot_report_{clean_from}_{clean_to}.md"
-
-    report_file.parent.mkdir(parents=True, exist_ok=True)
-
-    if chart_paths is None:
-        try:
-            from .charts import generate_charts
-
-            chart_paths = generate_charts(stats, output_dir=report_file.parent)
-        except Exception:
-            logger.exception(
-                "Failed to generate report charts; proceeding without charts."
+        db_url = os.getenv("REPORT_DATABASE_URL")
+        if not db_url or not db_url.strip():
+            raise RuntimeError(
+                "REPORT_DATABASE_URL not set, refusing to generate a report from an empty database"
             )
-            chart_paths = {}
+        store = FeedbackStore(database_url=db_url.strip())
+        close_store_after = True
 
-    content = render_markdown(stats, chart_paths=chart_paths)
-    report_file.write_text(content, encoding="utf-8")
-    logger.info("Weekly report written to %s", report_file)
+    try:
+        stats = store.get_stats(from_date, to_date)
 
-    return report_file, content
+        out = Path(output_path)
+        if out.suffix == ".md":
+            report_file = out
+        else:
+            out.mkdir(parents=True, exist_ok=True)
+            clean_from = from_date.replace(":", "-")
+            clean_to = to_date.replace(":", "-")
+            report_file = out / f"pilot_report_{clean_from}_{clean_to}.md"
+
+        report_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if chart_paths is None:
+            try:
+                from .charts import generate_charts
+
+                chart_paths = generate_charts(stats, output_dir=report_file.parent)
+            except Exception:
+                logger.exception(
+                    "Failed to generate report charts; proceeding without charts."
+                )
+                chart_paths = {}
+
+        content = render_markdown(stats, chart_paths=chart_paths)
+        report_file.write_text(content, encoding="utf-8")
+        logger.info("Weekly report written to %s", report_file)
+
+        return report_file, content
+    finally:
+        if close_store_after:
+            store.close()
 
 
 def main() -> int:
     """CLI entrypoint for weekly pilot report generation."""
+    db_url = os.getenv("REPORT_DATABASE_URL")
+    if not db_url or not db_url.strip():
+        msg = "REPORT_DATABASE_URL not set, refusing to generate a report from an empty database"
+        logger.error(msg)
+        print(f"ERROR: {msg}", file=sys.stderr)
+        return 1
+
     now = datetime.now(UTC)
     default_to = now.strftime("%Y-%m-%d")
     default_from = (now - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -443,11 +452,16 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    report_file, _ = generate_weekly_report(
-        from_date=args.from_date,
-        to_date=args.to_date,
-        output_path=args.out_dir,
-    )
+    try:
+        report_file, _ = generate_weekly_report(
+            from_date=args.from_date,
+            to_date=args.to_date,
+            output_path=args.out_dir,
+        )
+    except Exception as exc:
+        logger.exception("Failed to generate weekly report: %s", exc)
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
     print(f"Weekly pilot report generated successfully: {report_file}")
     return 0
