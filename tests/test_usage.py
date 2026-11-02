@@ -7,7 +7,9 @@ from typing import Any
 from fastapi.testclient import TestClient
 import pytest
 
+from supportpilot.api.alerts import evaluate_alerts, get_alert_thresholds
 from supportpilot.api.main import app, get_admin_api_keys, hash_api_key
+from supportpilot.api.models import MetricsResponse
 from supportpilot.feedback.store import FeedbackStore, init_db
 
 
@@ -211,3 +213,64 @@ def test_no_client_traffic_alert() -> None:
         assert res_recent.status_code == 200
         active_names = [a["name"] for a in res_recent.json()["alerts"]]
         assert "no_client_traffic" not in active_names
+
+
+def test_stale_key_alert_fires_after_24h_faked_time() -> None:
+    """Verify evaluate_alerts fires no_client_traffic alert when last_seen > 24 hours using faked reference time."""
+    fake_now = datetime(2026, 11, 2, 12, 0, 0, tzinfo=timezone.utc)
+    stale_time = fake_now - timedelta(hours=25)
+    recent_time = fake_now - timedelta(hours=2)
+
+    thresholds = get_alert_thresholds()
+    metrics = MetricsResponse(
+        requests_total=0,
+        triage_total=0,
+        errors_total=0,
+        avg_latency_ms=0.0,
+        needs_review_rate=0.0,
+        rate_limited_total=0,
+    )
+
+    client_key_hashes = {"client_hash_1"}
+
+    # 1. Stale key (25h ago) -> triggers alert
+    stale_usage = [
+        {
+            "key_hash": "client_hash_1",
+            "first_seen": stale_time.isoformat(),
+            "last_seen": stale_time.isoformat(),
+            "ok_count": 5,
+            "auth_fail_count": 0,
+        }
+    ]
+    alerts_stale = evaluate_alerts(
+        metrics=metrics,
+        thresholds=thresholds,
+        key_usage=stale_usage,
+        client_key_hashes=client_key_hashes,
+        now=fake_now,
+    )
+    stale_alerts = [a for a in alerts_stale if a.name == "no_client_traffic"]
+    assert len(stale_alerts) == 1
+    assert stale_alerts[0].severity == "warning"
+    assert stale_alerts[0].threshold == 24.0
+    assert stale_alerts[0].value == 25.0
+
+    # 2. Active key (2h ago) -> does not trigger alert
+    recent_usage = [
+        {
+            "key_hash": "client_hash_1",
+            "first_seen": recent_time.isoformat(),
+            "last_seen": recent_time.isoformat(),
+            "ok_count": 5,
+            "auth_fail_count": 0,
+        }
+    ]
+    alerts_recent = evaluate_alerts(
+        metrics=metrics,
+        thresholds=thresholds,
+        key_usage=recent_usage,
+        client_key_hashes=client_key_hashes,
+        now=fake_now,
+    )
+    assert not any(a.name == "no_client_traffic" for a in alerts_recent)
