@@ -44,10 +44,13 @@ def feedback_db_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path | s
         try:
             with engine.begin() as conn:
                 if engine.dialect.name == "postgresql":
-                    conn.execute(text("TRUNCATE feedback, predictions CASCADE;"))
+                    conn.execute(
+                        text("TRUNCATE feedback, predictions, api_key_usage CASCADE;")
+                    )
                 else:
                     conn.execute(text("DELETE FROM feedback;"))
                     conn.execute(text("DELETE FROM predictions;"))
+                    conn.execute(text("DELETE FROM api_key_usage;"))
         finally:
             engine.dispose()
         return db_url.strip()

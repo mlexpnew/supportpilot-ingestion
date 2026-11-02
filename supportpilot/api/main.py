@@ -168,7 +168,20 @@ def get_api_key(
     key_hash = hash_api_key(api_key)
     request.state.api_key_hash = key_hash
     valid_keys: set[str] = getattr(request.app.state, "api_keys", set())
-    if not validate_api_key(api_key, valid_keys):
+    is_valid = validate_api_key(api_key, valid_keys)
+
+    try:
+        feedback_store: Any = getattr(request.app.state, "feedback_store", None)
+        if feedback_store is not None and hasattr(feedback_store, "record_key_usage"):
+            feedback_store.record_key_usage(key_hash=key_hash, ok=is_valid)
+    except Exception:
+        logger.exception(
+            "Failed to record API key usage for key_hash=%s",
+            key_hash,
+            extra={"api_key_hash": key_hash},
+        )
+
+    if not is_valid:
         logger.warning(
             "api_key_hash=%s authentication failed",
             key_hash,
