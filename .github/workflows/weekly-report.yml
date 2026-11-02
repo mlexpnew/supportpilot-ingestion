@@ -52,6 +52,13 @@ jobs:
             python -m supportpilot.reports.weekly --out reports/
           fi
 
+      - name: Show report on run page
+        run: |
+          for f in reports/*.md; do
+            cat "$f" >> "$GITHUB_STEP_SUMMARY"
+            cat "$f"
+          done
+
       - name: Upload report artifact
         uses: actions/upload-artifact@v4
         with:
