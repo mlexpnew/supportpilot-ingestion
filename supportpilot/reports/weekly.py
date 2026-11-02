@@ -376,14 +376,6 @@ def generate_weekly_report(
             )
         store = FeedbackStore(database_url=db_url.strip())
         close_store_after = True
-        try:
-            from supportpilot.feedback.store import init_db
-
-            init_db(engine=store.engine)
-        except Exception:
-            logger.debug(
-                "Automatic schema check skipped or failed; proceeding with existing schema."
-            )
 
     try:
         stats = store.get_stats(from_date, to_date)
