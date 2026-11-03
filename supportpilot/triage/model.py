@@ -60,6 +60,20 @@ def format_model_version(version: str, training_date: str) -> str:
     return f"triage-v{semver}-{cleaned_date}"
 
 
+def score_prediction(
+    label: str,
+    confidence: float,
+    threshold: float,
+) -> dict[str, Any]:
+    """Apply standard threshold and needs_review decision to a single prediction (SP-117)."""
+    conf = round(float(confidence), 4)
+    return {
+        "label": str(label),
+        "confidence": conf,
+        "needs_review": bool(conf < threshold),
+    }
+
+
 def compute_cv_macro_f1(
     pipeline: Pipeline,
     texts: Sequence[str],
@@ -282,40 +296,57 @@ class TriageClassifier:
         classes = self.pipeline.classes_
         return {str(cls): float(prob) for cls, prob in zip(classes, probabilities)}
 
+    def predict_batch_scored(
+        self,
+        texts: Sequence[str],
+        threshold: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Vectorized prediction of categories, confidence scores, and review flags (SP-117).
+
+        Evaluates pipeline.predict_proba on the entire batch in a single inference call.
+        Applies shared thresholding logic and produces results identical to predict_one.
+        """
+        if not self._is_fitted:
+            raise RuntimeError("Model is not fitted.")
+
+        if not texts:
+            return []
+
+        th = self.confidence_threshold if threshold is None else threshold
+        classes = self.pipeline.classes_
+
+        # Separate empty vs non-empty texts while preserving exact order
+        non_empty_indices: list[int] = []
+        non_empty_texts: list[str] = []
+        results: list[dict[str, Any]] = [{} for _ in texts]
+
+        for i, text in enumerate(texts):
+            if not text or not text.strip():
+                results[i] = {
+                    "label": "other",
+                    "confidence": 1.0,
+                    "needs_review": False,
+                }
+            else:
+                non_empty_indices.append(i)
+                non_empty_texts.append(text)
+
+        if non_empty_texts:
+            probs_matrix = self.pipeline.predict_proba(non_empty_texts)
+            for i, row in zip(non_empty_indices, probs_matrix):
+                best_idx = int(row.argmax())
+                pred_label = str(classes[best_idx])
+                conf = float(row[best_idx])
+                results[i] = score_prediction(pred_label, conf, th)
+
+        return results
+
     def predict_one(self, text: str, threshold: float | None = None) -> dict[str, Any]:
         """Predict ticket category with confidence score and human review flag.
 
-        Args:
-            text: Customer ticket body text.
-            threshold: Confidence threshold for human review. If confidence < threshold,
-                needs_review is True. Defaults to self.confidence_threshold.
-
-        Returns:
-            Dictionary containing:
-                - 'label': predicted category string from LABELS
-                - 'confidence': predicted probability float (rounded to
-                  4 decimal places)
-                - 'needs_review': boolean flag indicating low confidence
+        Delegates to predict_batch_scored to guarantee identical behavior.
         """
-        th = self.confidence_threshold if threshold is None else threshold
-
-        if not text or not text.strip():
-            return {
-                "label": "other",
-                "confidence": 1.0,
-                "needs_review": False,
-            }
-
-        pred_label = self.predict(text)
-        probs = self.predict_proba(text)
-        confidence = round(probs.get(pred_label, 0.0), 4)
-        needs_review = confidence < th
-
-        return {
-            "label": pred_label,
-            "confidence": confidence,
-            "needs_review": needs_review,
-        }
+        return self.predict_batch_scored([text], threshold=threshold)[0]
 
     def save(self, path: Path | str) -> Path:
         """Serialize and save the trained pipeline and metadata to disk."""

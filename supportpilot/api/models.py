@@ -34,3 +34,36 @@ class KeyUsageItem(BaseModel):
     last_seen: str
     ok_count: int
     auth_fail_count: int
+
+
+class BatchSummary(BaseModel):
+    """Batch execution counts summary."""
+
+    total: int
+    ok: int
+    failed: int
+
+
+class BatchItemResult(BaseModel):
+    """Individual ticket triage result within a batch."""
+
+    ticket_id: str
+    status: str  # "ok" or "error"
+    label: str | None = None
+    confidence: float | None = None
+    needs_review: bool | None = None
+    cached: bool | None = None
+    error: str | None = None
+
+
+class BatchTriageRequest(BaseModel):
+    """Request payload for batch triage endpoint."""
+
+    tickets: list[object] = []
+
+
+class BatchTriageResponse(BaseModel):
+    """Response schema for batch triage endpoint."""
+
+    results: list[BatchItemResult]
+    summary: BatchSummary

@@ -33,12 +33,15 @@ Before routing production ticket traffic, run the automated integration diagnost
 ```bash
 export SUPPORTPILOT_API_KEY="your-assigned-api-key"
 python examples/client_check.py
+# Or verify batch triage capabilities:
+python examples/client_check.py --batch
 ```
 
 The script performs:
 1. Public liveness probe (`GET /health`)
 2. Authenticated ticket triage (`POST /triage`)
-3. Validation of response schema and predictions
+3. Optional batch triage check (`POST /triage/batch` when `--batch` is passed)
+4. Validation of response schema and predictions
 
 A successful run outputs:
 ```text
@@ -164,7 +167,139 @@ else:
 
 ---
 
-### 3.3 Human Feedback: `POST /feedback`
+### 3.3 Batch Ticket Triage: `POST /triage/batch`
+
+Enables high-throughput bulk classification for historical backlogs (e.g. ingesting 5,000 backlog tickets) and high-volume burst ingestion.
+
+#### Key Features & Guarantees
+- **Vectorized Performance**: Batch inference is executed in a single vectorized model call rather than ticket-by-ticket (100 tickets finish in < 2 seconds).
+- **Single Database Transaction**: All newly predicted tickets are persisted atomically in one database write.
+- **Partial Failure Resiliency**: A malformed ticket in a batch does not fail the entire batch. Valid tickets are processed normally; invalid items return status `"error"` with a concise description (e.g. `invalid ticket_id`, `body is empty`). The request returns **HTTP 200** as long as the request structure itself is valid.
+- **Idempotency & Safe Retries**:
+  - **Duplicate within batch**: If the same `ticket_id` appears more than once in the same request payload, subsequent occurrences are marked as errors with `"error": "duplicate_in_batch"`.
+  - **Existing tickets cached**: If a `ticket_id` was already triaged before, SupportPilot immediately returns the stored prediction with `"cached": true` without re-evaluating the model or modifying the database.
+  - Clients can safely re-send batches upon network timeouts or transient errors without duplicate predictions or corrupting telemetry counters.
+
+#### Batch Limits & Throttling
+| Limit | Threshold | Status Code | Behavior |
+| :--- | :--- | :--- | :--- |
+| **Max Batch Size** | **100 tickets / request** | `413 Payload Too Large` | Checked before processing. Batches with 101+ tickets are rejected immediately. |
+| **Request Rate Limit** | **60 requests / minute** | `429 Too Many Requests` | A batch request of up to 100 tickets counts as **1 request** against the 60 req/min limit. |
+| **Ticket Rate Limit** | **1,000 tickets / minute** | `429 Too Many Requests` | Sliding-window limiter on cumulative ticket count per API key. Returns `Retry-After: <seconds>`. |
+
+#### Request Payload Schema
+```json
+{
+  "tickets": [
+    {
+      "ticket_id": "TICKET-1001",
+      "subject": "Delivery tracking inquiry",
+      "body": "Where is my shipment? Tracking says delayed."
+    },
+    {
+      "ticket_id": "TICKET-1002",
+      "subject": "Cancel order",
+      "body": "Please cancel order #48291 and process refund."
+    }
+  ]
+}
+```
+
+#### Response Payload Schema (`200 OK`)
+```json
+{
+  "results": [
+    {
+      "ticket_id": "TICKET-1001",
+      "status": "ok",
+      "label": "order_status",
+      "confidence": 0.9412,
+      "needs_review": false,
+      "cached": false
+    },
+    {
+      "ticket_id": "TICKET-1002",
+      "status": "ok",
+      "label": "cancellation",
+      "confidence": 0.9105,
+      "needs_review": false,
+      "cached": false
+    }
+  ],
+  "summary": {
+    "total": 2,
+    "ok": 2,
+    "failed": 0
+  }
+}
+```
+
+#### Example Request (`cURL`)
+```bash
+curl -s -X POST "https://supportpilot-ingestion.onrender.com/triage/batch" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $SUPPORTPILOT_API_KEY" \
+  -d '{
+    "tickets": [
+      {
+        "ticket_id": "TICKET-2001",
+        "subject": "Delayed shipment",
+        "body": "My package has not moved in four days."
+      },
+      {
+        "ticket_id": "TICKET-2002",
+        "body": "Can I return this item for a full refund?"
+      }
+    ]
+  }'
+```
+
+#### Recommended Backlog Ingestion Pattern (Python)
+When ingesting large historical archives (e.g. 5,000 tickets):
+1. Chunk your ticket list into batches of **100 tickets**.
+2. Respect the **1,000 tickets/minute** rate limit (e.g. send up to 10 batches per minute, or 1 batch every 6 seconds).
+3. If receiving **HTTP 429**, inspect the `Retry-After` response header, sleep for that duration, and retry the batch safely (idempotent caching ensures zero duplicate work).
+
+```python
+import os
+import time
+import requests
+
+api_key = os.environ["SUPPORTPILOT_API_KEY"]
+url = "https://supportpilot-ingestion.onrender.com/triage/batch"
+
+
+def chunked(items, n=100):
+    for i in range(0, len(items), n):
+        yield items[i : i + n]
+
+
+def ingest_backlog(all_tickets):
+    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+
+    for batch in chunked(all_tickets, 100):
+        while True:
+            resp = requests.post(
+                url, json={"tickets": batch}, headers=headers, timeout=30
+            )
+            if resp.status_code == 429:
+                wait_time = int(resp.headers.get("Retry-After", 10))
+                print(f"Rate limited (tickets/min); waiting {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            print(
+                f"Batch processed: ok={data['summary']['ok']} failed={data['summary']['failed']}"
+            )
+            break
+        # Pace throughput to ~1,000 tickets/min (100 tickets every 6s)
+        time.sleep(6.0)
+```
+
+---
+
+### 3.4 Human Feedback: `POST /feedback`
 
 Submits human agent confirmation or correction for closed tickets. Used to compute live model accuracy and drive continuous model retraining.
 
@@ -202,9 +337,9 @@ curl -s -X POST "https://supportpilot-ingestion.onrender.com/feedback" \
 | HTTP Status | Error Reason | Root Cause | Resolution / Fix |
 | :--- | :--- | :--- | :--- |
 | **401 Unauthorized** | Invalid or missing API key | Header `X-API-Key` is missing or value does not match provisioned client keys. | Verify that `$SUPPORTPILOT_API_KEY` is loaded in your environment. Ensure no whitespace or quotes are in the header value. Contact SupportPilot team to verify key provisioning. |
-| **413 Payload Too Large** | Request body exceeds 10 KB | Ingestion payload exceeds `MAX_BODY_BYTES` (10,240 bytes). Usually caused by attaching full email thread history or raw base64 signatures. | Truncate previous email reply history before sending. Send only the subject and recent customer inquiry text. |
-| **422 Unprocessable Entity** | Schema validation failed | Required fields missing (`ticket_id` or `body`), `ticket_id` > 64 characters, or malformed JSON syntax. | Validate JSON structure against OpenAPI contract. Ensure `ticket_id` is a non-empty string between 1 and 64 characters. |
-| **429 Too Many Requests** | Rate limit exceeded | Exceeded quota of 60 requests per 60 seconds per API key. | Inspect `Retry-After: 60` response header. Implement exponential backoff and jitter. If your throughput requirement exceeds 1 req/sec, contact SupportPilot for rate limit increases. |
+| **413 Payload Too Large** | Request exceeds size limit | In `/triage`: payload exceeds `MAX_BODY_BYTES` (10,240 bytes). In `/triage/batch`: batch contains more than 100 tickets. | In `/triage`, truncate email reply history. In `/triage/batch`, partition tickets into batches of $\le 100$ items. |
+| **422 Unprocessable Entity** | Schema validation failed | Required fields missing or malformed JSON syntax. | Validate JSON structure against OpenAPI contract. (Note: `/triage/batch` accepts loose item dicts to report per-ticket partial failures under 200 OK). |
+| **429 Too Many Requests** | Rate limit exceeded | Exceeded quota of 60 requests per 60 seconds, or exceeded 1,000 tickets per minute for batch endpoints. | Inspect `Retry-After` header. Implement exponential backoff and pacing (e.g. 1 batch of 100 every 6 seconds). Safe to retry due to idempotent caching. |
 | **503 Service Unavailable** | Cold start or initialization | Free-tier container spins down after 15 min of inactivity; spin-up takes ~50s. | Retry request after 30–60 seconds. Uptime monitor keeps container warm during business hours. |
 
 ---
