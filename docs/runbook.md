@@ -318,3 +318,68 @@ curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.c
 - **Neha** (Client & Support Lead): Contact client integration lead with diagnostic details from `/usage`.
 - **Sana** (API Tech Lead): Monitor `/usage` and `/alerts` once client confirms traffic resumption.
 
+---
+
+## Incident 7: Client 401 Unauthorized (Credential Mismatch & Leaked Key Revocation)
+
+### Symptoms
+- `python examples/client_check.py` fails on step 2:
+  ```text
+  ✅ /health
+  ❌ /triage (401 Unauthorized)
+     Fix: Check that $SUPPORTPILOT_API_KEY matches your assigned key with no trailing spaces.
+  ```
+- Client reports inability to ingest tickets or send backlogs (~5,000 tickets blocked).
+- Render logs show `WARNING: api_key_hash=unknown auth failed path=/triage` with HTTP 401 responses.
+- `GET /usage` telemetry shows elevated `auth_fail_count` or client key completely absent from active hash lists.
+- A client API key was compromised or leaked (e.g. hash `3dfcb467`), requiring immediate revocation without taking down production.
+
+### Check
+```bash
+# 1. Run integration diagnostic script with the client key to isolate failure mode:
+export SUPPORTPILOT_API_KEY="client-key-to-verify"
+python examples/client_check.py
+
+# 2. Compute 8-char SHA-256 hash prefix without printing key to shell history:
+pbpaste | python3 -c "import sys,hashlib;print(hashlib.sha256(sys.stdin.read().strip().encode()).hexdigest()[:8])"
+
+# 3. Check /usage endpoint (Admin key) to confirm active key hashes and auth failures:
+curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.com/usage | jq .
+
+# 4. Verify whether leaked key hash 3dfcb467 is still receiving traffic or present in Render TRIAGE_API_KEYS
+```
+
+### Fix
+1. **Revoke compromised key (Immediate Security Action)**:
+   - In [Render Dashboard](https://dashboard.render.com) -> SupportPilot Web Service -> **Environment**.
+   - Inspect `TRIAGE_API_KEYS`. If the leaked key (hash `3dfcb467`) is present, delete it immediately.
+2. **Provision new client key**:
+   - Add the newly generated client key to `TRIAGE_API_KEYS`.
+   - Click **Save Changes** and allow Render rolling redeployment to complete (~1-2 min).
+3. **Secure Handover (Zero-Leakage Policy)**:
+   - Transmit the new client key to Neha exclusively via an encrypted team password manager (e.g. 1Password / Bitwarden team vault).
+   - **Never** post raw keys in Slack channels, GitHub issues/PRs, email bodies, or unencrypted local notes.
+4. **End-to-End Diagnostic Verification**:
+   - Re-run `client_check.py` with the new key to verify successful triage before handing off to the client:
+     ```bash
+     python examples/client_check.py
+     # Verify batch triage capabilities:
+     python examples/client_check.py --batch
+     ```
+   - Both commands must output `✅ /health`, `✅ /triage`, and `✅ /triage/batch`.
+
+### Notify
+- **Neha** (Client Lead): Share the vault item containing the rotated key and confirm client unblocking.
+- **Sana** (API Tech Lead): Monitor `/usage` to ensure `auth_fail_count` halts and client traffic flows.
+- **Dev** (Infrastructure Lead): Audit Render logs for any remaining attempts using revoked key hash `3dfcb467`.
+
+### Lessons Learned & Takeaways
+1. **Automated Diagnostic Tooling Prevents Multi-Day Roadblocks**:
+   Without `examples/client_check.py`, integration roadblocks (like missing keys or wrong headers) look identical to silent downtime or unstarted client work. A 5-second diagnostic run immediately pinpoints 401 (auth), 413 (payload size), 422 (schema), or 429 (rate limits).
+2. **Cryptographic Hash-Only Auditing**:
+   By logging and exposing only the first 8 characters of `SHA-256(key)`, the operations team can verify key rotation and diagnose auth failures without ever exposing raw credentials in logs, metrics, or alerts.
+3. **Zero Plaintext Secrets Rule**:
+   Accidental exposure of credentials in chats or developer notes introduces serious incident overhead. All credential creation, rotation, and handoffs must strictly pass through encrypted secret vaults.
+4. **Always Verify End-to-End Before Handover**:
+   Never tell a client a key is active until `client_check.py` returns `✅ /triage` against the live production environment.
+
