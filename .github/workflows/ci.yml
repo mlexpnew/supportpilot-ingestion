@@ -96,10 +96,12 @@ jobs:
       - name: Build Docker image (build 2)
         run: docker build --no-cache -t supportpilot-api-2 .
 
-      - name: Verify build fails on invalid MODEL_SHA256
+      - name: Verify build fails on invalid checksums
         run: |
-          echo "Testing build failure with mismatched SHA-256..."
+          echo "Testing build failure with mismatched model SHA-256..."
           ! docker build --no-cache --build-arg MODEL_SHA256=0000000000000000000000000000000000000000000000000000000000000000 -t supportpilot-bad-sha .
+          echo "Testing build failure with mismatched metadata SHA-256..."
+          ! docker build --no-cache --build-arg MODEL_META_SHA256=0000000000000000000000000000000000000000000000000000000000000000 -t supportpilot-bad-meta-sha .
 
       - name: Tag primary image
         run: docker tag supportpilot-api-1 supportpilot-api

@@ -104,8 +104,8 @@ Arjun's rule: *“Promotion should be boring: one config change, one restart, on
 ### Safe Promotion Procedure (SP-116):
 1. Ensure the comparison report confirms `PROMOTED`.
 2. Publish a new GitHub Release with the challenger model and metadata JSON (e.g. `model-triage-v1.1.0`).
-3. Compute the SHA-256 fingerprint (`shasum -a 256 ...`).
-4. Update `MODEL_URL` and `MODEL_SHA256` in `Dockerfile`.
+3. Compute the SHA-256 fingerprints for both `.joblib` and `.json` assets (`shasum -a 256 ...`).
+4. Update `MODEL_URL`, `MODEL_SHA256`, `MODEL_META_URL`, and `MODEL_META_SHA256` in `Dockerfile`.
 5. Open a Pull Request for review with Rohan (ML) and Dev (Infra). Once merged, Render automatically builds and deploys the new pinned model.
 6. Verify promotion via the `/version` endpoint:
    ```bash
@@ -115,6 +115,6 @@ Arjun's rule: *“Promotion should be boring: one config change, one restart, on
 
 ### Safe Rollback Procedure (SP-116):
 If the promoted model exhibits unexpected behavior or regression in live production:
-1. Open a one-line PR reverting `MODEL_URL` and `MODEL_SHA256` in `Dockerfile` to the previous release.
+1. Open a one-line PR reverting `MODEL_URL`, `MODEL_SHA256`, `MODEL_META_URL`, and `MODEL_META_SHA256` in `Dockerfile` to the previous release.
 2. Merge the PR. Render deploys the previous champion release within minutes.
 3. Verify rollback via `GET /version`.

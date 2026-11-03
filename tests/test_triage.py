@@ -766,7 +766,7 @@ def test_pinned_model_artifact_checksum_and_version_stability() -> None:
 
 
 def test_pinned_model_checksum_verification_detects_tampering(tmp_path: Path) -> None:
-    """SP-116: Verify sha256 checksum mismatch detection logic."""
+    """SP-116: Verify sha256 checksum mismatch detection logic for model and metadata."""
     import hashlib
 
     fake_model = tmp_path / "model.joblib"
@@ -776,3 +776,13 @@ def test_pinned_model_checksum_verification_detects_tampering(tmp_path: Path) ->
     expected_sha = "202b892995a6fbf102b0eaca00504c4f364dc1349f965d6302cb4dd70358ac55"
 
     assert computed_sha != expected_sha
+
+    fake_meta = tmp_path / "model.json"
+    fake_meta.write_bytes(b'{"version": "tampered-version"}')
+
+    computed_meta_sha = hashlib.sha256(fake_meta.read_bytes()).hexdigest()
+    expected_meta_sha = (
+        "b1b0d95b84825191bbb2b5e7d29da837ce8eda8d62eb3cafb388f6f2c14a5a1b"
+    )
+
+    assert computed_meta_sha != expected_meta_sha

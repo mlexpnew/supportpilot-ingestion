@@ -17,14 +17,17 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Pinned model build args (defaults to published GitHub release v1.0.0)
 ARG MODEL_URL=https://github.com/mlexpnew/supportpilot-ingestion/releases/download/model-triage-v1.0.0/triage_model.joblib
 ARG MODEL_SHA256=202b892995a6fbf102b0eaca00504c4f364dc1349f965d6302cb4dd70358ac55
+ARG MODEL_META_URL=https://github.com/mlexpnew/supportpilot-ingestion/releases/download/model-triage-v1.0.0/triage_model.json
+ARG MODEL_META_SHA256=b1b0d95b84825191bbb2b5e7d29da837ce8eda8d62eb3cafb388f6f2c14a5a1b
 
 # Download and verify pinned model artifact and metadata JSON
 RUN mkdir -p models && \
     apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates && \
     curl -fsSL "$MODEL_URL" -o models/triage_model.joblib && \
-    curl -fsSL "${MODEL_URL%.joblib}.json" -o models/triage_model.json && \
+    curl -fsSL "$MODEL_META_URL" -o models/triage_model.json && \
     echo "$MODEL_SHA256 models/triage_model.joblib" | sha256sum -c - && \
+    echo "$MODEL_META_SHA256 models/triage_model.json" | sha256sum -c - && \
     rm -rf /var/lib/apt/lists/*
 
 # Optimize virtual environment to keep final image well under 400 MB:

@@ -69,14 +69,16 @@ TAG="model-triage-v1.1.0"
 MODEL_FILE="models/triage-v1.1.0-20261027.joblib"
 META_FILE="models/triage-v1.1.0-20261027.json"
 
-# Calculate SHA-256 checksum
+# Calculate SHA-256 checksums
 SHA256=$(shasum -a 256 "$MODEL_FILE" | awk '{print $1}')
-echo "SHA-256 fingerprint: $SHA256"
+META_SHA256=$(shasum -a 256 "$META_FILE" | awk '{print $1}')
+echo "Model SHA-256: $SHA256"
+echo "Metadata SHA-256: $META_SHA256"
 
 # Create the GitHub Release and upload both assets
 gh release create "$TAG" "$MODEL_FILE" "$META_FILE" \
   --title "$TAG" \
-  --notes "Pinned triage model artifact $TAG with metadata. SHA-256: $SHA256" \
+  --notes "Pinned triage model artifact $TAG with metadata. Model SHA-256: $SHA256 | Meta SHA-256: $META_SHA256" \
   --target main
 ```
 
@@ -84,12 +86,14 @@ gh release create "$TAG" "$MODEL_FILE" "$META_FILE" \
 
 ## Step 4: Promote via Dockerfile Config
 
-Promotion is purely declarative configuration. Edit `Dockerfile` to point default build arguments to the new release asset:
+Promotion is purely declarative configuration. Edit `Dockerfile` to point default build arguments to the new release assets with explicit URLs and hashes:
 
 ```dockerfile
 # Pinned model build args (defaults to published GitHub release)
 ARG MODEL_URL=https://github.com/mlexpnew/supportpilot-ingestion/releases/download/model-triage-v1.1.0/triage-v1.1.0-20261027.joblib
-ARG MODEL_SHA256=<NEW_SHA256_FINGERPRINT>
+ARG MODEL_SHA256=<NEW_MODEL_SHA256>
+ARG MODEL_META_URL=https://github.com/mlexpnew/supportpilot-ingestion/releases/download/model-triage-v1.1.0/triage-v1.1.0-20261027.json
+ARG MODEL_META_SHA256=<NEW_META_SHA256>
 ```
 
 ---
@@ -131,7 +135,7 @@ Once merged to `main`:
 
 If a newly promoted model displays anomalies or degraded real-world performance:
 
-1. Open a one-line PR restoring `MODEL_URL` and `MODEL_SHA256` in `Dockerfile` to the previous release.
+1. Open a one-line PR restoring `MODEL_URL`, `MODEL_SHA256`, `MODEL_META_URL`, and `MODEL_META_SHA256` in `Dockerfile` to the previous release.
 2. Merge the PR.
 3. Render rebuilds and redeploys the proven previous release within minutes.
 
