@@ -245,7 +245,9 @@ def test_batch_triage_duplicate_ticket_id_in_same_batch() -> None:
 
 
 def test_batch_triage_idempotent_re_send_returns_cached_prediction() -> None:
-    """SP-117 Part C: A ticket already triaged before returns cached: True (no re-prediction, no overwrite)."""
+    """SP-117 Part C: A ticket already triaged before returns cached: True; DB row count unchanged."""
+    from sqlalchemy import func, select
+
     with TestClient(app) as client:
         batch = {
             "tickets": [
@@ -264,6 +266,13 @@ def test_batch_triage_idempotent_re_send_returns_cached_prediction() -> None:
         label_1 = data1["results"][0]["label"]
         conf_1 = data1["results"][0]["confidence"]
 
+        # Check DB count after first batch
+        store = client.app.state.feedback_store
+        with store.engine.connect() as conn:
+            count_after_first = conn.scalar(
+                select(func.count()).select_from(store.predictions)
+            )
+
         # Second call: identical request -> returned from DB with cached=True
         res2 = client.post("/triage/batch", headers=AUTH_HEADER, json=batch)
         assert res2.status_code == 200
@@ -273,6 +282,13 @@ def test_batch_triage_idempotent_re_send_returns_cached_prediction() -> None:
         assert data2["results"][1]["cached"] is True
         assert data2["results"][0]["label"] == label_1
         assert data2["results"][0]["confidence"] == conf_1
+
+        # Assert DB row count is strictly unchanged
+        with store.engine.connect() as conn:
+            count_after_second = conn.scalar(
+                select(func.count()).select_from(store.predictions)
+            )
+        assert count_after_second == count_after_first
 
 
 def test_batch_predictions_match_single_predictions_exactly() -> None:
@@ -317,28 +333,37 @@ def test_batch_predictions_match_single_predictions_exactly() -> None:
             assert batch["needs_review"] == single["needs_review"]
 
 
-def test_batch_100_tickets_finishes_under_two_seconds() -> None:
-    """SP-117 Part D: 100 tickets finish in < 2 s locally (vectorized performance test)."""
+def test_batch_100_tickets_finishes_under_two_seconds(caplog) -> None:
+    """SP-117 Part D: 100 tickets finish in < 2 s locally; zero ticket text in captured logs."""
+    import logging
+
+    secret_marker = "SECRET_PAYLOAD_BODY_TOKEN_PERF_TEST_100"
+
     with TestClient(app) as client:
         batch_100 = {
             "tickets": [
                 {
                     "ticket_id": f"T-PERF-{i}",
                     "subject": "Status check",
-                    "body": f"Where is package order tracking shipment parcel #{i}?",
+                    "body": f"{secret_marker} Where is package order tracking shipment parcel #{i}?",
                 }
                 for i in range(100)
             ]
         }
-        t0 = time.perf_counter()
-        res = client.post("/triage/batch", headers=AUTH_HEADER, json=batch_100)
-        elapsed = time.perf_counter() - t0
+        with caplog.at_level(logging.INFO):
+            t0 = time.perf_counter()
+            res = client.post("/triage/batch", headers=AUTH_HEADER, json=batch_100)
+            elapsed = time.perf_counter() - t0
 
         assert res.status_code == 200
         data = res.json()
         assert data["summary"]["total"] == 100
         assert data["summary"]["ok"] == 100
         assert elapsed < 2.0, f"100 tickets took {elapsed:.2f}s, expected < 2.0s"
+
+        # Verify zero ticket body text in logs
+        log_text = caplog.text
+        assert secret_marker not in log_text
 
 
 def test_batch_counters_increment_triage_total_and_needs_review() -> None:
