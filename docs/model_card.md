@@ -140,8 +140,8 @@ Automated triage must not misroute ambiguous tickets silently. The model incorpo
 
 ## 8. Model History
 
-| Version | Date | Data Size | Macro F1 | Notes |
-|---|---|---|---|---|
-| `triage-v1.0.0-20261022` | 2026-10-22 | 180 | 0.8471 | Baseline production champion model trained on initial labeled dataset (`data/triage_labeled.jsonl`). |
-| `triage-v1.1.0-20261027` | 2026-10-27 | 180 | 0.9666 | First challenger candidate evaluated on sacred frozen evaluation set (`data/eval_frozen.jsonl`). |
+| Version | Date | Data Size | Macro F1 | Release Asset | Notes |
+|---|---|---|---|---|---|
+| `triage-v1.0.0-20261022` | 2026-10-22 | 180 | 0.8471 | [`model-triage-v1.0.0`](https://github.com/mlexpnew/supportpilot-ingestion/releases/tag/model-triage-v1.0.0) | Baseline production champion model pinned in `Dockerfile`. |
+| `triage-v1.1.0-20261027` | 2026-10-27 | 180 | 0.9666 | [`model-triage-v1.1.0`](https://github.com/mlexpnew/supportpilot-ingestion/releases/tag/model-triage-v1.1.0) | First challenger candidate evaluated on sacred frozen evaluation set (`data/eval_frozen.jsonl`). |
 

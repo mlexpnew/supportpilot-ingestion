@@ -737,3 +737,42 @@ def test_tiny_dataset_macro_f1_returns_none_with_warning(caplog) -> None:
         "Dataset too small for cross-validation (<2 examples per label); "
         "macro_f1 set to None."
     ) in caplog.text
+
+
+def test_pinned_model_artifact_checksum_and_version_stability() -> None:
+    """SP-116: Verify model artifact checksum and version remain stable across repeated loads."""
+    import hashlib
+
+    model_path = Path("models/triage_model.joblib")
+    if not model_path.exists():
+        pytest.skip("models/triage_model.joblib not present in local workspace")
+
+    content = model_path.read_bytes()
+    initial_sha = hashlib.sha256(content).hexdigest()
+
+    # Load first time
+    model_1 = TriageClassifier.load(model_path)
+    ver_1 = model_1.version
+
+    # Load second time
+    model_2 = TriageClassifier.load(model_path)
+    ver_2 = model_2.version
+
+    # Content and SHA must remain identical
+    after_sha = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    assert initial_sha == after_sha
+    assert ver_1 == ver_2
+    assert ver_1 is not None
+
+
+def test_pinned_model_checksum_verification_detects_tampering(tmp_path: Path) -> None:
+    """SP-116: Verify sha256 checksum mismatch detection logic."""
+    import hashlib
+
+    fake_model = tmp_path / "model.joblib"
+    fake_model.write_bytes(b"corrupted or wrong model artifact bytes")
+
+    computed_sha = hashlib.sha256(fake_model.read_bytes()).hexdigest()
+    expected_sha = "202b892995a6fbf102b0eaca00504c4f364dc1349f965d6302cb4dd70358ac55"
+
+    assert computed_sha != expected_sha

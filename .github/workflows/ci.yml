@@ -90,8 +90,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Build Docker image
-        run: docker build -t supportpilot-api .
+      - name: Build Docker image (build 1)
+        run: docker build -t supportpilot-api-1 .
+
+      - name: Build Docker image (build 2)
+        run: docker build --no-cache -t supportpilot-api-2 .
+
+      - name: Verify build fails on invalid MODEL_SHA256
+        run: |
+          echo "Testing build failure with mismatched SHA-256..."
+          ! docker build --no-cache --build-arg MODEL_SHA256=0000000000000000000000000000000000000000000000000000000000000000 -t supportpilot-bad-sha .
+
+      - name: Tag primary image
+        run: docker tag supportpilot-api-1 supportpilot-api
 
       - name: Verify image size under 400 MB
         run: |
@@ -103,21 +114,54 @@ jobs:
             exit 1
           fi
 
-      - name: Run container
-        run: docker run -d --name api -p 8000:8000 -e TRIAGE_API_KEYS=ci-test-key-1 -e ADMIN_API_KEYS=ci-admin-key-1 -e ALLOW_SQLITE_FALLBACK=1 supportpilot-api
-
-      - name: Call /health
+      - name: Run container (build 1) and test /health & /version
         run: |
+          docker run -d --name api-1 -p 8000:8000 -e TRIAGE_API_KEYS=ci-test-key-1 -e ADMIN_API_KEYS=ci-admin-key-1 -e ALLOW_SQLITE_FALLBACK=1 supportpilot-api-1
+          HEALTHY=0
           for i in {1..40}; do
             if [ "$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health)" = "200" ]; then
-              echo "Health check succeeded: /health returned 200 OK after ${i}s"
-              exit 0
+              echo "Health check succeeded for build 1 after ${i}s"
+              HEALTHY=1
+              break
             fi
             sleep 1
           done
-          echo "Error: /health did not return 200 within 40 seconds"
-          exit 1
+          if [ "$HEALTHY" -ne 1 ]; then
+            echo "Error: /health did not return 200 within 40 seconds on build 1"
+            exit 1
+          fi
+          V1=$(curl -s http://localhost:8000/version | python3 -c "import sys, json; print(json.load(sys.stdin).get('model_version', ''))")
+          echo "Build 1 model_version: $V1"
+          echo "V1=$V1" >> $GITHUB_ENV
+          docker stop api-1 && docker rm api-1
+
+      - name: Run container (build 2) and verify model_version matches
+        run: |
+          docker run -d --name api-2 -p 8000:8000 -e TRIAGE_API_KEYS=ci-test-key-1 -e ADMIN_API_KEYS=ci-admin-key-1 -e ALLOW_SQLITE_FALLBACK=1 supportpilot-api-2
+          HEALTHY=0
+          for i in {1..40}; do
+            if [ "$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health)" = "200" ]; then
+              echo "Health check succeeded for build 2 after ${i}s"
+              HEALTHY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$HEALTHY" -ne 1 ]; then
+            echo "Error: /health did not return 200 within 40 seconds on build 2"
+            exit 1
+          fi
+          V2=$(curl -s http://localhost:8000/version | python3 -c "import sys, json; print(json.load(sys.stdin).get('model_version', ''))")
+          echo "Build 2 model_version: $V2"
+          docker stop api-2 && docker rm api-2
+          if [ -z "$V1" ] || [ -z "$V2" ] || [ "$V1" != "$V2" ]; then
+            echo "Error: model_version mismatch between consecutive builds: '$V1' vs '$V2'"
+            exit 1
+          fi
+          echo "Verified: model_version matches across consecutive builds: $V1 == $V2"
 
       - name: Dump container logs on failure
         if: failure()
-        run: docker logs api
+        run: |
+          docker logs api-1 2>/dev/null || true
+          docker logs api-2 2>/dev/null || true

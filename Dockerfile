@@ -1,4 +1,4 @@
-# Stage 1: Build virtual environment and train model
+# Stage 1: Build virtual environment and download pinned model
 FROM python:3.11-slim AS builder
 
 WORKDIR /app
@@ -14,12 +14,18 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy source code and training data
-COPY supportpilot/ supportpilot/
-COPY data/ data/
+# Pinned model build args (defaults to published GitHub release v1.0.0)
+ARG MODEL_URL=https://github.com/mlexpnew/supportpilot-ingestion/releases/download/model-triage-v1.0.0/triage_model.joblib
+ARG MODEL_SHA256=202b892995a6fbf102b0eaca00504c4f364dc1349f965d6302cb4dd70358ac55
 
-# Train triage model (generates models/triage_model.joblib)
-RUN python -m supportpilot.triage --train
+# Download and verify pinned model artifact and metadata JSON
+RUN mkdir -p models && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    curl -fsSL "$MODEL_URL" -o models/triage_model.joblib && \
+    curl -fsSL "${MODEL_URL%.joblib}.json" -o models/triage_model.json && \
+    echo "$MODEL_SHA256 models/triage_model.joblib" | sha256sum -c - && \
+    rm -rf /var/lib/apt/lists/*
 
 # Optimize virtual environment to keep final image well under 400 MB:
 # Strip binary symbols, remove caches, and uninstall build tools
