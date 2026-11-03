@@ -31,6 +31,7 @@ from sqlalchemy import (
     event,
     func,
     select,
+    update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -80,6 +81,18 @@ api_key_usage = Table(
     Column("last_seen", String(64), nullable=False),
     Column("ok_count", Integer, nullable=False, server_default="0"),
     Column("auth_fail_count", Integer, nullable=False, server_default="0"),
+)
+
+api_keys = Table(
+    "api_keys",
+    metadata,
+    Column("name", String(64), primary_key=True),
+    Column("key_hash", String(64), nullable=False, unique=True),
+    Column("role", String(32), nullable=False),
+    Column("created_at", String(64), nullable=False),
+    Column("revoked_at", String(64), nullable=True),
+    Column("last_used_at", String(64), nullable=True),
+    Index("idx_api_keys_key_hash", "key_hash"),
 )
 
 
@@ -256,6 +269,7 @@ class FeedbackStore:
         self.predictions = predictions
         self.feedback = feedback
         self.api_key_usage = api_key_usage
+        self.api_keys = api_keys
 
     def _insert(self, table: Table) -> Any:
         if self.engine.dialect.name == "sqlite":
@@ -901,6 +915,118 @@ class FeedbackStore:
 
         with self.engine.connect() as conn:
             return [dict(row) for row in conn.execute(stmt).mappings()]
+
+    def create_key(
+        self,
+        name: str,
+        key_hash: str,
+        role: str = "client",
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new API key record with its SHA-256 hash and role (SP-118).
+
+        Zero-secret guarantee: raw keys are never passed or stored in the database.
+        Only SHA-256 key_hash is stored.
+        """
+        if role not in ("client", "admin"):
+            raise ValueError(f"Invalid role '{role}'. Must be 'client' or 'admin'.")
+        name = name.strip()
+        if not name:
+            raise ValueError("API key name cannot be empty.")
+        if len(name) > 64:
+            raise ValueError("API key name exceeds maximum length of 64 characters.")
+
+        ts = created_at or datetime.now(UTC).isoformat()
+        stmt = self.api_keys.insert().values(
+            name=name,
+            key_hash=key_hash,
+            role=role,
+            created_at=ts,
+            revoked_at=None,
+            last_used_at=None,
+        )
+        with self.engine.begin() as conn:
+            conn.execute(stmt)
+
+        return {
+            "name": name,
+            "key_hash": key_hash,
+            "role": role,
+            "created_at": ts,
+            "revoked_at": None,
+            "last_used_at": None,
+        }
+
+    def get_key_by_hash(self, key_hash: str) -> dict[str, Any] | None:
+        """Find API key record by SHA-256 key_hash (SP-118)."""
+        stmt = select(
+            self.api_keys.c.name,
+            self.api_keys.c.key_hash,
+            self.api_keys.c.role,
+            self.api_keys.c.created_at,
+            self.api_keys.c.revoked_at,
+            self.api_keys.c.last_used_at,
+        ).where(self.api_keys.c.key_hash == key_hash)
+
+        with self.engine.connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+            return dict(row) if row is not None else None
+
+    def get_key_by_name(self, name: str) -> dict[str, Any] | None:
+        """Find API key record by name (SP-118)."""
+        stmt = select(
+            self.api_keys.c.name,
+            self.api_keys.c.key_hash,
+            self.api_keys.c.role,
+            self.api_keys.c.created_at,
+            self.api_keys.c.revoked_at,
+            self.api_keys.c.last_used_at,
+        ).where(self.api_keys.c.name == name)
+
+        with self.engine.connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+            return dict(row) if row is not None else None
+
+    def list_keys(self) -> list[dict[str, Any]]:
+        """List all API key records (names and hashes, never raw keys) (SP-118)."""
+        stmt = select(
+            self.api_keys.c.name,
+            self.api_keys.c.key_hash,
+            self.api_keys.c.role,
+            self.api_keys.c.created_at,
+            self.api_keys.c.revoked_at,
+            self.api_keys.c.last_used_at,
+        ).order_by(self.api_keys.c.created_at.asc())
+
+        with self.engine.connect() as conn:
+            return [dict(row) for row in conn.execute(stmt).mappings()]
+
+    def revoke_key(self, name: str) -> bool:
+        """Revoke an active API key by name immediately (SP-118).
+
+        Returns True if the key was active and is now revoked; False if not found or already revoked.
+        """
+        now = datetime.now(UTC).isoformat()
+        stmt = (
+            update(self.api_keys)
+            .where(self.api_keys.c.name == name)
+            .where(self.api_keys.c.revoked_at.is_(None))
+            .values(revoked_at=now)
+        )
+        with self.engine.begin() as conn:
+            res = conn.execute(stmt)
+            return res.rowcount > 0
+
+    def update_key_last_used(self, key_hash: str, timestamp: str | None = None) -> None:
+        """Update last_used_at timestamp for a key_hash (SP-118)."""
+        ts = timestamp or datetime.now(UTC).isoformat()
+        stmt = (
+            update(self.api_keys)
+            .where(self.api_keys.c.key_hash == key_hash)
+            .values(last_used_at=ts)
+        )
+        with self.engine.begin() as conn:
+            conn.execute(stmt)
 
     def close(self) -> None:
         """Dispose of the SQLAlchemy engine and connection pool."""
