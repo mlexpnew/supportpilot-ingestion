@@ -98,31 +98,23 @@ The promotion decision follows Rohan's strict fair test rule:
 
 Arjun's rule: *“Promotion should be boring: one config change, one restart, one rollback path.”*
 
-### Safe Promotion Procedure:
+> [!NOTE]
+> Following **SP-116**, model binaries are published to GitHub Releases and pinned via `MODEL_URL` and `MODEL_SHA256` in `Dockerfile`. Refer to [Model Releases Guide](model-releases.md) for the complete release process.
+
+### Safe Promotion Procedure (SP-116):
 1. Ensure the comparison report confirms `PROMOTED`.
-2. Locate the generated challenger file in `models/` (e.g. `models/triage-v1.1.0-20261027.joblib`).
-3. Open [Render Dashboard](https://dashboard.render.com) -> SupportPilot Web Service -> **Environment**.
-4. Update the environment variable `TRIAGE_MODEL_PATH` to point to the challenger file:
-   ```text
-   TRIAGE_MODEL_PATH=models/triage-v1.1.0-20261027.joblib
-   ```
-5. Click **Save Changes**. Render performs a rolling restart without any code changes or rebuild.
+2. Publish a new GitHub Release with the challenger model and metadata JSON (e.g. `model-triage-v1.1.0`).
+3. Compute the SHA-256 fingerprints for both `.joblib` and `.json` assets (`shasum -a 256 ...`).
+4. Update `MODEL_URL`, `MODEL_SHA256`, `MODEL_META_URL`, and `MODEL_META_SHA256` in `Dockerfile`.
+5. Open a Pull Request for review with Rohan (ML) and Dev (Infra). Once merged, Render automatically builds and deploys the new pinned model.
 6. Verify promotion via the `/version` endpoint:
    ```bash
-   curl -s https://supportpilot-ingestion.onrender.com/version | jq .
-   # Expected: {"git_sha": "...", "model_version": "triage-v1.1.0-20261027", "started_at": "..."}
+   curl -s https://supportpilot-ingestion.onrender.com/version | python3 -m json.tool
+   # Expected: {"git_sha": "...", "model_version": "triage-v1.1.0-YYYYMMDD", "started_at": "..."}
    ```
 
-### Safe Rollback Procedure:
+### Safe Rollback Procedure (SP-116):
 If the promoted model exhibits unexpected behavior or regression in live production:
-1. Open [Render Dashboard](https://dashboard.render.com) -> SupportPilot Web Service -> **Environment**.
-2. Point `TRIAGE_MODEL_PATH` back to the original champion:
-   ```text
-   TRIAGE_MODEL_PATH=models/triage_model.joblib
-   ```
-3. Click **Save Changes**. Render restarts the service with the champion model immediately restored.
-4. Verify rollback:
-   ```bash
-   curl -s https://supportpilot-ingestion.onrender.com/version | jq .
-   # Expected: model_version returns to champion version
-   ```
+1. Open a one-line PR reverting `MODEL_URL`, `MODEL_SHA256`, `MODEL_META_URL`, and `MODEL_META_SHA256` in `Dockerfile` to the previous release.
+2. Merge the PR. Render deploys the previous champion release within minutes.
+3. Verify rollback via `GET /version`.
