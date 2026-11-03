@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from supportpilot.api.alerts import (
     AlertThresholds,
@@ -25,7 +25,15 @@ from supportpilot.api.alerts import (
     evaluate_alerts,
     get_alert_thresholds,
 )
-from supportpilot.api.models import KeyUsageItem, MetricsResponse, VersionResponse
+from supportpilot.api.models import (
+    BatchItemResult,
+    BatchSummary,
+    BatchTriageRequest,
+    BatchTriageResponse,
+    KeyUsageItem,
+    MetricsResponse,
+    VersionResponse,
+)
 from supportpilot.feedback import (
     MAX_ID_LENGTH,
     FeedbackRequest,
@@ -44,8 +52,11 @@ from supportpilot.triage.model import (
 )
 
 MAX_BODY_BYTES: int = 10 * 1024  # 10 KB limit
+MAX_BATCH_SIZE: int = 100  # Maximum tickets allowed in a single batch request
 RATE_LIMIT_WINDOW_SECONDS: float = 60.0  # 60 second sliding window
 RATE_LIMIT_MAX_REQUESTS: int = 60  # Maximum requests allowed per sliding window
+TICKET_RATE_LIMIT_DEFAULT: int = 1000  # Default tickets allowed per minute per key
+TICKET_RATE_LIMIT_WINDOW_SECONDS: float = 60.0  # Sliding window for ticket rate limiter
 logger = logging.getLogger(__name__)
 
 REQUEST_ID_REGEX = re.compile(r"^[A-Za-z0-9-]{1,64}$")
@@ -320,6 +331,78 @@ def rate_limit(
     rate_limits[key_hash] = active_timestamps
 
 
+def get_ticket_rate_limit(app: FastAPI | None = None) -> int:
+    """Return maximum allowed tickets per minute per key."""
+    if app is not None and hasattr(app.state, "ticket_rate_limit_per_minute"):
+        return int(app.state.ticket_rate_limit_per_minute)
+    env_val = os.getenv("TICKET_RATE_LIMIT_PER_MINUTE")
+    if env_val:
+        try:
+            return int(env_val)
+        except ValueError:
+            pass
+    return TICKET_RATE_LIMIT_DEFAULT
+
+
+def check_ticket_rate_limit(
+    request: Request,
+    key_hash: str,
+    ticket_count: int,
+) -> None:
+    """Enforce per-key sliding window rate limit on number of tickets processed per minute."""
+    if ticket_count <= 0:
+        return
+
+    ticket_rate_limits: dict[str, list[tuple[float, int]]] | None = getattr(
+        request.app.state, "ticket_rate_limits", None
+    )
+    if ticket_rate_limits is None:
+        ticket_rate_limits = {}
+        request.app.state.ticket_rate_limits = ticket_rate_limits
+
+    now = time.monotonic()
+    entries = ticket_rate_limits.get(key_hash, [])
+    active_entries = [
+        (ts, cnt) for ts, cnt in entries if now - ts < TICKET_RATE_LIMIT_WINDOW_SECONDS
+    ]
+
+    max_tickets = get_ticket_rate_limit(request.app)
+    current_tickets = sum(cnt for _, cnt in active_entries)
+
+    if current_tickets + ticket_count > max_tickets:
+        oldest_ts = active_entries[0][0] if active_entries else now
+        retry_after = max(
+            1, math.ceil((oldest_ts + TICKET_RATE_LIMIT_WINDOW_SECONDS) - now)
+        )
+        ticket_rate_limits[key_hash] = active_entries
+        counters: Counters | None = getattr(request.app.state, "counters", None)
+        if counters is not None:
+            counters.rate_limited_total += 1
+        logger.warning(
+            "api_key_hash=%s ticket rate limit exceeded current=%d requested=%d max=%d retry_after=%ds",
+            key_hash,
+            current_tickets,
+            ticket_count,
+            max_tickets,
+            retry_after,
+            extra={
+                "api_key_hash": key_hash,
+                "current_tickets": current_tickets,
+                "requested_tickets": ticket_count,
+                "max_tickets": max_tickets,
+                "retry_after": retry_after,
+            },
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Too Many Requests: ticket rate limit exceeded",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    active_entries.append((now, ticket_count))
+    ticket_rate_limits[key_hash] = active_entries
+
+
 class TriageRequest(BaseModel):
     ticket_id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
     subject: str | None = None
@@ -386,6 +469,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.admin_api_keys = get_admin_api_keys()
     validate_key_separation(app.state.api_keys, app.state.admin_api_keys)
     app.state.rate_limits = {}
+    app.state.ticket_rate_limits = {}
+    app.state.ticket_rate_limit_per_minute = get_ticket_rate_limit(app)
     app.state.alert_thresholds = get_alert_thresholds()
     app.state.started_at = datetime.now(timezone.utc).isoformat()
     yield
@@ -413,6 +498,8 @@ app.state.counters = Counters()
 app.state.api_keys = set()
 app.state.admin_api_keys = set()
 app.state.rate_limits = {}
+app.state.ticket_rate_limits = {}
+app.state.ticket_rate_limit_per_minute = TICKET_RATE_LIMIT_DEFAULT
 app.state.feedback_store = None
 app.state.alert_thresholds = None
 app.state.started_at = None
@@ -704,6 +791,251 @@ def triage(request: TriageRequest, req: Request) -> TriageResponse:
         needs_review=result["needs_review"],
         model_version=model.version,
     )
+
+
+def extract_short_validation_error(exc: ValidationError) -> str:
+    """Format a short, safe error reason without leaking any input ticket text."""
+    errs = exc.errors()
+    if not errs:
+        return "validation error"
+    first = errs[0]
+    loc = ".".join(str(part) for part in first.get("loc", []))
+    msg = str(first.get("msg", "invalid")).lower()
+    err_type = str(first.get("type", "")).lower()
+
+    if "body" in loc:
+        if "empty" in msg or "missing" in err_type:
+            return "missing or empty body"
+        return "invalid body"
+    if "ticket_id" in loc:
+        if "missing" in err_type:
+            return "missing or empty ticket_id"
+        return "invalid ticket_id format"
+    return f"invalid {loc}" if loc else "validation error"
+
+
+@app.post(
+    "/triage/batch",
+    response_model=BatchTriageResponse,
+    dependencies=[Depends(rate_limit)],
+)
+def triage_batch(
+    payload: BatchTriageRequest,
+    req: Request,
+    api_key: str = Depends(get_api_key),
+) -> BatchTriageResponse:
+    """Triage a batch of tickets (SP-117).
+
+    - Max 100 tickets per request (101 gives 413 Payload Too Large).
+    - Enforces sliding window rate limit of 1,000 tickets/minute per key (429).
+    - Per-ticket validation: invalid tickets do not fail the batch.
+    - Idempotent: cached predictions are returned with cached=True.
+    - Summary metrics: total, ok, failed.
+    """
+    start_time = time.perf_counter()
+
+    # 1. More than 100 tickets -> 413 (check list length before any work)
+    if len(payload.tickets) > MAX_BATCH_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Batch size ({len(payload.tickets)}) exceeds maximum limit of {MAX_BATCH_SIZE} tickets",
+        )
+
+    # 2. Tickets per minute per key rate limiter (default 1,000/min)
+    key_hash = getattr(req.state, "api_key_hash", None) or hash_api_key(api_key)
+    check_ticket_rate_limit(req, key_hash, len(payload.tickets))
+
+    model = getattr(req.app.state, "model", None)
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model is not loaded")
+
+    threshold = getattr(req.app.state, "threshold", DEFAULT_CONFIDENCE_THRESHOLD)
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+
+    results: list[BatchItemResult] = []
+    seen_in_batch: set[str] = set()
+    valid_tickets: list[tuple[int, TriageRequest]] = []
+
+    # 1. Per-ticket validation pass
+    for item in payload.tickets:
+        if not isinstance(item, dict):
+            results.append(
+                BatchItemResult(
+                    ticket_id="unknown",
+                    status="error",
+                    error="ticket must be an object",
+                )
+            )
+            continue
+
+        raw_id = item.get("ticket_id")
+        tid_fallback = (
+            str(raw_id).strip()[:MAX_ID_LENGTH]
+            if raw_id is not None and str(raw_id).strip()
+            else "unknown"
+        )
+
+        try:
+            validated_ticket = TriageRequest.model_validate(item)
+        except HTTPException:
+            # 10 KB body limit check from TriageRequest validator
+            results.append(
+                BatchItemResult(
+                    ticket_id=tid_fallback,
+                    status="error",
+                    error=f"body exceeds {MAX_BODY_BYTES} bytes limit",
+                )
+            )
+            continue
+        except ValidationError as exc:
+            results.append(
+                BatchItemResult(
+                    ticket_id=tid_fallback,
+                    status="error",
+                    error=extract_short_validation_error(exc),
+                )
+            )
+            continue
+        except Exception:
+            results.append(
+                BatchItemResult(
+                    ticket_id=tid_fallback,
+                    status="error",
+                    error="invalid ticket format",
+                )
+            )
+            continue
+
+        tid = validated_ticket.ticket_id
+        if tid in seen_in_batch:
+            results.append(
+                BatchItemResult(
+                    ticket_id=tid,
+                    status="error",
+                    error="duplicate_in_batch",
+                )
+            )
+            continue
+        seen_in_batch.add(tid)
+
+        # Place placeholder in results to preserve exact input order
+        curr_idx = len(results)
+        results.append(BatchItemResult(ticket_id=tid, status="ok"))
+        valid_tickets.append((curr_idx, validated_ticket))
+
+    # 2. One DB query: fetch existing predictions for all valid ticket IDs (SP-117 Part C)
+    cached_predictions: dict[str, dict[str, Any]] = {}
+    valid_tids = [vt.ticket_id for _, vt in valid_tickets]
+    if feedback_store is not None and valid_tids:
+        try:
+            cached_predictions = feedback_store.get_predictions_batch(valid_tids)
+        except Exception:
+            logger.exception("Failed to fetch cached predictions for batch")
+
+    # 3. Partition into cached vs new (unpredicted) tickets
+    to_predict_indices: list[int] = []
+    to_predict_texts: list[str] = []
+    to_predict_tids: list[str] = []
+
+    for res_idx, vt in valid_tickets:
+        tid = vt.ticket_id
+        if tid in cached_predictions:
+            # Already in DB -> return stored prediction with cached: true (no re-prediction, no overwrite)
+            cached = cached_predictions[tid]
+            results[res_idx] = BatchItemResult(
+                ticket_id=tid,
+                status="ok",
+                label=cached["predicted_label"],
+                confidence=cached["confidence"],
+                needs_review=cached.get("needs_review", False),
+                cached=True,
+            )
+        else:
+            # New ticket -> prepare for model prediction
+            red_subj = redact_text(vt.subject).text if vt.subject else None
+            red_body = redact_text(vt.body).text
+            text_to_classify = (
+                f"{red_subj} {red_body}".strip() if red_subj else red_body
+            )
+            to_predict_indices.append(res_idx)
+            to_predict_texts.append(text_to_classify)
+            to_predict_tids.append(tid)
+
+    # 4. Predict all new tickets in one single batch call (SP-117 Part D)
+    counters: Counters | None = getattr(req.app.state, "counters", None)
+    new_predictions_to_save: list[dict[str, Any]] = []
+
+    if to_predict_texts:
+        batch_predictions = model.predict_batch_scored(
+            to_predict_texts, threshold=threshold
+        )
+        for idx, tid, pred in zip(
+            to_predict_indices, to_predict_tids, batch_predictions
+        ):
+            results[idx] = BatchItemResult(
+                ticket_id=tid,
+                status="ok",
+                label=pred["label"],
+                confidence=pred["confidence"],
+                needs_review=pred["needs_review"],
+                cached=False,
+            )
+            new_predictions_to_save.append(
+                {
+                    "ticket_id": tid,
+                    "predicted_label": pred["label"],
+                    "confidence": pred["confidence"],
+                    "model_version": model.version,
+                    "needs_review": pred["needs_review"],
+                }
+            )
+
+        if counters is not None:
+            counters.triage_total += len(batch_predictions)
+            counters.needs_review_total += sum(
+                1 for p in batch_predictions if p["needs_review"]
+            )
+
+    # 5. Store all new predictions in a single database transaction (SP-117 Part D)
+    if feedback_store is not None and new_predictions_to_save:
+        try:
+            feedback_store.save_predictions_batch(new_predictions_to_save)
+        except Exception:
+            logger.exception("Failed to save batch predictions in database")
+
+    ok_count = sum(1 for r in results if r.status == "ok")
+    failed_count = sum(1 for r in results if r.status == "error")
+    cached_count = sum(1 for r in results if r.cached is True)
+    summary = BatchSummary(
+        total=len(payload.tickets),
+        ok=ok_count,
+        failed=failed_count,
+    )
+
+    latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    request_id = getattr(req.state, "request_id", None)
+    logger.info(
+        "request_id=%s total=%d ok=%d failed=%d cached=%d latency_ms=%.2f",
+        request_id,
+        summary.total,
+        summary.ok,
+        summary.failed,
+        cached_count,
+        latency_ms,
+        extra={
+            "request_id": request_id,
+            "total": summary.total,
+            "ok": summary.ok,
+            "failed": summary.failed,
+            "cached": cached_count,
+            "latency_ms": latency_ms,
+            "api_key_hash": key_hash,
+        },
+    )
+
+    return BatchTriageResponse(results=results, summary=summary)
 
 
 @app.post(

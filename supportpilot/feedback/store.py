@@ -14,7 +14,7 @@ import os
 import tempfile
 from datetime import UTC, date as date_type, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy import (
     Boolean,
@@ -322,6 +322,64 @@ class FeedbackStore:
             if "needs_review" in res:
                 res["needs_review"] = bool(res["needs_review"])
             return res
+
+    def get_predictions_batch(
+        self, ticket_ids: Sequence[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch existing predictions for multiple ticket IDs in a single DB query (SP-117)."""
+        if not ticket_ids:
+            return {}
+        normalized_ids = [normalize_ticket_id(tid) for tid in ticket_ids]
+        stmt = select(
+            self.predictions.c.ticket_id,
+            self.predictions.c.predicted_label,
+            self.predictions.c.confidence,
+            self.predictions.c.model_version,
+            self.predictions.c.created_at,
+            self.predictions.c.needs_review,
+        ).where(self.predictions.c.ticket_id.in_(normalized_ids))
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+            res_map: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                r = dict(row)
+                if "needs_review" in r:
+                    r["needs_review"] = bool(r["needs_review"])
+                res_map[r["ticket_id"]] = r
+            return res_map
+
+    def save_predictions_batch(self, items: Sequence[dict[str, Any]]) -> None:
+        """Record multiple triage predictions in a single database transaction (SP-117)."""
+        if not items:
+            return
+        with self.engine.begin() as conn:
+            for item in items:
+                tid = normalize_ticket_id(item["ticket_id"])
+                ts = item.get("created_at") or datetime.now(UTC).isoformat()
+                nr = item.get("needs_review")
+                nr_val = bool(nr) if nr is not None else None
+                stmt = self._insert(self.predictions).values(
+                    ticket_id=tid,
+                    predicted_label=item["predicted_label"],
+                    confidence=float(item["confidence"]),
+                    model_version=item["model_version"],
+                    created_at=ts,
+                    needs_review=nr_val,
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=[self.predictions.c.ticket_id],
+                    set_={
+                        "predicted_label": stmt.excluded.predicted_label,
+                        "confidence": stmt.excluded.confidence,
+                        "model_version": stmt.excluded.model_version,
+                        "created_at": stmt.excluded.created_at,
+                        "needs_review": stmt.excluded.needs_review,
+                    },
+                    where=self.predictions.c.ticket_id.not_in(
+                        select(self.feedback.c.ticket_id)
+                    ),
+                )
+                conn.execute(stmt)
 
     def has_prediction(self, ticket_id: str) -> bool:
         """Check whether a prediction exists for ticket_id."""

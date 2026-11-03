@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""SupportPilot Client Integration Diagnostic Tool (SP-115).
+"""SupportPilot Client Integration Diagnostic Tool (SP-115, SP-117).
 
 Verifies connectivity and authentication with the SupportPilot API.
 Zero hardcoded keys: reads credentials strictly from $SUPPORTPILOT_API_KEY.
 
 Usage:
     export SUPPORTPILOT_API_KEY="your-assigned-key"
-    python examples/client_check.py
+    python examples/client_check.py [--batch]
 """
 
 from __future__ import annotations
@@ -67,7 +67,6 @@ def main() -> int:
             result = json.loads(resp.read().decode("utf-8"))
             label = result.get("label", "unknown")
             print(f"✅ /triage (label: {label})")
-            return 0
     except urllib.error.HTTPError as e:
         if e.code == 401:
             print("❌ /triage (401 Unauthorized)")
@@ -95,6 +94,61 @@ def main() -> int:
     except Exception as e:
         print(f"❌ /triage ({e})")
         return 1
+
+    # 4. Optional batch check: POST /triage/batch with 3 sample tickets
+    check_batch = "--batch" in sys.argv or os.getenv("SUPPORTPILOT_CHECK_BATCH") == "1"
+    if check_batch:
+        batch_url = f"{base_url}/triage/batch"
+        batch_payload = {
+            "tickets": [
+                {
+                    "ticket_id": "TEST-BATCH-001",
+                    "subject": "Integration test: batch ticket 1",
+                    "body": "Where is my package? The delivery was expected yesterday.",
+                },
+                {
+                    "ticket_id": "TEST-BATCH-002",
+                    "subject": "Integration test: batch ticket 2",
+                    "body": "I would like to cancel my order immediately.",
+                },
+                {
+                    "ticket_id": "TEST-BATCH-003",
+                    "subject": "Integration test: batch ticket 3",
+                    "body": "I was charged twice on my invoice, please refund the duplicate amount.",
+                },
+            ]
+        }
+        batch_encoded = json.dumps(batch_payload).encode("utf-8")
+        try:
+            req = urllib.request.Request(
+                batch_url, data=batch_encoded, headers=headers, method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                batch_result = json.loads(resp.read().decode("utf-8"))
+                summary = batch_result.get("summary", {})
+                total = summary.get("total", 0)
+                ok = summary.get("ok", 0)
+                print(f"✅ /triage/batch ({ok}/{total} tickets triaged)")
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                print("❌ /triage/batch (401 Unauthorized)")
+                print("   Fix: Verify $SUPPORTPILOT_API_KEY is valid.")
+            elif e.code == 413:
+                print("❌ /triage/batch (413 Payload Too Large)")
+                print("   Fix: Maximum 100 tickets allowed per batch request.")
+            elif e.code == 429:
+                print("❌ /triage/batch (429 Too Many Requests)")
+                print(
+                    "   Fix: Ticket rate limit exceeded (1,000 tickets/min). Wait and retry."
+                )
+            else:
+                print(f"❌ /triage/batch (HTTP {e.code})")
+            return 1
+        except Exception as e:
+            print(f"❌ /triage/batch ({e})")
+            return 1
+
+    return 0
 
 
 if __name__ == "__main__":
