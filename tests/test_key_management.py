@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -310,3 +311,68 @@ def test_part_d_key_lifecycle_and_security(caplog: pytest.LogCaptureFixture) -> 
             json={"ticket_id": "T-ENV-FINAL", "body": "Password reset"},
         )
         assert res_env_after.status_code == 200
+
+
+def test_create_key_duplicate_name_race_integrity_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify duplicate name race condition:
+    If two POST /admin/keys arrive simultaneously, the DB unique constraint raises
+    IntegrityError which must be caught and return 409 (not 500).
+    """
+    admin_headers = {"X-API-Key": "test-admin-key-1"}
+
+    with TestClient(app) as client:
+        store = client.app.state.feedback_store
+
+        # 1. Create a key normally
+        res1 = client.post(
+            "/admin/keys",
+            headers=admin_headers,
+            json={"name": "concurrent-key", "role": "client"},
+        )
+        assert res1.status_code == 201
+
+        # 2. Simulate concurrent race where pre-check get_key_by_name passes (returns None),
+        # but the subsequent DB insert raises IntegrityError on the unique name constraint.
+        monkeypatch.setattr(store, "get_key_by_name", lambda name: None)
+
+        res_race = client.post(
+            "/admin/keys",
+            headers=admin_headers,
+            json={"name": "concurrent-key", "role": "client"},
+        )
+        assert res_race.status_code == 409
+        assert "already exists" in res_race.json()["detail"]
+
+
+def test_auth_no_prefix_lookup_single_db_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify auth matches full 64-character hash only and does not perform prefix lookup.
+    On invalid request, get_key_by_hash must be called exactly once (no 8-char prefix query).
+    """
+    with TestClient(app) as client:
+        store = client.app.state.feedback_store
+
+        lookup_hashes: list[str] = []
+        orig_lookup = store.get_key_by_hash
+
+        def spy_lookup(key_hash: str) -> dict[str, Any] | None:
+            lookup_hashes.append(key_hash)
+            return orig_lookup(key_hash)
+
+        monkeypatch.setattr(store, "get_key_by_hash", spy_lookup)
+
+        # Send invalid key
+        bad_key = "invalid-test-key-999"
+        expected_full_hash = hashlib.sha256(bad_key.encode("utf-8")).hexdigest()
+
+        res = client.post(
+            "/triage",
+            headers={"X-API-Key": bad_key},
+            json={"ticket_id": "T-FAIL-1", "body": "Hello"},
+        )
+        assert res.status_code == 401
+        # get_key_by_hash must be called exactly ONCE with full 64-char hash, never with prefix!
+        assert len(lookup_hashes) == 1
+        assert lookup_hashes[0] == expected_full_hash
+        assert len(lookup_hashes[0]) == 64

@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from sqlalchemy.exc import IntegrityError
 
 from supportpilot.api.alerts import (
     AlertThresholds,
@@ -230,8 +231,6 @@ def get_api_key(
         if feedback_store is not None and hasattr(feedback_store, "get_key_by_hash"):
             try:
                 db_key = feedback_store.get_key_by_hash(full_hash)
-                if db_key is None:
-                    db_key = feedback_store.get_key_by_hash(key_hash)
             except Exception:
                 logger.exception(
                     "Error querying api_keys table for key_hash=%s",
@@ -315,8 +314,6 @@ def require_admin_key(
         if feedback_store is not None and hasattr(feedback_store, "get_key_by_hash"):
             try:
                 db_key = feedback_store.get_key_by_hash(full_hash)
-                if db_key is None:
-                    db_key = feedback_store.get_key_by_hash(key_hash)
             except Exception:
                 logger.exception(
                     "Error querying api_keys table for admin key_hash=%s",
@@ -881,8 +878,13 @@ def create_key_endpoint(
     full_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
     hash_prefix = full_hash[:8]
 
-    # 2. Store only its hash
-    created = feedback_store.create_key(name=name, key_hash=full_hash, role=role)
+    # 2. Store only its hash (catch IntegrityError to handle duplicate name race)
+    try:
+        created = feedback_store.create_key(name=name, key_hash=full_hash, role=role)
+    except IntegrityError:
+        raise HTTPException(
+            status_code=409, detail=f"API key with name '{name}' already exists"
+        )
 
     # 3. Log only the name and hash prefix (never raw key!)
     logger.info(
