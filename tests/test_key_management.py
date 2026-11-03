@@ -299,8 +299,8 @@ def test_part_d_key_lifecycle_and_security(caplog: pytest.LogCaptureFixture) -> 
                 rows = conn.execute(text(f"SELECT * FROM {table_name}")).fetchall()
                 for row in rows:
                     for col in row:
-                        assert (
-                            raw_key not in str(col)
+                        assert raw_key not in str(
+                            col
                         ), f"Security breach: raw key found in {table_name} column: {col}"
 
         # 5. An env key still works (fallback) after revoking DB key
