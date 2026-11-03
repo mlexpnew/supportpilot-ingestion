@@ -318,3 +318,67 @@ curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.c
 - **Neha** (Client & Support Lead): Contact client integration lead with diagnostic details from `/usage`.
 - **Sana** (API Tech Lead): Monitor `/usage` and `/alerts` once client confirms traffic resumption.
 
+---
+
+## Incident 7: Client 401 Unauthorized (Missing Environment Key & Curly Quote Corruption)
+
+### Symptoms
+- `/triage` returned HTTP 401 (`401 Unauthorized`).
+- Running `examples/client_check.py` fails on step 2:
+  ```text
+  ✅ /health
+  ❌ /triage (401 Unauthorized)
+     Fix: Check that $SUPPORTPILOT_API_KEY matches your assigned key with no trailing spaces.
+  ```
+- Client reports inability to ingest tickets or send backlogs (~5,000 tickets blocked).
+- Render service logs record: `api_key_hash=unknown auth failed path=/triage status=401`.
+
+### Cause
+- The new client API key was missing from Render's `TRIAGE_API_KEYS` environment variable. The client had generated/received a key, but the production web service had not been provisioned with it, rejecting incoming requests.
+
+### Check
+```bash
+# 1. Run integration diagnostic script to verify failure mode:
+export SUPPORTPILOT_API_KEY="client-key-to-verify"
+python examples/client_check.py
+
+# 2. Check key formatting, length, and non-ASCII character corruption:
+pbpaste | python3 -c "import sys; s = sys.stdin.read(); print(f'len={len(s)} ascii_only={s.isascii()} repr={repr(s[:6])}...{repr(s[-6:])}')"
+
+# 3. Compute 8-char SHA-256 hash prefix for safe comparison (never expose raw keys):
+pbpaste | python3 -c "import sys,hashlib; print(hashlib.sha256(sys.stdin.read().strip().encode('utf-8')).hexdigest()[:8])"
+
+# 4. Compare computed hash against active key hashes via GET /usage:
+curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.com/usage | jq .
+```
+
+### Fix
+1. **Compare key hashes, never raw keys**:
+   - Compare the 8-character cryptographic SHA-256 hash prefix of the client key against the configured keys in Render.
+   - **Never** paste or print raw API keys in terminal stdout, shell commands, Slack channels, or GitHub tickets.
+2. **Provision missing key in Render Environment**:
+   - Open [Render Dashboard](https://dashboard.render.com) -> SupportPilot Web Service -> **Environment**.
+   - Inspect `TRIAGE_API_KEYS` and append the new client key (or comma-separated list of active keys).
+   - If the old/leaked key (e.g. hash `3dfcb467`) is present, remove it.
+   - Click **Save Changes** and wait for the rolling restart to complete.
+3. **Verify with Diagnostic Tooling**:
+   - Re-run `client_check.py` with the provisioned key:
+     ```bash
+     python examples/client_check.py
+     python examples/client_check.py --batch
+     ```
+   - Both commands must succeed with `✅`.
+
+### Notify
+- **Neha** (Client & Support Lead): Confirm client key provisioning and successful `/triage` validation.
+- **Sana** (API Tech Lead): Check `/usage` to confirm `auth_fail_count` ceases and legitimate traffic increments `ok_count`.
+- **Dev** (Infrastructure Lead): Audit Render deployment logs.
+
+### Lessons Learned & Takeaways
+1. **Chat Copy-Paste Adds Curly Quotes**:
+   Copying text from chat apps (Slack, Teams, Apple Notes) frequently transforms standard straight quotes (`'`, `"`) into Unicode "smart" or curly quotes (`‘`, `’`, `“`, `”`) or appends trailing whitespace/newlines. This corrupts the API key token byte sequence and causes silent 401s. Always run an ASCII sanity and length check on clipboard contents (`s.isascii() and len(s) == expected`).
+2. **Hash-Compare Method Prevents Secret Exposure**:
+   Always compare keys via their 8-character SHA-256 hash prefix (`hashlib.sha256(key.encode()).hexdigest()[:8]`). This enables operators and developers to verify credential identity without ever writing or logging the plaintext secret.
+3. **Dual Verification Before Handoff**:
+   Always execute `client_check.py` against production before notifying external clients that their credentials are active.
+

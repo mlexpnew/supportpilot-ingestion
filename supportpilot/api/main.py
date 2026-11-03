@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from sqlalchemy.exc import IntegrityError
 
 from supportpilot.api.alerts import (
     AlertThresholds,
@@ -30,8 +31,12 @@ from supportpilot.api.models import (
     BatchSummary,
     BatchTriageRequest,
     BatchTriageResponse,
+    CreateKeyRequest,
+    CreateKeyResponse,
+    KeyItemResponse,
     KeyUsageItem,
     MetricsResponse,
+    RevokeKeyResponse,
     VersionResponse,
 )
 from supportpilot.feedback import (
@@ -68,6 +73,7 @@ EXCLUDED_METRIC_PATHS: set[str] = {
     "/metrics",
     "/metrics/labels",
     "/usage",
+    "/admin/keys",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -202,15 +208,57 @@ def get_api_key(
     request: Request,
     api_key: str | None = Security(api_key_header),
 ) -> str:
-    """FastAPI dependency that reads and validates the X-API-Key header."""
+    """FastAPI dependency that reads and validates the X-API-Key header.
+
+    Authenticates via (SP-118 Part C):
+    1. Hashes incoming key.
+    2. Looks the hash up in the DB (api_keys table), ignoring revoked keys.
+    3. Falls back to env TRIAGE_API_KEYS if the DB lookup fails.
+    4. Keeps constant-time comparison for env keys.
+    """
     key_hash = hash_api_key(api_key)
     request.state.api_key_hash = key_hash
-    valid_keys: set[str] = getattr(request.app.state, "api_keys", set())
-    is_valid = validate_api_key(api_key, valid_keys)
+
+    is_valid = False
+    feedback_store: Any = getattr(request.app.state, "feedback_store", None)
+
+    if api_key and isinstance(api_key, str) and api_key.strip():
+        # 1. Hash incoming key (full SHA-256)
+        full_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+        # 2. Look up hash in DB, ignoring revoked keys
+        db_key: dict[str, Any] | None = None
+        if feedback_store is not None and hasattr(feedback_store, "get_key_by_hash"):
+            try:
+                db_key = feedback_store.get_key_by_hash(full_hash)
+            except Exception:
+                logger.exception(
+                    "Error querying api_keys table for key_hash=%s",
+                    key_hash,
+                    extra={"api_key_hash": key_hash},
+                )
+
+        if db_key is not None and isinstance(db_key, dict):
+            # Found in DB: check if active (ignoring revoked keys)
+            if not db_key.get("revoked_at"):
+                is_valid = True
+                request.state.api_key_role = db_key.get("role", "client")
+                request.state.api_key_name = db_key.get("name")
+                try:
+                    if hasattr(feedback_store, "update_key_last_used"):
+                        feedback_store.update_key_last_used(db_key["key_hash"])
+                except Exception:
+                    pass
+        else:
+            # 3. Fall back to env TRIAGE_API_KEYS if DB lookup fails
+            # 4. Keeps constant-time compare for env keys
+            valid_keys: set[str] = getattr(request.app.state, "api_keys", set())
+            is_valid = validate_api_key(api_key, valid_keys)
+            if is_valid:
+                request.state.api_key_role = "client"
 
     # Usage tracking (SP-115 Part A & Sana table protection fix)
     try:
-        feedback_store: Any = getattr(request.app.state, "feedback_store", None)
         if feedback_store is not None and hasattr(feedback_store, "record_key_usage"):
             tracked_hash = key_hash if is_valid else "unknown"
             feedback_store.record_key_usage(key_hash=tracked_hash, ok=is_valid)
@@ -243,17 +291,76 @@ def require_admin_key(
     request: Request,
     api_key: str | None = Security(api_key_header),
 ) -> str:
-    """FastAPI dependency requiring a valid admin API key from ADMIN_API_KEYS."""
+    """FastAPI dependency requiring a valid admin API key from DB or ADMIN_API_KEYS (SP-118).
+
+    Guarantees:
+    - Checks DB on every request; no startup caching.
+    - Revoked keys receive 401 immediately.
+    - Valid client keys attempting admin endpoints receive 403 Forbidden.
+    - Unauthenticated/unknown keys receive 401 Unauthorized.
+    """
     key_hash = hash_api_key(api_key)
     request.state.api_key_hash = key_hash
-    valid_admin_keys: set[str] = getattr(request.app.state, "admin_api_keys", set())
-    is_valid = validate_api_key(api_key, valid_admin_keys)
 
+    is_admin = False
+    is_client = False
+    feedback_store: Any = getattr(request.app.state, "feedback_store", None)
+
+    if api_key and isinstance(api_key, str) and api_key.strip():
+        full_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+        # 1. Check DB on every request (no startup caching)
+        db_key: dict[str, Any] | None = None
+        if feedback_store is not None and hasattr(feedback_store, "get_key_by_hash"):
+            try:
+                db_key = feedback_store.get_key_by_hash(full_hash)
+            except Exception:
+                logger.exception(
+                    "Error querying api_keys table for admin key_hash=%s",
+                    key_hash,
+                    extra={"api_key_hash": key_hash},
+                )
+
+        if db_key is not None and isinstance(db_key, dict):
+            # Check revocation
+            if not db_key.get("revoked_at"):
+                role = db_key.get("role", "client")
+                if role == "admin":
+                    is_admin = True
+                    request.state.api_key_role = "admin"
+                    request.state.api_key_name = db_key.get("name")
+                    try:
+                        if hasattr(feedback_store, "update_key_last_used"):
+                            feedback_store.update_key_last_used(db_key["key_hash"])
+                    except Exception:
+                        pass
+                else:
+                    is_client = True
+                    request.state.api_key_role = "client"
+            # If revoked, neither is_admin nor is_client is True -> will 401
+        else:
+            # 2. Fall back to environment keys with constant-time compare
+            valid_admin_keys: set[str] = getattr(
+                request.app.state, "admin_api_keys", set()
+            )
+            if validate_api_key(api_key, valid_admin_keys):
+                is_admin = True
+                request.state.api_key_role = "admin"
+            else:
+                valid_client_keys: set[str] = getattr(
+                    request.app.state, "api_keys", set()
+                )
+                if validate_api_key(api_key, valid_client_keys):
+                    is_client = True
+                    request.state.api_key_role = "client"
+
+    # Usage tracking
     try:
-        feedback_store: Any = getattr(request.app.state, "feedback_store", None)
         if feedback_store is not None and hasattr(feedback_store, "record_key_usage"):
-            tracked_hash = key_hash if is_valid else "unknown"
-            feedback_store.record_key_usage(key_hash=tracked_hash, ok=is_valid)
+            tracked_hash = key_hash if (is_admin or is_client) else "unknown"
+            feedback_store.record_key_usage(
+                key_hash=tracked_hash, ok=(is_admin or is_client)
+            )
     except Exception:
         logger.exception(
             "Failed to record API key usage for admin key_hash=%s",
@@ -261,7 +368,24 @@ def require_admin_key(
             extra={"api_key_hash": key_hash},
         )
 
-    if not is_valid:
+    # Client keys are recognized but forbidden on /admin/* endpoints (403)
+    if is_client and not is_admin:
+        if request.url.path.startswith("/admin"):
+            logger.warning(
+                "api_key_hash=%s client key forbidden on admin endpoint",
+                key_hash,
+                extra={"api_key_hash": key_hash},
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Forbidden: client key cannot access admin endpoints",
+            )
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+        )
+
+    if not is_admin:
         logger.warning(
             "api_key_hash=%s admin authentication failed",
             key_hash,
@@ -271,6 +395,7 @@ def require_admin_key(
             status_code=401,
             detail="Unauthorized",
         )
+
     logger.info(
         "api_key_hash=%s admin authenticated",
         key_hash,
@@ -708,6 +833,150 @@ def get_usage(req: Request) -> list[dict[str, Any]]:
             "Feedback store is not initialized. Service startup invariant violated."
         )
     return feedback_store.get_key_usage()
+
+
+@app.post(
+    "/admin/keys",
+    response_model=CreateKeyResponse,
+    dependencies=[Depends(require_admin_key)],
+    status_code=201,
+)
+def create_key_endpoint(
+    payload: CreateKeyRequest,
+    req: Request,
+) -> CreateKeyResponse:
+    """Generate a new API key, store only its hash, and return raw key once (SP-118 Part B)."""
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="API key name cannot be empty")
+    if len(name) > 64:
+        raise HTTPException(
+            status_code=422,
+            detail="API key name exceeds maximum length of 64 characters",
+        )
+
+    role = payload.role.strip().lower()
+    if role not in ("client", "admin"):
+        raise HTTPException(
+            status_code=422, detail="Invalid role. Must be 'client' or 'admin'"
+        )
+
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError("Feedback store is not initialized.")
+
+    existing = feedback_store.get_key_by_name(name)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409, detail=f"API key with name '{name}' already exists"
+        )
+
+    # 1. Generate a key with secrets
+    raw_key = secrets.token_urlsafe(32)
+    full_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    hash_prefix = full_hash[:8]
+
+    # 2. Store only its hash (catch IntegrityError to handle duplicate name race)
+    try:
+        created = feedback_store.create_key(name=name, key_hash=full_hash, role=role)
+    except IntegrityError:
+        raise HTTPException(
+            status_code=409, detail=f"API key with name '{name}' already exists"
+        )
+
+    # 3. Log only the name and hash prefix (never raw key!)
+    logger.info(
+        "api_key created name=%s key_hash_prefix=%s role=%s",
+        name,
+        hash_prefix,
+        role,
+        extra={"key_name": name, "key_hash_prefix": hash_prefix, "role": role},
+    )
+
+    # 4. Return the raw key once
+    return CreateKeyResponse(
+        name=name,
+        key=raw_key,
+        key_hash=hash_prefix,
+        role=role,
+        created_at=created["created_at"],
+    )
+
+
+@app.get(
+    "/admin/keys",
+    response_model=list[KeyItemResponse],
+    dependencies=[Depends(require_admin_key)],
+)
+def list_keys_endpoint(req: Request) -> list[KeyItemResponse]:
+    """List all keys: name, role, hash prefix, dates, and active status, never raw keys (SP-118 Part B)."""
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError("Feedback store is not initialized.")
+
+    records = feedback_store.list_keys()
+    results: list[KeyItemResponse] = []
+    for r in records:
+        h = r.get("key_hash", "")
+        hash_prefix = h[:8] if h else ""
+        results.append(
+            KeyItemResponse(
+                name=r["name"],
+                role=r["role"],
+                hash_prefix=hash_prefix,
+                created_at=r["created_at"],
+                revoked_at=r.get("revoked_at"),
+                last_used_at=r.get("last_used_at"),
+                active=bool(r.get("revoked_at") is None),
+            )
+        )
+    return results
+
+
+@app.post(
+    "/admin/keys/{name}/revoke",
+    response_model=RevokeKeyResponse,
+    dependencies=[Depends(require_admin_key)],
+)
+def revoke_key_endpoint(name: str, req: Request) -> RevokeKeyResponse:
+    """Revoke an API key immediately by setting revoked_at; 404 if name not found (SP-118 Part B)."""
+    name = name.strip()
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError("Feedback store is not initialized.")
+
+    key_record = feedback_store.get_key_by_name(name)
+    if key_record is None:
+        raise HTTPException(status_code=404, detail=f"API key '{name}' not found")
+
+    h = key_record.get("key_hash", "")
+    hash_prefix = h[:8] if h else ""
+
+    feedback_store.revoke_key(name)
+    updated = feedback_store.get_key_by_name(name)
+    revoked_at = (
+        updated.get("revoked_at") if updated else datetime.now(timezone.utc).isoformat()
+    )
+
+    # Log only the name and hash prefix
+    logger.info(
+        "api_key revoked name=%s key_hash_prefix=%s",
+        name,
+        hash_prefix,
+        extra={"key_name": name, "key_hash_prefix": hash_prefix},
+    )
+
+    return RevokeKeyResponse(
+        name=name,
+        status="revoked",
+        revoked_at=str(revoked_at),
+    )
 
 
 @app.post(
