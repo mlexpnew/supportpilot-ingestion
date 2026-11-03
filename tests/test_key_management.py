@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from supportpilot.api.main import app
 
@@ -195,3 +197,116 @@ def test_admin_keys_endpoints_full_lifecycle(caplog: pytest.LogCaptureFixture) -
             json={"name": "key-test-client-alpha"},
         )
         assert res_dup.status_code == 409
+
+
+def test_part_d_key_lifecycle_and_security(caplog: pytest.LogCaptureFixture) -> None:
+    """SP-118 Part D Requirements:
+    1. Create a key; it works on /triage with no restart.
+    2. Revoke the key; the very next request gets 401.
+    3. A client key on /admin/* gets 403.
+    4. Search the DB rows and logs for the raw key; it must be in neither.
+    5. An env key still works (fallback).
+    """
+    admin_headers = {"X-API-Key": "test-admin-key-1"}
+    env_client_headers = {"X-API-Key": "test-key-1"}
+
+    with TestClient(app) as client:
+        store = client.app.state.feedback_store
+
+        # 3. A client key on /admin/* gets 403 (testing env client key)
+        res_admin_list = client.get("/admin/keys", headers=env_client_headers)
+        assert res_admin_list.status_code == 403
+        assert "Forbidden" in res_admin_list.json()["detail"]
+
+        res_admin_create = client.post(
+            "/admin/keys",
+            headers=env_client_headers,
+            json={"name": "forbidden-attempt"},
+        )
+        assert res_admin_create.status_code == 403
+        assert "Forbidden" in res_admin_create.json()["detail"]
+
+        res_admin_revoke = client.post(
+            "/admin/keys/sample/revoke",
+            headers=env_client_headers,
+        )
+        assert res_admin_revoke.status_code == 403
+        assert "Forbidden" in res_admin_revoke.json()["detail"]
+
+        # 5. An env key still works (fallback)
+        res_env = client.post(
+            "/triage",
+            headers=env_client_headers,
+            json={"ticket_id": "T-ENV-PART-D", "body": "Need refund"},
+        )
+        assert res_env.status_code == 200
+
+        # 1. Create a key; it works on /triage with no restart
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            res_create = client.post(
+                "/admin/keys",
+                headers=admin_headers,
+                json={"name": "part-d-client-key", "role": "client"},
+            )
+        assert res_create.status_code == 201
+        created_payload = res_create.json()
+        raw_key = created_payload["key"]
+        hash_prefix = created_payload["key_hash"]
+        assert raw_key and len(raw_key) > 20
+        assert len(hash_prefix) == 8
+
+        # Works on /triage immediately with no restart
+        res_triage_new = client.post(
+            "/triage",
+            headers={"X-API-Key": raw_key},
+            json={"ticket_id": "T-NEW-PART-D", "body": "Where is my parcel?"},
+        )
+        assert res_triage_new.status_code == 200
+
+        # A DB client key on /admin/* also gets 403
+        db_client_headers = {"X-API-Key": raw_key}
+        res_db_client_admin = client.get("/admin/keys", headers=db_client_headers)
+        assert res_db_client_admin.status_code == 403
+        assert "Forbidden" in res_db_client_admin.json()["detail"]
+
+        # 2. Revoke the key; the very next request gets 401
+        res_revoke = client.post(
+            "/admin/keys/part-d-client-key/revoke",
+            headers=admin_headers,
+        )
+        assert res_revoke.status_code == 200
+        assert res_revoke.json()["status"] == "revoked"
+
+        # The very next request gets 401
+        res_triage_revoked = client.post(
+            "/triage",
+            headers={"X-API-Key": raw_key},
+            json={"ticket_id": "T-REVOKED-PART-D", "body": "Where is my parcel?"},
+        )
+        assert res_triage_revoked.status_code == 401
+
+        # 4. Search the DB rows and logs for the raw key; it must be in neither
+        # A) Search logs
+        all_logs = caplog.text
+        assert (
+            raw_key not in all_logs
+        ), f"Security breach: raw key {raw_key} found in application logs!"
+
+        # B) Search DB rows across all tables
+        with store.engine.connect() as conn:
+            for table_name in ["api_keys", "api_key_usage", "predictions", "feedback"]:
+                rows = conn.execute(text(f"SELECT * FROM {table_name}")).fetchall()
+                for row in rows:
+                    for col in row:
+                        assert raw_key not in str(
+                            col
+                        ), f"Security breach: raw key found in {table_name} column: {col}"
+
+        # 5. An env key still works (fallback) after revoking DB key
+        res_env_after = client.post(
+            "/triage",
+            headers=env_client_headers,
+            json={"ticket_id": "T-ENV-FINAL", "body": "Password reset"},
+        )
+        assert res_env_after.status_code == 200
