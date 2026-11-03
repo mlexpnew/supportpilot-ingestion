@@ -95,7 +95,7 @@ def main() -> int:
         print(f"❌ /triage ({e})")
         return 1
 
-    # 4. Optional batch check: POST /triage/batch
+    # 4. Optional batch check: POST /triage/batch with 3 sample tickets
     check_batch = "--batch" in sys.argv or os.getenv("SUPPORTPILOT_CHECK_BATCH") == "1"
     if check_batch:
         batch_url = f"{base_url}/triage/batch"
@@ -110,6 +110,11 @@ def main() -> int:
                     "ticket_id": "TEST-BATCH-002",
                     "subject": "Integration test: batch ticket 2",
                     "body": "I would like to cancel my order immediately.",
+                },
+                {
+                    "ticket_id": "TEST-BATCH-003",
+                    "subject": "Integration test: batch ticket 3",
+                    "body": "I was charged twice on my invoice, please refund the duplicate amount.",
                 },
             ]
         }

@@ -33,7 +33,7 @@ Before routing production ticket traffic, run the automated integration diagnost
 ```bash
 export SUPPORTPILOT_API_KEY="your-assigned-api-key"
 python examples/client_check.py
-# Or verify batch triage capabilities:
+# Or verify batch triage (runs an optional check with 3 sample tickets):
 python examples/client_check.py --batch
 ```
 
@@ -178,7 +178,7 @@ Enables high-throughput bulk classification for historical backlogs (e.g. ingest
 - **Idempotency & Safe Retries**:
   - **Duplicate within batch**: If the same `ticket_id` appears more than once in the same request payload, subsequent occurrences are marked as errors with `"error": "duplicate_in_batch"`.
   - **Existing tickets cached**: If a `ticket_id` was already triaged before, SupportPilot immediately returns the stored prediction with `"cached": true` without re-evaluating the model or modifying the database.
-  - Clients can safely re-send batches upon network timeouts or transient errors without duplicate predictions or corrupting telemetry counters.
+  - **Retries are safe**: SupportPilot guarantees full idempotency. If a batch request encounters a network drop, timeout, or rate limit, re-sending the same batch is completely safe. Previously computed tickets return `"cached": true` without re-running model inference, modifying database records, or double-counting in dashboard metrics.
 
 #### Batch Limits & Throttling
 | Limit | Threshold | Status Code | Behavior |
