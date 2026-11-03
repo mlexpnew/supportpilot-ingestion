@@ -202,15 +202,59 @@ def get_api_key(
     request: Request,
     api_key: str | None = Security(api_key_header),
 ) -> str:
-    """FastAPI dependency that reads and validates the X-API-Key header."""
+    """FastAPI dependency that reads and validates the X-API-Key header.
+
+    Authenticates via (SP-118 Part C):
+    1. Hashes incoming key.
+    2. Looks the hash up in the DB (api_keys table), ignoring revoked keys.
+    3. Falls back to env TRIAGE_API_KEYS if the DB lookup fails.
+    4. Keeps constant-time comparison for env keys.
+    """
     key_hash = hash_api_key(api_key)
     request.state.api_key_hash = key_hash
-    valid_keys: set[str] = getattr(request.app.state, "api_keys", set())
-    is_valid = validate_api_key(api_key, valid_keys)
+
+    is_valid = False
+    feedback_store: Any = getattr(request.app.state, "feedback_store", None)
+
+    if api_key and isinstance(api_key, str) and api_key.strip():
+        # 1. Hash incoming key (full SHA-256)
+        full_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+        # 2. Look up hash in DB, ignoring revoked keys
+        db_key: dict[str, Any] | None = None
+        if feedback_store is not None and hasattr(feedback_store, "get_key_by_hash"):
+            try:
+                db_key = feedback_store.get_key_by_hash(full_hash)
+                if db_key is None:
+                    db_key = feedback_store.get_key_by_hash(key_hash)
+            except Exception:
+                logger.exception(
+                    "Error querying api_keys table for key_hash=%s",
+                    key_hash,
+                    extra={"api_key_hash": key_hash},
+                )
+
+        if db_key is not None:
+            # Found in DB: check if active (ignoring revoked keys)
+            if not db_key.get("revoked_at"):
+                is_valid = True
+                request.state.api_key_role = db_key.get("role", "client")
+                request.state.api_key_name = db_key.get("name")
+                try:
+                    if hasattr(feedback_store, "update_key_last_used"):
+                        feedback_store.update_key_last_used(db_key["key_hash"])
+                except Exception:
+                    pass
+        else:
+            # 3. Fall back to env TRIAGE_API_KEYS if DB lookup fails
+            # 4. Keeps constant-time compare for env keys
+            valid_keys: set[str] = getattr(request.app.state, "api_keys", set())
+            is_valid = validate_api_key(api_key, valid_keys)
+            if is_valid:
+                request.state.api_key_role = "client"
 
     # Usage tracking (SP-115 Part A & Sana table protection fix)
     try:
-        feedback_store: Any = getattr(request.app.state, "feedback_store", None)
         if feedback_store is not None and hasattr(feedback_store, "record_key_usage"):
             tracked_hash = key_hash if is_valid else "unknown"
             feedback_store.record_key_usage(key_hash=tracked_hash, ok=is_valid)
