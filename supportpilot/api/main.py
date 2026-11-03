@@ -1037,8 +1037,6 @@ def triage_batch(
 
     return BatchTriageResponse(results=results, summary=summary)
 
-    return BatchTriageResponse(results=results, summary=summary)
-
 
 @app.post(
     "/feedback",
