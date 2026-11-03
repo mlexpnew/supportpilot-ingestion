@@ -36,6 +36,43 @@ class KeyUsageItem(BaseModel):
     auth_fail_count: int
 
 
+class CreateKeyRequest(BaseModel):
+    """Request payload to create a new API key (SP-118)."""
+
+    name: str
+    role: str = "client"
+
+
+class CreateKeyResponse(BaseModel):
+    """Response containing the generated raw key, returned once only (SP-118)."""
+
+    name: str
+    key: str
+    key_hash: str
+    role: str
+    created_at: str
+
+
+class KeyItemResponse(BaseModel):
+    """Safe key listing item (never contains raw key) (SP-118)."""
+
+    name: str
+    role: str
+    hash_prefix: str
+    created_at: str
+    revoked_at: str | None = None
+    last_used_at: str | None = None
+    active: bool
+
+
+class RevokeKeyResponse(BaseModel):
+    """Response returned upon revoking a key (SP-118)."""
+
+    name: str
+    status: str
+    revoked_at: str
+
+
 class BatchSummary(BaseModel):
     """Batch execution counts summary."""
 

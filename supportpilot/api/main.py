@@ -30,8 +30,12 @@ from supportpilot.api.models import (
     BatchSummary,
     BatchTriageRequest,
     BatchTriageResponse,
+    CreateKeyRequest,
+    CreateKeyResponse,
+    KeyItemResponse,
     KeyUsageItem,
     MetricsResponse,
+    RevokeKeyResponse,
     VersionResponse,
 )
 from supportpilot.feedback import (
@@ -68,6 +72,7 @@ EXCLUDED_METRIC_PATHS: set[str] = {
     "/metrics",
     "/metrics/labels",
     "/usage",
+    "/admin/keys",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -234,7 +239,7 @@ def get_api_key(
                     extra={"api_key_hash": key_hash},
                 )
 
-        if db_key is not None:
+        if db_key is not None and isinstance(db_key, dict):
             # Found in DB: check if active (ignoring revoked keys)
             if not db_key.get("revoked_at"):
                 is_valid = True
@@ -319,7 +324,7 @@ def require_admin_key(
                     extra={"api_key_hash": key_hash},
                 )
 
-        if db_key is not None:
+        if db_key is not None and isinstance(db_key, dict):
             # Check revocation
             if not db_key.get("revoked_at"):
                 role = db_key.get("role", "client")
@@ -831,6 +836,145 @@ def get_usage(req: Request) -> list[dict[str, Any]]:
             "Feedback store is not initialized. Service startup invariant violated."
         )
     return feedback_store.get_key_usage()
+
+
+@app.post(
+    "/admin/keys",
+    response_model=CreateKeyResponse,
+    dependencies=[Depends(require_admin_key)],
+    status_code=201,
+)
+def create_key_endpoint(
+    payload: CreateKeyRequest,
+    req: Request,
+) -> CreateKeyResponse:
+    """Generate a new API key, store only its hash, and return raw key once (SP-118 Part B)."""
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="API key name cannot be empty")
+    if len(name) > 64:
+        raise HTTPException(
+            status_code=422,
+            detail="API key name exceeds maximum length of 64 characters",
+        )
+
+    role = payload.role.strip().lower()
+    if role not in ("client", "admin"):
+        raise HTTPException(
+            status_code=422, detail="Invalid role. Must be 'client' or 'admin'"
+        )
+
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError("Feedback store is not initialized.")
+
+    existing = feedback_store.get_key_by_name(name)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409, detail=f"API key with name '{name}' already exists"
+        )
+
+    # 1. Generate a key with secrets
+    raw_key = secrets.token_urlsafe(32)
+    full_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    hash_prefix = full_hash[:8]
+
+    # 2. Store only its hash
+    created = feedback_store.create_key(name=name, key_hash=full_hash, role=role)
+
+    # 3. Log only the name and hash prefix (never raw key!)
+    logger.info(
+        "api_key created name=%s key_hash_prefix=%s role=%s",
+        name,
+        hash_prefix,
+        role,
+        extra={"key_name": name, "key_hash_prefix": hash_prefix, "role": role},
+    )
+
+    # 4. Return the raw key once
+    return CreateKeyResponse(
+        name=name,
+        key=raw_key,
+        key_hash=hash_prefix,
+        role=role,
+        created_at=created["created_at"],
+    )
+
+
+@app.get(
+    "/admin/keys",
+    response_model=list[KeyItemResponse],
+    dependencies=[Depends(require_admin_key)],
+)
+def list_keys_endpoint(req: Request) -> list[KeyItemResponse]:
+    """List all keys: name, role, hash prefix, dates, and active status, never raw keys (SP-118 Part B)."""
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError("Feedback store is not initialized.")
+
+    records = feedback_store.list_keys()
+    results: list[KeyItemResponse] = []
+    for r in records:
+        h = r.get("key_hash", "")
+        hash_prefix = h[:8] if h else ""
+        results.append(
+            KeyItemResponse(
+                name=r["name"],
+                role=r["role"],
+                hash_prefix=hash_prefix,
+                created_at=r["created_at"],
+                revoked_at=r.get("revoked_at"),
+                last_used_at=r.get("last_used_at"),
+                active=bool(r.get("revoked_at") is None),
+            )
+        )
+    return results
+
+
+@app.post(
+    "/admin/keys/{name}/revoke",
+    response_model=RevokeKeyResponse,
+    dependencies=[Depends(require_admin_key)],
+)
+def revoke_key_endpoint(name: str, req: Request) -> RevokeKeyResponse:
+    """Revoke an API key immediately by setting revoked_at; 404 if name not found (SP-118 Part B)."""
+    name = name.strip()
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError("Feedback store is not initialized.")
+
+    key_record = feedback_store.get_key_by_name(name)
+    if key_record is None:
+        raise HTTPException(status_code=404, detail=f"API key '{name}' not found")
+
+    h = key_record.get("key_hash", "")
+    hash_prefix = h[:8] if h else ""
+
+    feedback_store.revoke_key(name)
+    updated = feedback_store.get_key_by_name(name)
+    revoked_at = (
+        updated.get("revoked_at") if updated else datetime.now(timezone.utc).isoformat()
+    )
+
+    # Log only the name and hash prefix
+    logger.info(
+        "api_key revoked name=%s key_hash_prefix=%s",
+        name,
+        hash_prefix,
+        extra={"key_name": name, "key_hash_prefix": hash_prefix},
+    )
+
+    return RevokeKeyResponse(
+        name=name,
+        status="revoked",
+        revoked_at=str(revoked_at),
+    )
 
 
 @app.post(
