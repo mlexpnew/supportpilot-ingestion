@@ -287,17 +287,78 @@ def require_admin_key(
     request: Request,
     api_key: str | None = Security(api_key_header),
 ) -> str:
-    """FastAPI dependency requiring a valid admin API key from ADMIN_API_KEYS."""
+    """FastAPI dependency requiring a valid admin API key from DB or ADMIN_API_KEYS (SP-118).
+
+    Guarantees:
+    - Checks DB on every request; no startup caching.
+    - Revoked keys receive 401 immediately.
+    - Valid client keys attempting admin endpoints receive 403 Forbidden.
+    - Unauthenticated/unknown keys receive 401 Unauthorized.
+    """
     key_hash = hash_api_key(api_key)
     request.state.api_key_hash = key_hash
-    valid_admin_keys: set[str] = getattr(request.app.state, "admin_api_keys", set())
-    is_valid = validate_api_key(api_key, valid_admin_keys)
 
+    is_admin = False
+    is_client = False
+    feedback_store: Any = getattr(request.app.state, "feedback_store", None)
+
+    if api_key and isinstance(api_key, str) and api_key.strip():
+        full_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+        # 1. Check DB on every request (no startup caching)
+        db_key: dict[str, Any] | None = None
+        if feedback_store is not None and hasattr(feedback_store, "get_key_by_hash"):
+            try:
+                db_key = feedback_store.get_key_by_hash(full_hash)
+                if db_key is None:
+                    db_key = feedback_store.get_key_by_hash(key_hash)
+            except Exception:
+                logger.exception(
+                    "Error querying api_keys table for admin key_hash=%s",
+                    key_hash,
+                    extra={"api_key_hash": key_hash},
+                )
+
+        if db_key is not None:
+            # Check revocation
+            if not db_key.get("revoked_at"):
+                role = db_key.get("role", "client")
+                if role == "admin":
+                    is_admin = True
+                    request.state.api_key_role = "admin"
+                    request.state.api_key_name = db_key.get("name")
+                    try:
+                        if hasattr(feedback_store, "update_key_last_used"):
+                            feedback_store.update_key_last_used(db_key["key_hash"])
+                    except Exception:
+                        pass
+                else:
+                    is_client = True
+                    request.state.api_key_role = "client"
+            # If revoked, neither is_admin nor is_client is True -> will 401
+        else:
+            # 2. Fall back to environment keys with constant-time compare
+            valid_admin_keys: set[str] = getattr(
+                request.app.state, "admin_api_keys", set()
+            )
+            if validate_api_key(api_key, valid_admin_keys):
+                is_admin = True
+                request.state.api_key_role = "admin"
+            else:
+                valid_client_keys: set[str] = getattr(
+                    request.app.state, "api_keys", set()
+                )
+                if validate_api_key(api_key, valid_client_keys):
+                    is_client = True
+                    request.state.api_key_role = "client"
+
+    # Usage tracking
     try:
-        feedback_store: Any = getattr(request.app.state, "feedback_store", None)
         if feedback_store is not None and hasattr(feedback_store, "record_key_usage"):
-            tracked_hash = key_hash if is_valid else "unknown"
-            feedback_store.record_key_usage(key_hash=tracked_hash, ok=is_valid)
+            tracked_hash = key_hash if (is_admin or is_client) else "unknown"
+            feedback_store.record_key_usage(
+                key_hash=tracked_hash, ok=(is_admin or is_client)
+            )
     except Exception:
         logger.exception(
             "Failed to record API key usage for admin key_hash=%s",
@@ -305,7 +366,24 @@ def require_admin_key(
             extra={"api_key_hash": key_hash},
         )
 
-    if not is_valid:
+    # Client keys are recognized but forbidden on /admin/* endpoints (403)
+    if is_client and not is_admin:
+        if request.url.path.startswith("/admin"):
+            logger.warning(
+                "api_key_hash=%s client key forbidden on admin endpoint",
+                key_hash,
+                extra={"api_key_hash": key_hash},
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Forbidden: client key cannot access admin endpoints",
+            )
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+        )
+
+    if not is_admin:
         logger.warning(
             "api_key_hash=%s admin authentication failed",
             key_hash,
@@ -315,6 +393,7 @@ def require_admin_key(
             status_code=401,
             detail="Unauthorized",
         )
+
     logger.info(
         "api_key_hash=%s admin authenticated",
         key_hash,
