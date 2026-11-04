@@ -152,3 +152,154 @@ def test_counts_predicted_labels_last_7_days(store: FeedbackStore) -> None:
     # Test alias
     alias_counts = store.get_last_7_days_predicted_counts(now=ref_time)
     assert alias_counts == counts
+
+
+def test_confusion_matrix_and_accuracy_on_known_data() -> None:
+    """Verify confusion matrix counts (predicted, actual) pairs and computes accuracy."""
+    from supportpilot.monitoring.quality import (
+        compute_accuracy,
+        compute_confusion_matrix,
+        find_most_confused_pair,
+    )
+
+    # 10 test pairs: 7 correct, 3 confused (2 billing->refund, 1 delivery->other)
+    pairs = [
+        {"predicted_label": "billing", "correct_label": "billing"},
+        {"predicted_label": "billing", "correct_label": "billing"},
+        {"predicted_label": "billing", "correct_label": "billing"},
+        {"predicted_label": "billing", "correct_label": "refund"},
+        {"predicted_label": "billing", "correct_label": "refund"},
+        {"predicted_label": "delivery", "correct_label": "delivery"},
+        {"predicted_label": "delivery", "correct_label": "delivery"},
+        {"predicted_label": "delivery", "correct_label": "other"},
+        {"predicted_label": "account", "correct_label": "account"},
+        {"predicted_label": "cancellation", "correct_label": "cancellation"},
+    ]
+
+    cm = compute_confusion_matrix(pairs)
+
+    # Check known counts
+    assert cm["billing"]["billing"] == 3
+    assert cm["billing"]["refund"] == 2
+    assert cm["delivery"]["delivery"] == 2
+    assert cm["delivery"]["other"] == 1
+    assert cm["account"]["account"] == 1
+    assert cm["cancellation"]["cancellation"] == 1
+    # Check 2-tuple indexing
+    assert cm[("billing", "refund")] == 2
+    # Check unobserved pairs are 0
+    assert cm["billing"]["delivery"] == 0
+    assert cm["refund"]["refund"] == 0
+
+    # Accuracy: 7 / 10 = 0.7
+    acc = compute_accuracy(cm)
+    assert acc == 0.7000
+
+    # Accuracy from pairs directly
+    acc_pairs = compute_accuracy(pairs)
+    assert acc_pairs == 0.7000
+
+    # Accuracy on empty data returns None
+    assert compute_accuracy([]) is None
+    assert compute_accuracy(compute_confusion_matrix([])) is None
+
+    # Top confused pair: billing -> refund (count: 2)
+    top_confused = find_most_confused_pair(cm)
+    assert top_confused == ("billing", "refund", 2)
+
+
+def test_precision_recall_derived_from_matrix() -> None:
+    """Verify precision and recall per label derived from confusion matrix, returning None on zero division."""
+    from supportpilot.monitoring.quality import (
+        compute_confusion_matrix,
+        compute_precision,
+        compute_precision_recall,
+        compute_recall,
+    )
+
+    pairs = [
+        # billing: predicted 5 times (3 actual billing, 2 actual refund)
+        {"predicted_label": "billing", "correct_label": "billing"},
+        {"predicted_label": "billing", "correct_label": "billing"},
+        {"predicted_label": "billing", "correct_label": "billing"},
+        {"predicted_label": "billing", "correct_label": "refund"},
+        {"predicted_label": "billing", "correct_label": "refund"},
+        # delivery: predicted 2 times (2 actual delivery)
+        {"predicted_label": "delivery", "correct_label": "delivery"},
+        {"predicted_label": "delivery", "correct_label": "delivery"},
+        # actual refund: 2 from billing, 1 from refund
+        {"predicted_label": "refund", "correct_label": "refund"},
+    ]
+
+    cm = compute_confusion_matrix(pairs)
+    precision, recall = compute_precision_recall(cm)
+
+    # Precision(billing) = TP(3) / Total Pred(5) = 0.6
+    assert precision["billing"] == 0.6000
+    # Recall(billing) = TP(3) / Total Actual(3) = 1.0
+    assert recall["billing"] == 1.0000
+
+    # Precision(refund) = TP(1) / Total Pred(1) = 1.0
+    assert precision["refund"] == 1.0000
+    # Recall(refund) = TP(1) / Total Actual(3: 2 from billing, 1 from refund) = 1/3 = 0.3333
+    assert recall["refund"] == 0.3333
+
+    # Precision(delivery) = 2/2 = 1.0
+    assert precision["delivery"] == 1.0000
+    # Recall(delivery) = 2/2 = 1.0
+    assert recall["delivery"] == 1.0000
+
+    # Zero count labels: cancellation, account, other -> None (null)
+    assert precision["cancellation"] is None
+    assert recall["cancellation"] is None
+    assert precision["account"] is None
+    assert recall["account"] is None
+
+    # Standalone helpers
+    assert compute_precision(cm)["billing"] == 0.6000
+    assert compute_recall(cm)["refund"] == 0.3333
+
+
+def test_psi_matches_hand_calculated_value() -> None:
+    """Verify PSI calculation matches a hand-calculated value and handles zero counts."""
+    import math
+    from supportpilot.monitoring.quality import compute_psi
+
+    test_labels = ("delivery", "billing")
+    exp = {"delivery": 50, "billing": 50}  # share 0.5, 0.5
+    act = {"delivery": 60, "billing": 40}  # share 0.6, 0.4
+
+    # Hand calculation:
+    # term1 = (0.6 - 0.5) * ln(0.6 / 0.5) = 0.1 * ln(1.2) = 0.018232155679
+    # term2 = (0.4 - 0.5) * ln(0.4 / 0.5) = -0.1 * ln(0.8) = 0.022314355131
+    # total = 0.0405465... -> 0.0405
+    expected_hand = round(
+        (0.6 - 0.5) * math.log(0.6 / 0.5) + (0.4 - 0.5) * math.log(0.4 / 0.5), 4
+    )
+    assert expected_hand == 0.0405
+
+    psi = compute_psi(actual_counts=act, expected_counts=exp, labels=test_labels)
+    assert psi == 0.0405
+
+    # Zero drift (identical distribution) -> 0.0
+    zero_drift = compute_psi(actual_counts=exp, expected_counts=exp, labels=test_labels)
+    assert zero_drift == 0.0000
+
+    # Zero count handles epsilon 0.0001 avoiding log(0)
+    act_with_zero = {"delivery": 100, "billing": 0}
+    psi_zero = compute_psi(
+        actual_counts=act_with_zero,
+        expected_counts=exp,
+        eps=0.0001,
+        labels=test_labels,
+    )
+    eps = 0.0001
+    hand_zero = round(
+        (1.0 - 0.5) * math.log(1.0 / 0.5) + (eps - 0.5) * math.log(eps / 0.5), 4
+    )
+    assert psi_zero == hand_zero
+    assert psi_zero == 4.6043
+
+    # Empty actual counts returns None
+    assert compute_psi(actual_counts={}, labels=test_labels) is None
+
