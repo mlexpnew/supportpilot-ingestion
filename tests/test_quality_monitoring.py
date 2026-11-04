@@ -18,11 +18,29 @@ from supportpilot.feedback.store import init_db
 from supportpilot.triage import LABELS
 
 
+import logging
+import math
+import os
+from collections.abc import Generator
+
+
 @pytest.fixture
-def store(tmp_path: Path) -> FeedbackStore:
-    db_file = tmp_path / "quality_test.db"
-    init_db(db_file)
-    return FeedbackStore(db_path=db_file)
+def store(tmp_path: Path) -> Generator[FeedbackStore, None, None]:
+    db_url = os.getenv("DATABASE_URL")
+    if db_url is not None and db_url.strip():
+        s = FeedbackStore()
+        try:
+            yield s
+        finally:
+            s.close()
+    else:
+        db_file = tmp_path / "quality_test.db"
+        init_db(db_file)
+        s = FeedbackStore(db_path=db_file)
+        try:
+            yield s
+        finally:
+            s.close()
 
 
 def test_quality_data_joins_predictions_and_feedback(store: FeedbackStore) -> None:
@@ -607,3 +625,226 @@ def test_alerts_endpoint_picks_up_drift_and_low_accuracy() -> None:
         alert_names = [a["name"] for a in data["alerts"]]
         assert ALERT_NAME_LABEL_DRIFT in alert_names
         assert ALERT_NAME_LOW_LIVE_ACCURACY in alert_names
+
+
+def test_known_prediction_feedback_list_exact_matrix_accuracy_precision_recall() -> (
+    None
+):
+    """Verify known prediction and feedback list yields exact matrix, accuracy, precision, and recall (Step 6)."""
+    from supportpilot.monitoring.quality import (
+        compute_accuracy,
+        compute_confusion_matrix,
+        compute_precision_recall,
+    )
+
+    # 10 known pairs:
+    # billing: 3 predictions (2 actual billing, 1 actual refund)
+    # refund: 2 predictions (2 actual refund)
+    # delivery: 2 predictions (1 actual delivery, 1 actual other)
+    # other: 1 prediction (1 actual delivery)
+    # account: 1 prediction (1 actual account)
+    # cancellation: 1 prediction (1 actual cancellation)
+    known_pairs = [
+        {"predicted_label": "billing", "correct_label": "billing"},
+        {"predicted_label": "billing", "correct_label": "billing"},
+        {"predicted_label": "billing", "correct_label": "refund"},
+        {"predicted_label": "refund", "correct_label": "refund"},
+        {"predicted_label": "refund", "correct_label": "refund"},
+        {"predicted_label": "delivery", "correct_label": "delivery"},
+        {"predicted_label": "delivery", "correct_label": "other"},
+        {"predicted_label": "other", "correct_label": "delivery"},
+        {"predicted_label": "account", "correct_label": "account"},
+        {"predicted_label": "cancellation", "correct_label": "cancellation"},
+    ]
+
+    # 1. Exact Confusion Matrix
+    cm = compute_confusion_matrix(known_pairs)
+    assert cm["billing"]["billing"] == 2
+    assert cm["billing"]["refund"] == 1
+    assert cm["refund"]["refund"] == 2
+    assert cm["delivery"]["delivery"] == 1
+    assert cm["delivery"]["other"] == 1
+    assert cm["other"]["delivery"] == 1
+    assert cm["account"]["account"] == 1
+    assert cm["cancellation"]["cancellation"] == 1
+
+    # Verify zero for unobserved combinations
+    assert cm["billing"]["delivery"] == 0
+    assert cm["refund"]["billing"] == 0
+    assert cm["delivery"]["refund"] == 0
+    assert cm["other"]["other"] == 0
+
+    # 2. Exact Accuracy: 7 correct out of 10 = 0.7000
+    acc = compute_accuracy(cm)
+    assert acc == 0.7000
+    assert compute_accuracy(known_pairs) == 0.7000
+
+    # 3. Exact Precision and Recall per label
+    precision, recall = compute_precision_recall(cm)
+
+    # Precision = TP / Total Predicted
+    assert precision["billing"] == round(2 / 3, 4)  # 0.6667
+    assert precision["refund"] == 1.0000  # 2 / 2
+    assert precision["delivery"] == 0.5000  # 1 / 2
+    assert precision["account"] == 1.0000  # 1 / 1
+    assert precision["cancellation"] == 1.0000  # 1 / 1
+    assert precision["other"] == 0.0000  # 0 / 1
+
+    # Recall = TP / Total Actual
+    # Actual counts: billing=2, refund=3 (1 from billing, 2 from refund), delivery=2 (1 from delivery, 1 from other), other=1, account=1, cancellation=1
+    assert recall["billing"] == 1.0000  # 2 / 2
+    assert recall["refund"] == round(2 / 3, 4)  # 0.6667
+    assert recall["delivery"] == 0.5000  # 1 / 2
+    assert recall["account"] == 1.0000  # 1 / 1
+    assert recall["cancellation"] == 1.0000  # 1 / 1
+    assert recall["other"] == 0.0000  # 0 / 1
+
+
+def test_psi_hand_calculated_and_identical_distributions_give_zero() -> None:
+    """Verify PSI equals hand-calculated value and identical distributions give PSI = 0 (Step 6)."""
+    from supportpilot.monitoring.quality import compute_psi
+
+    test_labels = ("delivery", "billing")
+    exp = {"delivery": 50, "billing": 50}
+    act = {"delivery": 60, "billing": 40}
+
+    # Hand calculation:
+    # A_delivery = 0.6, E_delivery = 0.5 -> (0.6 - 0.5) * ln(0.6 / 0.5) = 0.1 * ln(1.2) = 0.018232155679
+    # A_billing  = 0.4, E_billing  = 0.5 -> (0.4 - 0.5) * ln(0.4 / 0.5) = -0.1 * ln(0.8) = 0.022314355131
+    # Total sum = 0.0405465... -> 0.0405
+    hand_calc = round(
+        (0.6 - 0.5) * math.log(0.6 / 0.5) + (0.4 - 0.5) * math.log(0.4 / 0.5), 4
+    )
+    assert hand_calc == 0.0405
+
+    psi = compute_psi(actual_counts=act, expected_counts=exp, labels=test_labels)
+    assert psi == hand_calc
+    assert psi == 0.0405
+
+    # Identical distributions give PSI = 0
+    zero_psi_binary = compute_psi(
+        actual_counts=exp, expected_counts=exp, labels=test_labels
+    )
+    assert zero_psi_binary == 0.0
+
+    # Identical across all 6 model labels give PSI = 0
+    uniform_all = {lbl: 20 for lbl in LABELS}
+    zero_psi_all = compute_psi(actual_counts=uniform_all, expected_counts=uniform_all)
+    assert zero_psi_all == 0.0
+
+
+def test_under_30_feedback_rows_insufficient_data_and_alerts_do_not_fire() -> None:
+    """Verify under 30 feedback rows gives status: insufficient_data and alerts don't fire (Step 6)."""
+    from datetime import UTC, datetime
+    from fastapi.testclient import TestClient
+    from supportpilot.api.alerts import (
+        ALERT_NAME_LABEL_DRIFT,
+        ALERT_NAME_LOW_LIVE_ACCURACY,
+    )
+    from supportpilot.api.main import app
+
+    now = datetime.now(UTC).isoformat()
+
+    with TestClient(app) as client:
+        store: FeedbackStore = client.app.state.feedback_store
+
+        # Seed exactly 29 feedback rows (under 30) where 100% are wrong (0% accuracy)
+        for i in range(29):
+            tid = f"T-GUARD-{i}"
+            store.save_prediction(
+                ticket_id=tid,
+                predicted_label="billing",
+                confidence=0.9,
+                model_version="triage-v1.0.0-20261103",
+                created_at=now,
+            )
+            store.save_feedback(
+                ticket_id=tid,
+                correct_label="refund",  # 0% accuracy
+                agent_id="agent-qa",
+                created_at=now,
+            )
+
+        # 1. GET /metrics/quality must return status: "insufficient_data" and null metrics
+        res_quality = client.get(
+            "/metrics/quality", headers={"X-API-Key": "test-admin-key-1"}
+        )
+        assert res_quality.status_code == 200
+        data_quality = res_quality.json()
+
+        assert data_quality["status"] == "insufficient_data"
+        assert "not enough data" in data_quality["message"].lower()
+        assert data_quality["sample_size"] == 29
+        assert data_quality["accuracy"] is None
+        assert data_quality["precision"] is None
+        assert data_quality["recall"] is None
+        assert data_quality["confusion_matrix"] is None
+        assert data_quality["matrix"] is None
+
+        # 2. GET /alerts must NOT fire low_live_accuracy (guarded by 30-feedback minimum)
+        #    and must NOT fire label_drift (29 predictions < 50-prediction minimum)
+        res_alerts = client.get("/alerts", headers={"X-API-Key": "test-key-1"})
+        assert res_alerts.status_code == 200
+        data_alerts = res_alerts.json()
+
+        active_alert_names = [a["name"] for a in data_alerts["alerts"]]
+        assert ALERT_NAME_LOW_LIVE_ACCURACY not in active_alert_names
+        assert ALERT_NAME_LABEL_DRIFT not in active_alert_names
+
+
+def test_no_ticket_text_appears_in_quality_response_or_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify no customer ticket text appears in /metrics/quality response, logs, or store pairs (Step 6)."""
+    from fastapi.testclient import TestClient
+    from supportpilot.api.main import app
+
+    secret_pii = "CONFIDENTIAL_CARD_4111_SECRET_USER_MESSAGE_DO_NOT_LEAK"
+
+    with TestClient(app) as client:
+        store: FeedbackStore = client.app.state.feedback_store
+
+        # 1. Triage a ticket containing sensitive PII text
+        res_triage = client.post(
+            "/triage",
+            headers={"X-API-Key": "test-key-1"},
+            json={"ticket_id": "TICKET-PII-LEAK-CHECK", "body": secret_pii},
+        )
+        assert res_triage.status_code == 200
+
+        # 2. Submit feedback for the ticket
+        res_fb = client.post(
+            "/feedback",
+            headers={"X-API-Key": "test-key-1"},
+            json={
+                "ticket_id": "TICKET-PII-LEAK-CHECK",
+                "correct_label": "billing",
+                "agent_id": "agent-qa-1",
+            },
+        )
+        assert res_fb.status_code == 200
+
+        # 3. Call GET /metrics/quality while capturing logs
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            res_quality = client.get(
+                "/metrics/quality",
+                headers={"X-API-Key": "test-admin-key-1"},
+            )
+            assert res_quality.status_code == 200
+
+            # Verify no ticket text in response JSON
+            assert secret_pii not in res_quality.text
+
+            # Verify no ticket text in captured logs
+            assert secret_pii not in caplog.text
+
+        # 4. Verify quality data store method returns only predicted_label and correct_label
+        pairs = store.get_prediction_feedback_pairs()
+        assert len(pairs) >= 1
+        for pair in pairs:
+            assert secret_pii not in str(pair)
+            assert set(pair.keys()) == {"predicted_label", "correct_label"}
+            assert "text" not in pair
+            assert "body" not in pair
+            assert "ticket_id" not in pair
