@@ -19,7 +19,6 @@ jobs:
           SECRET_PRODUCTION_URL: ${{ secrets.PRODUCTION_URL }}
           SECRET_URL: ${{ secrets.URL }}
           SECRET_MONITOR_API_KEY: ${{ secrets.MONITOR_API_KEY }}
-          SECRET_ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
@@ -41,9 +40,7 @@ jobs:
               or ""
           ).strip().rstrip("/")
           monitor_key = (
-              os.environ.get("SECRET_MONITOR_API_KEY")
-              or os.environ.get("SECRET_ADMIN_KEY")
-              or ""
+              os.environ.get("SECRET_MONITOR_API_KEY") or ""
           ).strip()
 
           if not url:
