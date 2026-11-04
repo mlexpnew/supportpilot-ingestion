@@ -967,6 +967,7 @@ def get_alerts(req: Request) -> AlertsResponse:
         key_usage=key_usage,
         client_key_hashes=client_key_hashes,
         started_at=started_at,
+        feedback_store=feedback_store,
     )
     # Support forcing a test alert via FORCE_TEST_ALERT env var only (requires server access)
     force_test = os.getenv("FORCE_TEST_ALERT", "").lower() in (

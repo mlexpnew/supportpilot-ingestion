@@ -299,6 +299,10 @@ def test_get_alert_thresholds_custom_env(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("ALERT_MIN_FEEDBACK", "30")
     monkeypatch.setenv("ALERT_MIN_TRIAGE", "40")
     monkeypatch.setenv("ALERT_MIN_REQUESTS", "100")
+    monkeypatch.setenv("ALERT_MAX_PSI", "0.25")
+    monkeypatch.setenv("ALERT_MIN_DRIFT_PREDICTIONS", "75")
+    monkeypatch.setenv("ALERT_MIN_LIVE_ACCURACY", "0.70")
+    monkeypatch.setenv("ALERT_MIN_QUALITY_FEEDBACK", "45")
 
     thresholds = get_alert_thresholds()
     assert thresholds.min_accuracy == 0.85
@@ -307,6 +311,10 @@ def test_get_alert_thresholds_custom_env(monkeypatch: pytest.MonkeyPatch) -> Non
     assert thresholds.min_feedback == 30
     assert thresholds.min_triage == 40
     assert thresholds.min_requests == 100
+    assert thresholds.max_psi == 0.25
+    assert thresholds.min_drift_predictions == 75
+    assert thresholds.min_live_accuracy == 0.70
+    assert thresholds.min_quality_feedback == 45
 
 
 @pytest.mark.parametrize(
@@ -328,6 +336,17 @@ def test_get_alert_thresholds_custom_env(monkeypatch: pytest.MonkeyPatch) -> Non
         ("ALERT_MIN_TRIAGE", "xyz"),
         ("ALERT_MIN_REQUESTS", "-10"),
         ("ALERT_MIN_REQUESTS", "foo"),
+        ("ALERT_MAX_PSI", "-0.1"),
+        ("ALERT_MAX_PSI", "invalid"),
+        ("ALERT_MIN_DRIFT_PREDICTIONS", "0"),
+        ("ALERT_MIN_DRIFT_PREDICTIONS", "-5"),
+        ("ALERT_MIN_DRIFT_PREDICTIONS", "xyz"),
+        ("ALERT_MIN_LIVE_ACCURACY", "1.5"),
+        ("ALERT_MIN_LIVE_ACCURACY", "-0.1"),
+        ("ALERT_MIN_LIVE_ACCURACY", "foo"),
+        ("ALERT_MIN_QUALITY_FEEDBACK", "0"),
+        ("ALERT_MIN_QUALITY_FEEDBACK", "-1"),
+        ("ALERT_MIN_QUALITY_FEEDBACK", "none"),
     ],
 )
 def test_get_alert_thresholds_bad_env_fails_fast(

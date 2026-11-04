@@ -430,3 +430,185 @@ def test_metrics_quality_endpoint_sufficient_data_and_days_filter() -> None:
         assert data_2d["accuracy"] == round(28 / 32, 4)
 
 
+def test_label_drift_alert_guards_and_firing() -> None:
+    """Verify label_drift alert only fires when predictions >= 50 and PSI > 0.2."""
+    from supportpilot.api.alerts import (
+        ALERT_NAME_LABEL_DRIFT,
+        SEVERITY_CRITICAL,
+        SEVERITY_WARNING,
+        AlertThresholds,
+        evaluate_alerts,
+    )
+    from supportpilot.api.models import MetricsResponse
+
+    thresholds = AlertThresholds(max_psi=0.20, min_drift_predictions=50)
+    dummy_metrics = MetricsResponse(
+        requests_total=0,
+        triage_total=0,
+        errors_total=0,
+        avg_latency_ms=0.0,
+        needs_review_rate=0.0,
+        rate_limited_total=0,
+    )
+
+    # 1. Under 50 predictions (49) even with high drift -> NO alert
+    alerts_low_samples = evaluate_alerts(
+        dummy_metrics,
+        thresholds,
+        psi=0.50,
+        total_predictions=49,
+    )
+    assert not any(a.name == ALERT_NAME_LABEL_DRIFT for a in alerts_low_samples)
+
+    # 2. >= 50 predictions (50) with PSI <= 0.20 (0.15) -> NO alert
+    alerts_no_drift = evaluate_alerts(
+        dummy_metrics,
+        thresholds,
+        psi=0.15,
+        total_predictions=50,
+    )
+    assert not any(a.name == ALERT_NAME_LABEL_DRIFT for a in alerts_no_drift)
+
+    # 3. >= 50 predictions (50) with PSI > 0.20 (0.25) -> Warning alert
+    alerts_warn = evaluate_alerts(
+        dummy_metrics,
+        thresholds,
+        psi=0.25,
+        total_predictions=50,
+    )
+    drift_warn = [a for a in alerts_warn if a.name == ALERT_NAME_LABEL_DRIFT]
+    assert len(drift_warn) == 1
+    assert drift_warn[0].value == 0.25
+    assert drift_warn[0].threshold == 0.20
+    assert drift_warn[0].severity == SEVERITY_WARNING
+
+    # 4. Critical severity (PSI >= 0.40)
+    alerts_crit = evaluate_alerts(
+        dummy_metrics,
+        thresholds,
+        psi=0.45,
+        total_predictions=60,
+    )
+    drift_crit = [a for a in alerts_crit if a.name == ALERT_NAME_LABEL_DRIFT]
+    assert len(drift_crit) == 1
+    assert drift_crit[0].value == 0.45
+    assert drift_crit[0].severity == SEVERITY_CRITICAL
+
+
+def test_low_live_accuracy_alert_guards_and_firing() -> None:
+    """Verify low_live_accuracy alert only fires when feedback >= 30 and accuracy < 0.75."""
+    from supportpilot.api.alerts import (
+        ALERT_NAME_LOW_LIVE_ACCURACY,
+        SEVERITY_CRITICAL,
+        SEVERITY_WARNING,
+        AlertThresholds,
+        evaluate_alerts,
+    )
+    from supportpilot.api.models import MetricsResponse
+
+    thresholds = AlertThresholds(min_live_accuracy=0.75, min_quality_feedback=30)
+    dummy_metrics = MetricsResponse(
+        requests_total=0,
+        triage_total=0,
+        errors_total=0,
+        avg_latency_ms=0.0,
+        needs_review_rate=0.0,
+        rate_limited_total=0,
+    )
+
+    # 1. Under 30 feedback rows (29) with low accuracy (0.50) -> NO alert
+    alerts_low_samples = evaluate_alerts(
+        dummy_metrics,
+        thresholds,
+        feedback_rows=29,
+        live_accuracy=0.50,
+    )
+    assert not any(a.name == ALERT_NAME_LOW_LIVE_ACCURACY for a in alerts_low_samples)
+
+    # 2. >= 30 feedback rows (30) with accuracy >= 0.75 (0.76) -> NO alert
+    alerts_good_acc = evaluate_alerts(
+        dummy_metrics,
+        thresholds,
+        feedback_rows=30,
+        live_accuracy=0.76,
+    )
+    assert not any(a.name == ALERT_NAME_LOW_LIVE_ACCURACY for a in alerts_good_acc)
+
+    # 3. >= 30 feedback rows (30) with accuracy < 0.75 (0.72) -> Warning alert
+    alerts_warn = evaluate_alerts(
+        dummy_metrics,
+        thresholds,
+        feedback_rows=30,
+        live_accuracy=0.72,
+    )
+    acc_warn = [a for a in alerts_warn if a.name == ALERT_NAME_LOW_LIVE_ACCURACY]
+    assert len(acc_warn) == 1
+    assert acc_warn[0].value == 0.72
+    assert acc_warn[0].threshold == 0.75
+    assert acc_warn[0].severity == SEVERITY_WARNING
+
+    # 4. Critical severity (< 0.65, e.g. 0.60)
+    alerts_crit = evaluate_alerts(
+        dummy_metrics,
+        thresholds,
+        feedback_rows=35,
+        live_accuracy=0.60,
+    )
+    acc_crit = [a for a in alerts_crit if a.name == ALERT_NAME_LOW_LIVE_ACCURACY]
+    assert len(acc_crit) == 1
+    assert acc_crit[0].value == 0.60
+    assert acc_crit[0].severity == SEVERITY_CRITICAL
+
+
+def test_alerts_endpoint_picks_up_drift_and_low_accuracy() -> None:
+    """Verify GET /alerts automatically evaluates and includes both new alerts."""
+    from datetime import UTC, datetime
+    from fastapi.testclient import TestClient
+    from supportpilot.api.alerts import (
+        ALERT_NAME_LABEL_DRIFT,
+        ALERT_NAME_LOW_LIVE_ACCURACY,
+    )
+    from supportpilot.api.main import app
+
+    now = datetime.now(UTC).isoformat()
+
+    with TestClient(app) as client:
+        store: FeedbackStore = client.app.state.feedback_store
+
+        # 1. Seed 60 predictions skewed entirely into 'billing' -> high drift vs uniform frozen eval set
+        for i in range(60):
+            tid = f"T-DRIFT-{i}"
+            store.save_prediction(
+                ticket_id=tid,
+                predicted_label="billing",
+                confidence=0.9,
+                model_version="triage-v1.0.0-20261103",
+                created_at=now,
+            )
+
+        # 2. Seed 35 feedback rows with only 20 correct -> accuracy = 20/35 = 0.5714 < 0.75
+        for i in range(20):
+            store.save_feedback(
+                ticket_id=f"T-DRIFT-{i}",
+                correct_label="billing",
+                agent_id="agent-1",
+                created_at=now,
+            )
+        for i in range(20, 35):
+            store.save_feedback(
+                ticket_id=f"T-DRIFT-{i}",
+                correct_label="refund",
+                agent_id="agent-2",
+                created_at=now,
+            )
+
+        res = client.get("/alerts", headers={"X-API-Key": "test-key-1"})
+        assert res.status_code == 200
+        data = res.json()
+
+        alert_names = [a["name"] for a in data["alerts"]]
+        assert ALERT_NAME_LABEL_DRIFT in alert_names
+        assert ALERT_NAME_LOW_LIVE_ACCURACY in alert_names
+
+
+
