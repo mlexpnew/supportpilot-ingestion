@@ -8,9 +8,10 @@ import re
 import secrets
 import time
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy.exc import IntegrityError
 
 from supportpilot.api.alerts import (
+    Alert,
     AlertThresholds,
     AlertsResponse,
     evaluate_alerts,
@@ -33,6 +35,7 @@ from supportpilot.api.models import (
     BatchTriageResponse,
     CreateKeyRequest,
     CreateKeyResponse,
+    EndpointLatency,
     KeyItemResponse,
     KeyUsageItem,
     MetricsResponse,
@@ -90,6 +93,31 @@ class Counters:
     total_latency_ms: float = 0.0
     needs_review_total: int = 0
     rate_limited_total: int = 0
+    endpoint_latencies: dict[str, deque[float]] = field(
+        default_factory=lambda: {
+            "/triage": deque(maxlen=500),
+            "/triage/batch": deque(maxlen=500),
+        }
+    )
+
+
+def calculate_percentiles(latencies: list[float]) -> tuple[float, float]:
+    """Calculate p50 and p95 latencies in ms from sample list (SP-119 Part B)."""
+    if not latencies:
+        return 0.0, 0.0
+    s = sorted(latencies)
+    n = len(s)
+    if n == 1:
+        return round(float(s[0]), 2), round(float(s[0]), 2)
+
+    def _pct(p: float) -> float:
+        idx = (n - 1) * p
+        lower = int(idx)
+        upper = min(lower + 1, n - 1)
+        weight = idx - lower
+        return s[lower] * (1.0 - weight) + s[upper] * weight
+
+    return round(float(_pct(0.50)), 2), round(float(_pct(0.95)), 2)
 
 
 def get_git_sha() -> str:
@@ -239,8 +267,8 @@ def get_api_key(
                 )
 
         if db_key is not None and isinstance(db_key, dict):
-            # Found in DB: check if active (ignoring revoked keys)
-            if not db_key.get("revoked_at"):
+            # Found in DB: check if active (ignoring revoked keys and admin keys on client endpoints)
+            if not db_key.get("revoked_at") and db_key.get("role") != "admin":
                 is_valid = True
                 request.state.api_key_role = db_key.get("role", "client")
                 request.state.api_key_name = db_key.get("name")
@@ -590,6 +618,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.model = loaded_model
     app.state.threshold = threshold
     app.state.counters = Counters()
+    app.state.endpoint_latencies = app.state.counters.endpoint_latencies
     app.state.api_keys = get_api_keys()
     app.state.admin_api_keys = get_admin_api_keys()
     validate_key_separation(app.state.api_keys, app.state.admin_api_keys)
@@ -606,6 +635,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.rate_limits = {}
     app.state.alert_thresholds = None
     app.state.started_at = None
+    app.state.counters = Counters()
+    app.state.endpoint_latencies = app.state.counters.endpoint_latencies
     if getattr(app.state, "feedback_store", None) is not None:
         app.state.feedback_store.close()
     app.state.feedback_store = None
@@ -620,6 +651,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.state.counters = Counters()
+app.state.endpoint_latencies = app.state.counters.endpoint_latencies
 app.state.api_keys = set()
 app.state.admin_api_keys = set()
 app.state.rate_limits = {}
@@ -648,11 +680,26 @@ async def track_counters(request: Request, call_next: Any) -> Response:
             counters.total_latency_ms += (time.perf_counter() - t0) * 1000.0
         raise
 
+    duration_ms = (time.perf_counter() - t0) * 1000.0
     if counters is not None:
         # Only count 5xx server failures as errors; 4xx are client errors
         if response.status_code >= 500:
             counters.errors_total += 1
-        counters.total_latency_ms += (time.perf_counter() - t0) * 1000.0
+        counters.total_latency_ms += duration_ms
+
+    # Record duration for successful requests only (SP-119 Part B)
+    if 200 <= response.status_code < 300:
+        endpoint_latencies = getattr(request.app.state, "endpoint_latencies", None)
+        if endpoint_latencies is None and counters is not None:
+            endpoint_latencies = getattr(counters, "endpoint_latencies", None)
+        if endpoint_latencies is not None:
+            ep = (
+                request.url.path
+                if request.url.path in endpoint_latencies
+                else request.url.path.rstrip("/")
+            )
+            if ep in endpoint_latencies:
+                endpoint_latencies[ep].append(duration_ms)
 
     return response
 
@@ -738,6 +785,26 @@ def get_metrics(req: Request) -> MetricsResponse:
         feedback_store.get_live_accuracy() if feedback_store is not None else (0, None)
     )
 
+    endpoint_latencies = getattr(req.app.state, "endpoint_latencies", None)
+    if endpoint_latencies is None and counters is not None:
+        endpoint_latencies = getattr(counters, "endpoint_latencies", None)
+    if endpoint_latencies is None:
+        endpoint_latencies = {}
+
+    latencies_metric: dict[str, EndpointLatency] = {}
+    for ep in ("/triage", "/triage/batch"):
+        raw_samples = list(endpoint_latencies.get(ep, []))
+        p50, p95 = calculate_percentiles(raw_samples)
+        n = len(raw_samples)
+        latencies_metric[ep] = EndpointLatency(
+            p50_ms=p50,
+            p95_ms=p95,
+            p50=p50,
+            p95=p95,
+            samples=n,
+            sample_count=n,
+        )
+
     if counters is None or counters.requests_total == 0:
         return MetricsResponse(
             requests_total=0 if counters is None else counters.requests_total,
@@ -748,6 +815,7 @@ def get_metrics(req: Request) -> MetricsResponse:
             rate_limited_total=0 if counters is None else counters.rate_limited_total,
             feedback_total=feedback_total,
             live_accuracy=live_accuracy,
+            latencies=latencies_metric,
         )
 
     avg_latency = round(counters.total_latency_ms / counters.requests_total, 2)
@@ -766,6 +834,7 @@ def get_metrics(req: Request) -> MetricsResponse:
         rate_limited_total=counters.rate_limited_total,
         feedback_total=feedback_total,
         live_accuracy=live_accuracy,
+        latencies=latencies_metric,
     )
 
 
@@ -813,6 +882,22 @@ def get_alerts(req: Request) -> AlertsResponse:
         client_key_hashes=client_key_hashes,
         started_at=started_at,
     )
+    # Support forcing a test alert via FORCE_TEST_ALERT env var only (requires server access)
+    force_test = os.getenv("FORCE_TEST_ALERT", "").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    if force_test:
+        active_alerts.append(
+            Alert(
+                name="test_alert",
+                severity="warning",
+                value=999.0,
+                threshold=500.0,
+                message="Forced test alert for automated monitor verification",
+            )
+        )
     return AlertsResponse(
         alerts=active_alerts,
         checked_at=datetime.now(timezone.utc).isoformat(),

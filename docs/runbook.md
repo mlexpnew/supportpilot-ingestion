@@ -382,3 +382,48 @@ curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.c
 3. **Dual Verification Before Handoff**:
    Always execute `client_check.py` against production before notifying external clients that their credentials are active.
 
+---
+
+## Incident 8: Latency SLO Breach (p95 > 500 ms)
+
+### Symptoms
+- Active alert `latency_slo_breach` appears on `GET /alerts`.
+- Automated monitor opens a GitHub issue titled `🔴 Alert: latency_slo_breach`.
+- Client experiences slow triage response times; p95 latency exceeds the 500 ms SLO target over 20+ samples.
+
+### Check
+```bash
+# 1. Query live metrics to check p50, p95, and sample count per endpoint
+curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.com/metrics | jq '.latencies'
+
+# 2. Check active alerts payload
+curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.com/alerts | jq .
+
+# 3. Check Render metrics dashboard for CPU/memory throttling
+# Navigate to: Render Dashboard -> SupportPilot Web Service -> Metrics -> CPU / Memory Usage
+
+# 4. Check Postgres active queries for lock contention or slow queries
+# Connect to external database URL and run:
+# SELECT pid, now() - pg_stat_activity.query_start AS duration, query, state FROM pg_stat_activity WHERE state != 'idle' ORDER BY duration DESC;
+```
+
+### Fix
+1. **CPU/Memory Starvation**:
+   - Check if Render free instance is CPU-throttled or experiencing memory pressure.
+   - If memory exceeds threshold, trigger a service restart to clear memory fragmentation or upgrade instance tier.
+2. **Database Lock Contention**:
+   - If prediction logging or key usage writes are blocking triage requests, terminate stuck locks:
+     ```sql
+     SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state != 'idle' AND duration > interval '10 seconds';
+     ```
+3. **Rollback if Caused by Deploy**:
+   - If the breach followed a recent deployment, trigger instant rollback:
+     - Navigate to **Render Dashboard** -> **SupportPilot Web Service** -> **Deploys**.
+     - Select previous deploy -> Click **Rollback to this deploy**.
+
+### Notify
+- **Sana** (API Tech Lead): Investigate endpoint latency bottlenecks.
+- **Rohan** (Performance Lead): Review benchmark results and query execution plan.
+- **Dev** (Infrastructure Lead): Monitor Render CPU/memory resource utilization.
+
+

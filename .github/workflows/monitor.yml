@@ -1,0 +1,245 @@
+name: Monitor Service and Alerts
+
+on:
+  schedule:
+    # Run every 15 minutes
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  monitor:
+    name: Check Health and Alerts
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Monitor health and evaluate alerts
+        env:
+          SECRET_PRODUCTION_URL: ${{ secrets.PRODUCTION_URL }}
+          SECRET_URL: ${{ secrets.URL }}
+          SECRET_MONITOR_API_KEY: ${{ secrets.MONITOR_API_KEY }}
+          SECRET_ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 - << 'EOF'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timezone
+
+          # 1. Verify required secrets (fail loudly if missing)
+          url = (
+              os.environ.get("SECRET_PRODUCTION_URL")
+              or os.environ.get("SECRET_URL")
+              or ""
+          ).strip().rstrip("/")
+          monitor_key = (
+              os.environ.get("SECRET_MONITOR_API_KEY")
+              or os.environ.get("SECRET_ADMIN_KEY")
+              or ""
+          ).strip()
+
+          if not url:
+              print("::error::Missing required secret: PRODUCTION_URL or URL", file=sys.stderr)
+              sys.exit(1)
+
+          if not monitor_key:
+              print("::error::Missing required secret: MONITOR_API_KEY", file=sys.stderr)
+              sys.exit(1)
+
+          def run_gh(args: list[str]) -> str:
+              res = subprocess.run(["gh"] + args, capture_output=True, text=True, check=True)
+              return res.stdout
+
+          def ensure_alert_label_exists() -> None:
+              try:
+                  subprocess.run(
+                      ["gh", "label", "create", "alert", "--description", "Production monitor alert", "--color", "d73a4a"],
+                      capture_output=True,
+                      text=True,
+                  )
+              except Exception:
+                  pass
+
+          def get_open_issues() -> list[dict]:
+              raw = run_gh(["issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,body,labels"])
+              return json.loads(raw)
+
+          def check_health(base_url: str) -> tuple[bool, str]:
+              health_url = f"{base_url}/health"
+              try:
+                  req = urllib.request.Request(
+                      health_url,
+                      headers={"User-Agent": "SupportPilot-Monitor/1.0"},
+                  )
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      if resp.status == 200:
+                          return True, "OK"
+                      return False, f"HTTP status {resp.status}"
+              except urllib.error.HTTPError as e:
+                  return False, f"HTTP {e.code}: {e.reason}"
+              except Exception as e:
+                  return False, str(e)
+
+          ensure_alert_label_exists()
+
+          # 2. Call /health first. On failure, retry once after 60s (for Render wake-up)
+          print(f"Calling health check at {url}/health...")
+          is_healthy, err_msg = check_health(url)
+          if not is_healthy:
+              print(f"Initial /health failed: {err_msg}. Retrying once after 60s for Render wake-up...")
+              time.sleep(60)
+              is_healthy, err_msg = check_health(url)
+
+          open_issues = get_open_issues()
+
+          if not is_healthy:
+              print(f"::error::Service /health check failed after retry: {err_msg}", file=sys.stderr)
+              # Open or comment on "🔴 Service down" issue
+              service_down_issues = [i for i in open_issues if "Service down" in i.get("title", "")]
+              if service_down_issues:
+                  issue_num = service_down_issues[0]["number"]
+                  comment = (
+                      f"🔴 **Service still down**\n\n"
+                      f"Health check at `/health` failed after 60s retry.\n\n"
+                      f"- **Error**: `{err_msg}`\n"
+                      f"- **Timestamp**: `{datetime.now(timezone.utc).isoformat()}`"
+                  )
+                  run_gh(["issue", "comment", str(issue_num), "--body", comment])
+                  print(f"Added comment to existing Service down issue #{issue_num}")
+              else:
+                  title = "🔴 Service down"
+                  body = (
+                      f"<!-- alert-name: service_down -->\n"
+                      f"### 🔴 Service Down Alert\n\n"
+                      f"The health check at `{url}/health` failed twice (initial attempt and after 60s retry).\n\n"
+                      f"- **Error**: `{err_msg}`\n"
+                      f"- **Timestamp**: `{datetime.now(timezone.utc).isoformat()}`\n\n"
+                      f"*Reported automatically by SupportPilot monitor.*"
+                  )
+                  out = run_gh(["issue", "create", "--title", title, "--body", body, "--label", "alert"])
+                  print(f"Opened new Service down issue: {out.strip()}")
+              sys.exit(1)
+
+          # If healthy, auto-close any previously open "Service down" issue
+          service_down_issues = [i for i in open_issues if "Service down" in i.get("title", "")]
+          for issue in service_down_issues:
+              issue_num = issue["number"]
+              run_gh(["issue", "comment", str(issue_num), "--body", "✅ resolved: Service /health check succeeded."])
+              run_gh(["issue", "close", str(issue_num)])
+              print(f"Resolved and closed Service down issue #{issue_num}")
+
+          # 3. Call /alerts
+          print(f"Calling alerts check at {url}/alerts...")
+          alerts_url = f"{url}/alerts"
+          req = urllib.request.Request(
+              alerts_url,
+              headers={
+                  "X-API-Key": monitor_key,
+                  "User-Agent": "SupportPilot-Monitor/1.0",
+                  "Accept": "application/json",
+              },
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  alerts_data = json.loads(resp.read().decode())
+          except Exception as e:
+              print(f"::error::Failed to fetch /alerts: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          active_alerts = alerts_data.get("alerts", [])
+          active_alert_names = {a["name"] for a in active_alerts}
+          active_alert_map = {a["name"]: a for a in active_alerts}
+          print(f"Active alerts count: {len(active_alerts)} ({list(active_alert_names)})")
+
+          # Refresh open issues list
+          open_issues = get_open_issues()
+
+          # For each active alert:
+          # Search open issues for that alert's name.
+          # If none is found, open a new issue with label alert.
+          # If one exists, add a comment saying the alert is still firing.
+          for alert in active_alerts:
+              name = alert["name"]
+              severity = alert.get("severity", "warning")
+              val = alert.get("value")
+              threshold = alert.get("threshold")
+              msg = alert.get("message", "")
+
+              matching = [
+                  i for i in open_issues
+                  if name in i.get("title", "") or f"<!-- alert-name: {name} -->" in i.get("body", "")
+              ]
+
+              if matching:
+                  target_issue = matching[0]
+                  comment_body = (
+                      f"Alert `{name}` is still firing.\n\n"
+                      f"- **Severity**: `{severity}`\n"
+                      f"- **Value**: `{val}`\n"
+                      f"- **Threshold**: `{threshold}`\n"
+                      f"- **Message**: {msg}\n"
+                      f"- **Timestamp**: `{datetime.now(timezone.utc).isoformat()}`"
+                  )
+                  run_gh(["issue", "comment", str(target_issue["number"]), "--body", comment_body])
+                  print(f"Added comment on existing issue #{target_issue['number']} for alert {name}")
+              else:
+                  issue_title = f"🔴 Alert: {name}"
+                  issue_body = (
+                      f"<!-- alert-name: {name} -->\n"
+                      f"### Alert: `{name}`\n\n"
+                      f"- **Severity**: `{severity}`\n"
+                      f"- **Value**: `{val}`\n"
+                      f"- **Threshold**: `{threshold}`\n"
+                      f"- **Message**: {msg}\n"
+                      f"- **Timestamp**: `{datetime.now(timezone.utc).isoformat()}`\n\n"
+                      f"*Reported automatically by SupportPilot monitor.*"
+                  )
+                  out = run_gh(["issue", "create", "--title", issue_title, "--body", issue_body, "--label", "alert"])
+                  print(f"Opened new issue for alert {name}: {out.strip()}")
+
+          # Refresh open issues list for resolution check
+          open_issues = get_open_issues()
+
+          # For each open alert issue whose alert has cleared, add a "✅ resolved" comment and close the issue.
+          for issue in open_issues:
+              labels = issue.get("labels", [])
+              has_alert_label = any(
+                  (l.get("name") == "alert" if isinstance(l, dict) else l == "alert")
+                  for l in labels
+              )
+              title = issue.get("title", "")
+              body = issue.get("body", "")
+
+              # Skip Service down issues (handled separately above)
+              if "Service down" in title:
+                  continue
+
+              if not (has_alert_label or "Alert:" in title):
+                  continue
+
+              extracted_name = None
+              body_match = re.search(r"<!-- alert-name:\s*([^\s>]+)\s*-->", body)
+              if body_match:
+                  extracted_name = body_match.group(1).strip()
+              else:
+                  title_match = re.search(r"(?:🔴\s*)?Alert:\s*([a-zA-Z0-9_-]+)", title)
+                  if title_match:
+                      extracted_name = title_match.group(1).strip()
+
+              if extracted_name and extracted_name not in active_alert_names:
+                  issue_num = issue["number"]
+                  comment = f"✅ resolved: Alert `{extracted_name}` has cleared."
+                  run_gh(["issue", "comment", str(issue_num), "--body", comment])
+                  run_gh(["issue", "close", str(issue_num)])
+                  print(f"Resolved and closed issue #{issue_num} for cleared alert {extracted_name}")
+
+          print("Monitor run completed successfully.")
+          EOF
