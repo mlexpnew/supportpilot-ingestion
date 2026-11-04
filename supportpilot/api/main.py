@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy.exc import IntegrityError
 
 from supportpilot.api.alerts import (
+    Alert,
     AlertThresholds,
     AlertsResponse,
     evaluate_alerts,
@@ -283,6 +284,13 @@ def get_api_key(
             is_valid = validate_api_key(api_key, valid_keys)
             if is_valid:
                 request.state.api_key_role = "client"
+            else:
+                admin_keys: set[str] = getattr(
+                    request.app.state, "admin_api_keys", set()
+                )
+                if validate_api_key(api_key, admin_keys):
+                    is_valid = True
+                    request.state.api_key_role = "admin"
 
     # Usage tracking (SP-115 Part A & Sana table protection fix)
     try:
@@ -858,7 +866,7 @@ def get_label_metrics(req: Request) -> dict[str, Any]:
     response_model=AlertsResponse,
     dependencies=[Depends(get_api_key), Depends(rate_limit)],
 )
-def get_alerts(req: Request) -> AlertsResponse:
+def get_alerts(req: Request, test_alert: bool = False) -> AlertsResponse:
     metrics = get_metrics(req)
     thresholds: AlertThresholds | None = getattr(
         req.app.state, "alert_thresholds", None
@@ -881,6 +889,22 @@ def get_alerts(req: Request) -> AlertsResponse:
         client_key_hashes=client_key_hashes,
         started_at=started_at,
     )
+    # Support forcing a test alert via query param or FORCE_TEST_ALERT env var
+    force_test = test_alert or os.getenv("FORCE_TEST_ALERT", "").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    if force_test:
+        active_alerts.append(
+            Alert(
+                name="test_alert",
+                severity="warning",
+                value=999.0,
+                threshold=500.0,
+                message="Forced test alert for automated monitor verification",
+            )
+        )
     return AlertsResponse(
         alerts=active_alerts,
         checked_at=datetime.now(timezone.utc).isoformat(),
