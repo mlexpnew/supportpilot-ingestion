@@ -376,3 +376,34 @@ def test_auth_no_prefix_lookup_single_db_query(monkeypatch: pytest.MonkeyPatch) 
         assert len(lookup_hashes) == 1
         assert lookup_hashes[0] == expected_full_hash
         assert len(lookup_hashes[0]) == 64
+
+
+def test_admin_key_on_triage_gets_401() -> None:
+    """Verify that admin keys (both env and DB admin keys) get 401 on client endpoints (/triage)."""
+    admin_headers = {"X-API-Key": "test-admin-key-1"}
+    with TestClient(app) as client:
+        # 1. Env admin key on /triage gets 401
+        res_env_admin = client.post(
+            "/triage",
+            headers=admin_headers,
+            json={"ticket_id": "T-ADMIN-1", "body": "Where is my parcel?"},
+        )
+        assert res_env_admin.status_code == 401
+        assert "Unauthorized" in res_env_admin.json()["detail"]
+
+        # 2. Database admin key on /triage also gets 401
+        res_create = client.post(
+            "/admin/keys",
+            headers=admin_headers,
+            json={"name": "test-admin-db-key", "role": "admin"},
+        )
+        assert res_create.status_code == 201
+        admin_raw_key = res_create.json()["key"]
+
+        res_db_admin = client.post(
+            "/triage",
+            headers={"X-API-Key": admin_raw_key},
+            json={"ticket_id": "T-ADMIN-2", "body": "Where is my parcel?"},
+        )
+        assert res_db_admin.status_code == 401
+        assert "Unauthorized" in res_db_admin.json()["detail"]

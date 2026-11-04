@@ -267,8 +267,8 @@ def get_api_key(
                 )
 
         if db_key is not None and isinstance(db_key, dict):
-            # Found in DB: check if active (ignoring revoked keys)
-            if not db_key.get("revoked_at"):
+            # Found in DB: check if active (ignoring revoked keys and admin keys on client endpoints)
+            if not db_key.get("revoked_at") and db_key.get("role") != "admin":
                 is_valid = True
                 request.state.api_key_role = db_key.get("role", "client")
                 request.state.api_key_name = db_key.get("name")
@@ -284,13 +284,6 @@ def get_api_key(
             is_valid = validate_api_key(api_key, valid_keys)
             if is_valid:
                 request.state.api_key_role = "client"
-            else:
-                admin_keys: set[str] = getattr(
-                    request.app.state, "admin_api_keys", set()
-                )
-                if validate_api_key(api_key, admin_keys):
-                    is_valid = True
-                    request.state.api_key_role = "admin"
 
     # Usage tracking (SP-115 Part A & Sana table protection fix)
     try:
@@ -866,7 +859,7 @@ def get_label_metrics(req: Request) -> dict[str, Any]:
     response_model=AlertsResponse,
     dependencies=[Depends(get_api_key), Depends(rate_limit)],
 )
-def get_alerts(req: Request, test_alert: bool = False) -> AlertsResponse:
+def get_alerts(req: Request) -> AlertsResponse:
     metrics = get_metrics(req)
     thresholds: AlertThresholds | None = getattr(
         req.app.state, "alert_thresholds", None
@@ -889,8 +882,8 @@ def get_alerts(req: Request, test_alert: bool = False) -> AlertsResponse:
         client_key_hashes=client_key_hashes,
         started_at=started_at,
     )
-    # Support forcing a test alert via query param or FORCE_TEST_ALERT env var
-    force_test = test_alert or os.getenv("FORCE_TEST_ALERT", "").lower() in (
+    # Support forcing a test alert via FORCE_TEST_ALERT env var only (requires server access)
+    force_test = os.getenv("FORCE_TEST_ALERT", "").lower() in (
         "true",
         "1",
         "yes",

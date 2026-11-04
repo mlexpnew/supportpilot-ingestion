@@ -18,8 +18,8 @@ jobs:
         env:
           SECRET_PRODUCTION_URL: ${{ secrets.PRODUCTION_URL }}
           SECRET_URL: ${{ secrets.URL }}
+          SECRET_MONITOR_API_KEY: ${{ secrets.MONITOR_API_KEY }}
           SECRET_ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
-          SECRET_ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
@@ -40,9 +40,9 @@ jobs:
               or os.environ.get("SECRET_URL")
               or ""
           ).strip().rstrip("/")
-          admin_key = (
-              os.environ.get("SECRET_ADMIN_KEY")
-              or os.environ.get("SECRET_ADMIN_API_KEY")
+          monitor_key = (
+              os.environ.get("SECRET_MONITOR_API_KEY")
+              or os.environ.get("SECRET_ADMIN_KEY")
               or ""
           ).strip()
 
@@ -50,8 +50,8 @@ jobs:
               print("::error::Missing required secret: PRODUCTION_URL or URL", file=sys.stderr)
               sys.exit(1)
 
-          if not admin_key:
-              print("::error::Missing required secret: ADMIN_KEY or ADMIN_API_KEY", file=sys.stderr)
+          if not monitor_key:
+              print("::error::Missing required secret: MONITOR_API_KEY", file=sys.stderr)
               sys.exit(1)
 
           def run_gh(args: list[str]) -> str:
@@ -142,7 +142,7 @@ jobs:
           req = urllib.request.Request(
               alerts_url,
               headers={
-                  "X-API-Key": admin_key,
+                  "X-API-Key": monitor_key,
                   "User-Agent": "SupportPilot-Monitor/1.0",
                   "Accept": "application/json",
               },

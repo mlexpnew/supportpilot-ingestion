@@ -15,6 +15,7 @@ All items below must be verified and checked off prior to marking production rea
   - Test `/triage` authentication with the provisioned client key.
 - [ ] **Monitor green**:
   - GitHub Actions automated monitor workflow (`.github/workflows/monitor.yml`) active and scheduled (runs every 15 min).
+  - Least-privilege client key named `monitor` created via `POST /admin/keys` and stored in GitHub secret `MONITOR_API_KEY`.
   - Production `/health` returns `200 OK` (`{"status": "ok", "model_loaded": true}`).
   - Production `/alerts` returns zero active alerts (`"alerts": []`).
   - No open `alert` issues or `🔴 Service down` issues in GitHub repository.
