@@ -303,3 +303,130 @@ def test_psi_matches_hand_calculated_value() -> None:
     # Empty actual counts returns None
     assert compute_psi(actual_counts={}, labels=test_labels) is None
 
+
+def test_metrics_quality_endpoint_auth_and_insufficient_data() -> None:
+    """Verify GET /metrics/quality enforces admin auth and returns insufficient_data when < 30 feedback rows."""
+    from fastapi.testclient import TestClient
+    from supportpilot.api.main import app
+
+    with TestClient(app) as client:
+        # 1. Unauthenticated -> 401
+        res_no_auth = client.get("/metrics/quality")
+        assert res_no_auth.status_code == 401
+
+        # 2. Client key -> 401 (only admin allowed)
+        res_client = client.get(
+            "/metrics/quality", headers={"X-API-Key": "test-key-1"}
+        )
+        assert res_client.status_code == 401
+
+        # 3. Admin key with 0 feedback rows -> insufficient_data
+        res_admin = client.get(
+            "/metrics/quality", headers={"X-API-Key": "test-admin-key-1"}
+        )
+        assert res_admin.status_code == 200
+        data = res_admin.json()
+        assert data["status"] == "insufficient_data"
+        assert "not enough data" in data["message"].lower()
+        assert data["sample_size"] == 0
+        assert data["accuracy"] is None
+        assert data["precision"] is None
+        assert data["recall"] is None
+        assert data["confusion_matrix"] is None
+        assert data["matrix"] is None
+
+
+def test_metrics_quality_endpoint_sufficient_data_and_days_filter() -> None:
+    """Verify GET /metrics/quality returns full metrics when >= 30 rows and respects days parameter."""
+    from datetime import UTC, datetime, timedelta
+    from fastapi.testclient import TestClient
+    from supportpilot.api.main import app
+
+    now = datetime.now(UTC)
+    now_iso = now.isoformat()
+    old_iso = (now - timedelta(days=5)).isoformat()
+
+    with TestClient(app) as client:
+        store: FeedbackStore = client.app.state.feedback_store
+
+        # Seed 32 recent feedback rows (within 2 days): 28 billing agreed, 4 billing->refund
+        for i in range(28):
+            tid = f"T-RECENT-{i}"
+            store.save_prediction(
+                ticket_id=tid,
+                predicted_label="billing",
+                confidence=0.9,
+                model_version="triage-v1.0.0-20261103",
+                created_at=now_iso,
+            )
+            store.save_feedback(
+                ticket_id=tid,
+                correct_label="billing",
+                agent_id="agent-1",
+                created_at=now_iso,
+            )
+
+        for i in range(28, 32):
+            tid = f"T-RECENT-{i}"
+            store.save_prediction(
+                ticket_id=tid,
+                predicted_label="billing",
+                confidence=0.85,
+                model_version="triage-v1.0.0-20261103",
+                created_at=now_iso,
+            )
+            store.save_feedback(
+                ticket_id=tid,
+                correct_label="refund",
+                agent_id="agent-2",
+                created_at=now_iso,
+            )
+
+        # Seed 5 older feedback rows (5 days old): 5 delivery agreed
+        for i in range(5):
+            tid = f"T-OLD-{i}"
+            store.save_prediction(
+                ticket_id=tid,
+                predicted_label="delivery",
+                confidence=0.9,
+                model_version="triage-v1.0.0-20261103",
+                created_at=old_iso,
+            )
+            store.save_feedback(
+                ticket_id=tid,
+                correct_label="delivery",
+                agent_id="agent-3",
+                created_at=old_iso,
+            )
+
+        # 1. Query with default days=7 (total 37 rows >= 30)
+        res_7d = client.get(
+            "/metrics/quality", headers={"X-API-Key": "test-admin-key-1"}
+        )
+        assert res_7d.status_code == 200
+        data_7d = res_7d.json()
+        assert data_7d["status"] == "ok"
+        assert data_7d["sample_size"] == 37
+        assert data_7d["samples"] == 37
+        assert data_7d["days"] == 7
+        # Agreed: 28 billing + 5 delivery = 33 / 37 = 0.8919
+        assert data_7d["accuracy"] == round(33 / 37, 4)
+        assert data_7d["precision"]["billing"] == round(28 / 32, 4)
+        assert data_7d["recall"]["billing"] == 1.0
+        assert data_7d["confusion_matrix"]["billing"]["refund"] == 4
+        assert data_7d["matrix"]["billing"]["refund"] == 4
+
+        # 2. Query with days=2 (only the 32 recent rows: 32 >= 30)
+        res_2d = client.get(
+            "/metrics/quality?days=2", headers={"X-API-Key": "test-admin-key-1"}
+        )
+        assert res_2d.status_code == 200
+        data_2d = res_2d.json()
+        assert data_2d["status"] == "ok"
+        assert data_2d["sample_size"] == 32
+        assert data_2d["days"] == 2
+        # Delivery was 5 days ago, so not present in 2-day window
+        assert data_2d["confusion_matrix"]["delivery"]["delivery"] == 0
+        assert data_2d["accuracy"] == round(28 / 32, 4)
+
+
