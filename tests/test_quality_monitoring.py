@@ -315,9 +315,7 @@ def test_metrics_quality_endpoint_auth_and_insufficient_data() -> None:
         assert res_no_auth.status_code == 401
 
         # 2. Client key -> 401 (only admin allowed)
-        res_client = client.get(
-            "/metrics/quality", headers={"X-API-Key": "test-key-1"}
-        )
+        res_client = client.get("/metrics/quality", headers={"X-API-Key": "test-key-1"})
         assert res_client.status_code == 401
 
         # 3. Admin key with 0 feedback rows -> insufficient_data
@@ -338,7 +336,7 @@ def test_metrics_quality_endpoint_auth_and_insufficient_data() -> None:
 
 def test_metrics_quality_endpoint_sufficient_data_and_days_filter() -> None:
     """Verify GET /metrics/quality returns full metrics when >= 30 rows and respects days parameter."""
-    from datetime import UTC, datetime, timedelta
+    from datetime import UTC, datetime
     from fastapi.testclient import TestClient
     from supportpilot.api.main import app
 
@@ -609,6 +607,3 @@ def test_alerts_endpoint_picks_up_drift_and_low_accuracy() -> None:
         alert_names = [a["name"] for a in data["alerts"]]
         assert ALERT_NAME_LABEL_DRIFT in alert_names
         assert ALERT_NAME_LOW_LIVE_ACCURACY in alert_names
-
-
-

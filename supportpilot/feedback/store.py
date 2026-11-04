@@ -850,6 +850,18 @@ class FeedbackStore:
                 else None
             )
 
+        # Quality monitoring metrics (SP-120)
+        from supportpilot.monitoring.quality import (
+            compute_confusion_matrix,
+            compute_psi,
+            find_most_confused_pair,
+        )
+
+        pairs = self.get_prediction_feedback_pairs(start=start_str, end=end_str)
+        cm = compute_confusion_matrix(pairs)
+        most_confused = find_most_confused_pair(cm)
+        psi_val = compute_psi(predictions_by_label) if total_triaged > 0 else None
+
         return DateRangeStats(
             start=str(start),
             end=str(end),
@@ -866,6 +878,9 @@ class FeedbackStore:
             daily_triage_counts=daily_triage_counts,
             needs_review_tracked=needs_review_tracked,
             first_tracked_date=first_tracked_date,
+            most_confused_pair=most_confused,
+            psi=psi_val,
+            confusion_matrix=dict(cm),
         )
 
     def record_key_usage(

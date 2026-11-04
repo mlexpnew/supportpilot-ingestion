@@ -404,9 +404,7 @@ def evaluate_alerts(
             psi_val = compute_psi(recent_predictions_counts)
     elif psi_val is None and feedback_store is not None:
         try:
-            counts = feedback_store.get_predicted_label_counts_last_7_days(
-                now=curr_now
-            )
+            counts = feedback_store.get_predicted_label_counts_last_7_days(now=curr_now)
             n_preds = sum(counts.values())
             if n_preds >= thresholds.min_drift_predictions:
                 psi_val = compute_psi(counts)

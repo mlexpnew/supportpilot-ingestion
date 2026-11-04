@@ -21,6 +21,7 @@ Production operations and emergency incident response procedures for SupportPilo
 | **Live Alerts Endpoint** | `https://supportpilot-ingestion.onrender.com/alerts` | Active health alerts (`X-API-Key` protected) |
 | **Live Metrics Endpoint** | `https://supportpilot-ingestion.onrender.com/metrics` | Operational counters, telemetry, and live accuracy |
 | **Live Usage Endpoint** | `https://supportpilot-ingestion.onrender.com/usage` | Per-key usage and auth diagnostics (Admin `X-API-Key` protected) |
+| **Live Quality Endpoint** | `https://supportpilot-ingestion.onrender.com/metrics/quality` | Accuracy, confusion matrix, precision/recall, and sample sizes (Admin `X-API-Key` protected) |
 
 ---
 
@@ -425,5 +426,62 @@ curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.c
 - **Sana** (API Tech Lead): Investigate endpoint latency bottlenecks.
 - **Rohan** (Performance Lead): Review benchmark results and query execution plan.
 - **Dev** (Infrastructure Lead): Monitor Render CPU/memory resource utilization.
+
+---
+
+## Incident 9: Model Quality Drop / Drift Alert
+
+### Symptoms
+- Active alert `low_live_accuracy` (accuracy < 0.75 across $\ge 30$ feedback rows) or `label_drift` (PSI > 0.20 across $\ge 50$ predictions) appears on `GET /alerts`.
+- Automated GitHub Actions monitor opens an issue titled `🔴 Alert: low_live_accuracy` or `🔴 Alert: label_drift`.
+- Support agents flag recurring misclassifications in Tier-1 triage queues.
+
+### Check
+```bash
+# 1. Query live quality endpoint to inspect live accuracy, confusion matrix, and sample counts
+curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.com/metrics/quality | jq .
+
+# 2. Inspect active alerts payload
+curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.com/alerts | jq .
+
+# 3. Identify the confused labels
+# Look at the off-diagonal counts in the confusion_matrix (e.g. matrix["billing"]["refund"])
+# Check per-label precision and recall to find which categories experienced degradation.
+
+# 4. Export feedback to inspect concrete misclassification examples
+export DATABASE_URL="<render-postgres-external-url>"
+python -m supportpilot.feedback export --out data/feedback_export.jsonl
+```
+
+### Fix
+1. **Find Confused Labels & Review Examples**:
+   - Inspect the exported feedback (`data/feedback_export.jsonl`) to identify ambiguous customer phrasing, shifting inquiry types, or emerging vocabulary not present in the original training data.
+2. **Execute Retraining Pipeline (Champion vs. Challenger)**:
+   - Run the automated retraining pipeline joining feedback with labeled historical tickets:
+     ```bash
+     python -m supportpilot.triage.retrain \
+       --data data/triage_labeled.jsonl \
+       --feedback data/feedback_export.jsonl \
+       --eval-dataset data/eval_frozen.jsonl \
+       --out-dir models/ \
+       --expected-champion-version "$(curl -s https://supportpilot-ingestion.onrender.com/version | jq -r .model_version)"
+     ```
+   - Review comparison report (`reports/compare_<date>.json`).
+   - If the challenger candidate beats the production champion on the sacred frozen evaluation set (`data/eval_frozen.jsonl`), tag and publish the release asset, update Render's `TRIAGE_MODEL_PATH`, and redeploy.
+3. **Roll Back if Caused by a Recent Model Deployment**:
+   - If the drop in accuracy or distribution drift occurred immediately following a model version release or deploy:
+     - Navigate to **Render Dashboard** -> **SupportPilot Web Service** -> **Deploys**.
+     - Locate the last known healthy deployment and click **Rollback to this deploy**.
+     - Verify rollback success:
+       ```bash
+       curl -s https://supportpilot-ingestion.onrender.com/version | jq .
+       curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.com/metrics/quality | jq .
+       ```
+
+### Notify
+- **Rohan** (ML & Evaluation Lead): Inspect confusion matrix, analyze per-label error modes, and supervise retraining.
+- **Meera** (Data & Operations Lead): Audit incoming ticket distribution drift against baseline datasets.
+- **Neha** (Support & Client Lead): Brief support agents on known confusion patterns (e.g., billing vs refund) and advise agents to verify predictions in affected categories until the retrained model is deployed.
+
 
 

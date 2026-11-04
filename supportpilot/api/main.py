@@ -939,7 +939,6 @@ def get_metrics_quality(
     )
 
 
-
 @app.get(
     "/alerts",
     response_model=AlertsResponse,

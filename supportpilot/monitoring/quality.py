@@ -67,9 +67,7 @@ class ConfusionMatrix(dict[str, dict[str, int]]):
     @property
     def total_samples(self) -> int:
         """Total number of evaluated feedback samples in the matrix."""
-        return sum(
-            self[p][a] for p in self.keys() for a in self[p].keys()
-        )
+        return sum(self[p][a] for p in self.keys() for a in self[p].keys())
 
 
 def compute_confusion_matrix(
@@ -111,7 +109,9 @@ def compute_confusion_matrix(
 
 
 def compute_accuracy(
-    data: Sequence[Mapping[str, str] | tuple[str, str]] | Mapping[str, Mapping[str, int]],
+    data: (
+        Sequence[Mapping[str, str] | tuple[str, str]] | Mapping[str, Mapping[str, int]]
+    ),
     total: int | None = None,
 ) -> float | None:
     """Calculate overall accuracy: correct predictions divided by total feedback rows.
@@ -122,9 +122,7 @@ def compute_accuracy(
     if isinstance(data, Mapping) and any(isinstance(v, Mapping) for v in data.values()):
         # Confusion matrix provided
         agreed = sum(
-            data[lbl].get(lbl, 0)
-            for lbl in data
-            if isinstance(data[lbl], Mapping)
+            data[lbl].get(lbl, 0) for lbl in data if isinstance(data[lbl], Mapping)
         )
         sample_total = (
             total
@@ -399,4 +397,3 @@ def compute_quality_metrics(
         ),
         "psi": psi,
     }
-
