@@ -19,6 +19,7 @@ ALERT_NAME_REVIEW_RATE: str = "review_rate"
 ALERT_NAME_ERROR_RATE: str = "error_rate"
 ALERT_NAME_NO_CLIENT_TRAFFIC: str = "no_client_traffic"
 ALERT_NAME_NEVER_SEEN: str = "client_never_seen"
+ALERT_NAME_LATENCY_SLO_BREACH: str = "latency_slo_breach"
 
 SEVERITY_WARNING: str = "warning"
 SEVERITY_CRITICAL: str = "critical"
@@ -29,6 +30,8 @@ DEFAULT_MAX_ERROR_RATE: float = 0.05
 DEFAULT_MIN_FEEDBACK: int = 20
 DEFAULT_MIN_TRIAGE: int = 20
 DEFAULT_MIN_REQUESTS: int = 50
+DEFAULT_MAX_P95_LATENCY_MS: float = 500.0
+DEFAULT_MIN_LATENCY_SAMPLES: int = 20
 
 
 class Alert(BaseModel):
@@ -62,6 +65,8 @@ class AlertThresholds:
     min_feedback: int = DEFAULT_MIN_FEEDBACK
     min_triage: int = DEFAULT_MIN_TRIAGE
     min_requests: int = DEFAULT_MIN_REQUESTS
+    max_p95_latency_ms: float = DEFAULT_MAX_P95_LATENCY_MS
+    min_latency_samples: int = DEFAULT_MIN_LATENCY_SAMPLES
 
 
 def _parse_float_env(
@@ -122,6 +127,15 @@ def get_alert_thresholds() -> AlertThresholds:
         min_feedback=_parse_int_env("ALERT_MIN_FEEDBACK", DEFAULT_MIN_FEEDBACK),
         min_triage=_parse_int_env("ALERT_MIN_TRIAGE", DEFAULT_MIN_TRIAGE),
         min_requests=_parse_int_env("ALERT_MIN_REQUESTS", DEFAULT_MIN_REQUESTS),
+        max_p95_latency_ms=_parse_float_env(
+            "ALERT_MAX_P95_LATENCY_MS",
+            DEFAULT_MAX_P95_LATENCY_MS,
+            min_val=0.0,
+            max_val=100000.0,
+        ),
+        min_latency_samples=_parse_int_env(
+            "ALERT_MIN_LATENCY_SAMPLES", DEFAULT_MIN_LATENCY_SAMPLES, min_val=1
+        ),
     )
 
 
@@ -267,6 +281,34 @@ def evaluate_alerts(
                             threshold=24.0,
                             severity=SEVERITY_WARNING,
                             message="never seen",
+                        )
+                    )
+
+        # 5. Latency SLO Breach Alert (SP-119 Part B)
+        # Fires when p95 is over 500 ms and there are at least 20 samples.
+    if metrics.latencies:
+        for ep, lat in sorted(metrics.latencies.items()):
+            samples = lat.samples if hasattr(lat, "samples") else lat.get("samples", 0)
+            p95_val = (
+                lat.p95_ms
+                if hasattr(lat, "p95_ms")
+                else lat.get("p95_ms", lat.get("p95", 0.0))
+            )
+            if samples >= thresholds.min_latency_samples:
+                if p95_val > thresholds.max_p95_latency_ms:
+                    critical_boundary = thresholds.max_p95_latency_ms * 2.0
+                    severity = (
+                        SEVERITY_CRITICAL
+                        if p95_val >= critical_boundary
+                        else SEVERITY_WARNING
+                    )
+                    alerts.append(
+                        Alert(
+                            name=ALERT_NAME_LATENCY_SLO_BREACH,
+                            value=round(p95_val, 2),
+                            threshold=thresholds.max_p95_latency_ms,
+                            severity=severity,
+                            message=f"{ep} p95 latency {round(p95_val, 2)}ms exceeds {thresholds.max_p95_latency_ms}ms SLO ({samples} samples)",
                         )
                     )
 

@@ -478,6 +478,24 @@ def test_counters_initial_state() -> None:
             "rate_limited_total": 0,
             "feedback_total": 0,
             "live_accuracy": None,
+            "latencies": {
+                "/triage": {
+                    "p50_ms": 0.0,
+                    "p95_ms": 0.0,
+                    "p50": 0.0,
+                    "p95": 0.0,
+                    "samples": 0,
+                    "sample_count": 0,
+                },
+                "/triage/batch": {
+                    "p50_ms": 0.0,
+                    "p95_ms": 0.0,
+                    "p50": 0.0,
+                    "p95": 0.0,
+                    "samples": 0,
+                    "sample_count": 0,
+                },
+            },
         }
 
         # app.state.counters contains the same zero values
@@ -761,6 +779,7 @@ def test_metric_keys() -> None:
             "rate_limited_total",
             "feedback_total",
             "live_accuracy",
+            "latencies",
         }
         assert isinstance(data["requests_total"], int)
         assert isinstance(data["triage_total"], int)
@@ -770,6 +789,9 @@ def test_metric_keys() -> None:
         assert isinstance(data["rate_limited_total"], int)
         assert isinstance(data["feedback_total"], int)
         assert data["live_accuracy"] is None or isinstance(data["live_accuracy"], float)
+        assert isinstance(data["latencies"], dict)
+        assert "/triage" in data["latencies"]
+        assert "/triage/batch" in data["latencies"]
 
 
 def test_no_ticket_text_in_metrics() -> None:
@@ -812,7 +834,15 @@ def test_no_ticket_text_in_metrics() -> None:
 
         # Zero leakage check in values (strictly numeric operational telemetry or None)
         for val in metrics_data.values():
-            assert val is None or isinstance(val, (int, float))
+            if isinstance(val, dict):
+                for sub_val in val.values():
+                    if isinstance(sub_val, dict):
+                        for leaf in sub_val.values():
+                            assert leaf is None or isinstance(leaf, (int, float))
+                    else:
+                        assert sub_val is None or isinstance(sub_val, (int, float))
+            else:
+                assert val is None or isinstance(val, (int, float))
 
 
 # =====================================================================

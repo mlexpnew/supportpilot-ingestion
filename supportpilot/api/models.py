@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class EndpointLatency(BaseModel):
+    """Latency percentiles and sample count for an endpoint (SP-119 Part B)."""
+
+    p50_ms: float = 0.0
+    p95_ms: float = 0.0
+    p50: float = 0.0
+    p95: float = 0.0
+    samples: int = 0
+    sample_count: int = 0
 
 
 class MetricsResponse(BaseModel):
@@ -16,6 +27,7 @@ class MetricsResponse(BaseModel):
     rate_limited_total: int
     feedback_total: int = 0
     live_accuracy: float | None = None
+    latencies: dict[str, EndpointLatency] = Field(default_factory=dict)
 
 
 class VersionResponse(BaseModel):
