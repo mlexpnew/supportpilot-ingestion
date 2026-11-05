@@ -11,7 +11,11 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from supportpilot.api.models import MetricsResponse
-from supportpilot.monitoring.quality import compute_accuracy, compute_psi
+from supportpilot.monitoring.quality import (
+    compute_accuracy,
+    compute_psi,
+    load_drift_baseline,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -393,21 +397,33 @@ def evaluate_alerts(
             )
 
     # 7. Label Drift Alert (SP-120 Part B)
-    # Compares last 7 days' predicted label mix with frozen eval set via PSI.
+    # Compares last 7 days' predicted label mix with baseline mix via PSI.
     # Fires when PSI is over 0.2 and there are at least 50 predictions.
     psi_val: float | None = psi
     n_preds: int | None = total_predictions
 
-    if psi_val is None and recent_predictions_counts is not None:
+    baseline_mix = load_drift_baseline()
+    if baseline_mix is None and psi_val is None:
+        logger.warning(
+            "label_drift: baseline_missing (supportpilot/monitoring/drift_baseline.json not found). Alert will not fire."
+        )
+
+    if (
+        psi_val is None
+        and recent_predictions_counts is not None
+        and baseline_mix is not None
+    ):
         n_preds = sum(recent_predictions_counts.values())
         if n_preds >= thresholds.min_drift_predictions:
-            psi_val = compute_psi(recent_predictions_counts)
-    elif psi_val is None and feedback_store is not None:
+            psi_val = compute_psi(
+                recent_predictions_counts, expected_counts=baseline_mix
+            )
+    elif psi_val is None and feedback_store is not None and baseline_mix is not None:
         try:
             counts = feedback_store.get_predicted_label_counts_last_7_days(now=curr_now)
             n_preds = sum(counts.values())
             if n_preds >= thresholds.min_drift_predictions:
-                psi_val = compute_psi(counts)
+                psi_val = compute_psi(counts, expected_counts=baseline_mix)
         except Exception as exc:
             logger.warning("Failed computing PSI for label drift alert: %s", exc)
 

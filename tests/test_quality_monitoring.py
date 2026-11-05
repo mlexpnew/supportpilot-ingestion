@@ -576,8 +576,11 @@ def test_low_live_accuracy_alert_guards_and_firing() -> None:
     assert acc_crit[0].severity == SEVERITY_CRITICAL
 
 
-def test_alerts_endpoint_picks_up_drift_and_low_accuracy() -> None:
-    """Verify GET /alerts automatically evaluates and includes both new alerts."""
+def test_alerts_endpoint_picks_up_drift_and_low_accuracy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify GET /alerts automatically evaluates and includes both new alerts when baseline exists."""
+    import json
     from datetime import UTC, datetime
     from fastapi.testclient import TestClient
     from supportpilot.api.alerts import (
@@ -585,6 +588,11 @@ def test_alerts_endpoint_picks_up_drift_and_low_accuracy() -> None:
         ALERT_NAME_LOW_LIVE_ACCURACY,
     )
     from supportpilot.api.main import app
+
+    baseline_path = tmp_path / "drift_baseline.json"
+    with open(baseline_path, "w", encoding="utf-8") as f:
+        json.dump({lbl: 10 for lbl in LABELS}, f)
+    monkeypatch.setenv("DRIFT_BASELINE_PATH", str(baseline_path))
 
     now = datetime.now(UTC).isoformat()
 
@@ -848,3 +856,263 @@ def test_no_ticket_text_appears_in_quality_response_or_logs(
             assert "text" not in pair
             assert "body" not in pair
             assert "ticket_id" not in pair
+
+
+def test_no_baseline_means_no_alert(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify that when drift baseline file is absent, label_drift reports baseline_missing and doesn't fire."""
+    import logging
+    from datetime import UTC, datetime
+    from fastapi.testclient import TestClient
+    from supportpilot.api.alerts import (
+        ALERT_NAME_LABEL_DRIFT,
+        AlertThresholds,
+        evaluate_alerts,
+    )
+    from supportpilot.api.main import app
+    from supportpilot.api.models import MetricsResponse
+    from supportpilot.monitoring.quality import compute_psi, load_drift_baseline
+
+    # Point to a guaranteed non-existent file
+    missing_baseline = tmp_path / "non_existent_drift_baseline.json"
+    monkeypatch.setenv("DRIFT_BASELINE_PATH", str(missing_baseline))
+
+    # 1. load_drift_baseline returns None and logs warning
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        baseline = load_drift_baseline()
+        assert baseline is None
+        assert "baseline_missing" in caplog.text
+        assert "Never falling back silently" in caplog.text
+
+    # 2. compute_psi returns None and logs warning (never falling back silently)
+    counts = {"delivery": 30, "billing": 30}
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        psi = compute_psi(counts)
+        assert psi is None
+        assert "baseline_missing" in caplog.text
+        assert "Never falling back silently" in caplog.text
+
+    # 3. evaluate_alerts: 60 predictions (>= 50 min) 100% skewed in billing
+    thresholds = AlertThresholds()
+    dummy_metrics = MetricsResponse(
+        requests_total=0,
+        triage_total=0,
+        errors_total=0,
+        avg_latency_ms=0.0,
+        needs_review_rate=0.0,
+        rate_limited_total=0,
+    )
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        alerts = evaluate_alerts(
+            dummy_metrics,
+            thresholds,
+            recent_predictions_counts={"billing": 60},
+        )
+        assert not any(a.name == ALERT_NAME_LABEL_DRIFT for a in alerts)
+        assert "baseline_missing" in caplog.text
+
+    # 4. Live GET /alerts endpoint: does not fire label_drift
+    now = datetime.now(UTC).isoformat()
+    with TestClient(app) as client:
+        feedback_store: FeedbackStore = client.app.state.feedback_store
+        for i in range(60):
+            feedback_store.save_prediction(
+                ticket_id=f"T-NO-BASELINE-{i}",
+                predicted_label="billing",
+                confidence=0.9,
+                model_version="triage-v1.0.0-20261103",
+                created_at=now,
+            )
+
+        res = client.get("/alerts", headers={"X-API-Key": "test-key-1"})
+        assert res.status_code == 200
+        active_names = [a["name"] for a in res.json()["alerts"]]
+        assert ALERT_NAME_LABEL_DRIFT not in active_names
+
+
+def test_baseline_present_gives_correct_psi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify that when drift baseline is present, it gives the exact hand-calculated PSI and fires when breached."""
+    import json
+    from supportpilot.api.alerts import (
+        ALERT_NAME_LABEL_DRIFT,
+        AlertThresholds,
+        evaluate_alerts,
+    )
+    from supportpilot.api.models import MetricsResponse
+    from supportpilot.monitoring.quality import compute_psi, load_drift_baseline
+
+    baseline_file = tmp_path / "drift_baseline.json"
+    baseline_data = {
+        "counts": {
+            "delivery": 50,
+            "billing": 50,
+            "refund": 0,
+            "cancellation": 0,
+            "account": 0,
+            "other": 0,
+        }
+    }
+    with open(baseline_file, "w", encoding="utf-8") as f:
+        json.dump(baseline_data, f)
+    monkeypatch.setenv("DRIFT_BASELINE_PATH", str(baseline_file))
+
+    # Verify load_drift_baseline reads it correctly
+    loaded = load_drift_baseline()
+    assert loaded is not None
+    assert loaded["delivery"] == 50
+    assert loaded["billing"] == 50
+
+    # Hand calculation check:
+    # delivery: 60/100 = 0.6 vs 50/100 = 0.5 -> (0.6 - 0.5) * ln(0.6/0.5) = 0.018232
+    # billing:  40/100 = 0.4 vs 50/100 = 0.5 -> (0.4 - 0.5) * ln(0.4/0.5) = 0.022314
+    # sum = 0.0405
+    act = {"delivery": 60, "billing": 40}
+    psi = compute_psi(act, labels=("delivery", "billing"))
+    assert psi == 0.0405
+
+    # High drift test (> 0.20): 90 delivery, 10 billing vs 50/50 baseline
+    # (0.9 - 0.5) * ln(0.9/0.5) + (0.1 - 0.5) * ln(0.1/0.5) = 0.4 * ln(1.8) - 0.4 * ln(0.2) = 0.2351 + 0.6437 = 0.8789 > 0.20
+    skewed_mix = {"delivery": 90, "billing": 10}
+    skewed_psi = compute_psi(skewed_mix, labels=("delivery", "billing"))
+    assert skewed_psi is not None
+    assert skewed_psi > 0.20
+
+    thresholds = AlertThresholds(max_psi=0.20, min_drift_predictions=50)
+    dummy_metrics = MetricsResponse(
+        requests_total=0,
+        triage_total=0,
+        errors_total=0,
+        avg_latency_ms=0.0,
+        needs_review_rate=0.0,
+        rate_limited_total=0,
+    )
+    alerts = evaluate_alerts(
+        dummy_metrics,
+        thresholds,
+        recent_predictions_counts=skewed_mix,
+    )
+    drift_alerts = [a for a in alerts if a.name == ALERT_NAME_LABEL_DRIFT]
+    assert len(drift_alerts) == 1
+    assert drift_alerts[0].value == skewed_psi
+
+
+def test_snapshot_baseline_under_500_predictions_fails_fast(
+    tmp_path: Path,
+) -> None:
+    """Verify snapshot script fails fast when there are fewer than 500 predictions."""
+    import pytest
+    from supportpilot.monitoring.snapshot_baseline import main, snapshot_baseline
+
+    db_file = tmp_path / "snapshot_test_small.db"
+    init_db(db_file)
+    store = FeedbackStore(db_path=db_file)
+    out_file = tmp_path / "drift_baseline.json"
+
+    try:
+        # Seed 120 predictions (under 500)
+        for i in range(120):
+            store.save_prediction(
+                ticket_id=f"T-SMALL-{i}",
+                predicted_label="billing",
+                confidence=0.9,
+                model_version="v1",
+                created_at="2026-11-05T12:00:00Z",
+            )
+
+        # 1. snapshot_baseline raises ValueError
+        with pytest.raises(
+            ValueError,
+            match="Cannot snapshot baseline: found 120 real predictions, but at least 500 are required.",
+        ):
+            snapshot_baseline(store=store, out_path=out_file)
+
+        assert not out_file.exists()
+
+        # 2. CLI main returns code 1
+        rc = main(["--db-path", str(db_file), "--output", str(out_file)])
+        assert rc == 1
+        assert not out_file.exists()
+    finally:
+        store.close()
+
+
+def test_snapshot_baseline_over_500_predictions_saves_valid_baseline(
+    tmp_path: Path,
+) -> None:
+    """Verify snapshot script saves a valid baseline inside package once >= 500 predictions exist."""
+    from supportpilot.monitoring.quality import load_drift_baseline
+    from supportpilot.monitoring.snapshot_baseline import main, snapshot_baseline
+
+    db_file = tmp_path / "snapshot_test_500.db"
+    init_db(db_file)
+    store = FeedbackStore(db_path=db_file)
+    out_file = tmp_path / "drift_baseline.json"
+
+    try:
+        # Seed 520 predictions across labels
+        for i in range(200):
+            store.save_prediction(
+                ticket_id=f"T-BILL-{i}",
+                predicted_label="billing",
+                confidence=0.9,
+                model_version="v1",
+                created_at="2026-11-05T12:00:00Z",
+            )
+        for i in range(120):
+            store.save_prediction(
+                ticket_id=f"T-DELIV-{i}",
+                predicted_label="delivery",
+                confidence=0.9,
+                model_version="v1",
+                created_at="2026-11-05T12:00:00Z",
+            )
+        for i in range(100):
+            store.save_prediction(
+                ticket_id=f"T-REF-{i}",
+                predicted_label="refund",
+                confidence=0.9,
+                model_version="v1",
+                created_at="2026-11-05T12:00:00Z",
+            )
+        for i in range(100):
+            store.save_prediction(
+                ticket_id=f"T-ACC-{i}",
+                predicted_label="account",
+                confidence=0.9,
+                model_version="v1",
+                created_at="2026-11-05T12:00:00Z",
+            )
+
+        # 1. snapshot_baseline successfully executes
+        payload = snapshot_baseline(store=store, out_path=out_file)
+        assert payload["total_predictions"] == 520
+        assert payload["counts"]["billing"] == 200
+        assert payload["counts"]["delivery"] == 120
+        assert payload["counts"]["refund"] == 100
+        assert payload["counts"]["account"] == 100
+
+        assert out_file.exists()
+
+        # 2. load_drift_baseline can read the generated file
+        loaded = load_drift_baseline(out_file)
+        assert loaded is not None
+        assert loaded["billing"] == 200
+        assert loaded["delivery"] == 120
+        assert loaded["refund"] == 100
+        assert loaded["account"] == 100
+
+        # 3. CLI main returns code 0
+        cli_out_file = tmp_path / "drift_baseline_cli.json"
+        rc = main(["--db-path", str(db_file), "--output", str(cli_out_file)])
+        assert rc == 0
+        assert cli_out_file.exists()
+    finally:
+        store.close()

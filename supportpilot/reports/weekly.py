@@ -401,7 +401,11 @@ def render_markdown(
         )
     else:
         psi_str = f"{stats.psi:.4f}" if stats.psi is not None else "N/A"
-        if stats.psi is not None and stats.psi > 0.20:
+        if stats.psi is None:
+            lines.append(
+                "- **Drift Status**: baseline_missing (no baseline snapshot found; label drift alert will not fire)."
+            )
+        elif stats.psi > 0.20:
             lines.append(
                 f"- **Drift Status**: **Noticeable drift detected** (PSI = {psi_str} > 0.20). "
                 "The mix of incoming customer tickets has shifted significantly compared to the baseline evaluation set. "

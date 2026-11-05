@@ -1144,6 +1144,24 @@ class FeedbackStore:
     get_last_7_days_predicted_counts = get_predicted_label_counts_last_7_days
     get_predicted_counts_last_7_days = get_predicted_label_counts_last_7_days
 
+    def get_all_predicted_label_counts(self) -> dict[str, int]:
+        """Count all historical predicted labels across all time (SP-120).
+
+        Zero-PII guarantee: returns only aggregated label counts.
+        """
+        stmt = select(
+            self.predictions.c.predicted_label,
+            func.count(self.predictions.c.ticket_id).label("count"),
+        ).group_by(self.predictions.c.predicted_label)
+
+        counts: dict[str, int] = {lbl: 0 for lbl in LABELS}
+        with self.engine.connect() as conn:
+            for row in conn.execute(stmt).mappings():
+                lbl = str(row["predicted_label"])
+                if lbl in counts:
+                    counts[lbl] = int(row["count"])
+        return counts
+
     def close(self) -> None:
         """Dispose of the SQLAlchemy engine and connection pool."""
         if hasattr(self, "engine") and self.engine is not None:

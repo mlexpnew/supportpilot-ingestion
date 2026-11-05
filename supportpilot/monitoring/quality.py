@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,8 +24,66 @@ from supportpilot.triage import LABELS
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EVAL_FROZEN_PATH = Path("data/eval_frozen.jsonl")
+DEFAULT_DRIFT_BASELINE_PATH: Path = Path(__file__).parent / "drift_baseline.json"
 DEFAULT_EPSILON: float = 0.0001
+
+
+def get_drift_baseline_path() -> Path:
+    """Return configured or default path to drift_baseline.json inside the package."""
+    env_p = os.getenv("DRIFT_BASELINE_PATH")
+    if env_p and env_p.strip():
+        return Path(env_p.strip())
+    return DEFAULT_DRIFT_BASELINE_PATH
+
+
+def load_drift_baseline(
+    path: Path | str | None = None,
+    labels: Sequence[str] = LABELS,
+) -> dict[str, int] | None:
+    """Load baseline predicted label counts from drift_baseline.json.
+
+    Returns:
+        dict mapping label -> count, or None if the baseline file does not exist or is invalid.
+        Never falls back silently: logs a warning when the baseline is missing.
+    """
+    target = Path(path) if path is not None else get_drift_baseline_path()
+    if not target.exists():
+        logger.warning(
+            "Drift baseline file '%s' does not exist (baseline_missing). Never falling back silently.",
+            target,
+        )
+        return None
+
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if (
+            isinstance(data, dict)
+            and "counts" in data
+            and isinstance(data["counts"], dict)
+        ):
+            raw_counts = data["counts"]
+        elif isinstance(data, dict):
+            raw_counts = data
+        else:
+            logger.warning(
+                "Invalid drift baseline format in '%s': expected JSON object, got %s",
+                target,
+                type(data).__name__,
+            )
+            return None
+
+        counts = {lbl: int(raw_counts.get(lbl, 0)) for lbl in labels}
+        if sum(counts.values()) <= 0:
+            logger.warning(
+                "Drift baseline in '%s' contains zero total samples.", target
+            )
+            return None
+        return counts
+    except Exception as exc:
+        logger.warning("Failed to load drift baseline file '%s': %s", target, exc)
+        return None
 
 
 class ConfusionMatrix(dict[str, dict[str, int]]):
@@ -273,33 +332,12 @@ def find_most_confused_pair(
 def get_frozen_eval_label_counts(
     eval_path: Path | str | None = None,
     labels: Sequence[str] = LABELS,
-) -> dict[str, int]:
-    """Get the label counts of the sacred frozen evaluation set (data/eval_frozen.jsonl).
+) -> dict[str, int] | None:
+    """Get the label counts of the baseline file or eval set.
 
-    If the file exists, counts the ground truth labels from the JSONL records.
-    If the file does not exist, defaults to 10 samples per label (the frozen baseline).
+    Returns None if missing (never falls back silently).
     """
-    target = Path(eval_path) if eval_path is not None else DEFAULT_EVAL_FROZEN_PATH
-    counts: dict[str, int] = {lbl: 0 for lbl in labels}
-
-    if target.exists():
-        try:
-            with open(target, "r", encoding="utf-8") as f:
-                for line in f:
-                    line_str = line.strip()
-                    if not line_str:
-                        continue
-                    record = json.loads(line_str)
-                    lbl = record.get("label")
-                    if lbl in counts:
-                        counts[lbl] += 1
-            if sum(counts.values()) > 0:
-                return counts
-        except Exception as e:
-            logger.warning("Could not read frozen eval file '%s': %s", target, e)
-
-    # Standard frozen baseline: exactly 10 per category across all 6 labels
-    return {lbl: 10 for lbl in labels}
+    return load_drift_baseline(path=eval_path, labels=labels)
 
 
 def compute_psi(
@@ -307,6 +345,7 @@ def compute_psi(
     expected_counts: Mapping[str, int] | None = None,
     eps: float = DEFAULT_EPSILON,
     labels: Sequence[str] = LABELS,
+    baseline_path: Path | str | None = None,
 ) -> float | None:
     """Compute Population Stability Index (PSI) between actual and expected distributions.
 
@@ -319,22 +358,29 @@ def compute_psi(
 
     Args:
         actual_counts: Observed prediction counts (e.g., from the last 7 days).
-        expected_counts: Baseline counts from the frozen eval set. If None, loaded from eval set.
+        expected_counts: Baseline counts from drift_baseline.json. If None, loaded from baseline.
         eps: Small non-zero floor to replace 0 shares and avoid log(0) or division by zero.
         labels: All labels to evaluate.
+        baseline_path: Optional explicit path to baseline JSON file.
 
     Returns:
-        PSI as a float rounded to 4 decimals, or None if actual total count is 0.
+        PSI as a float rounded to 4 decimals, or None if actual total count is 0 or baseline is missing.
     """
     total_actual = sum(actual_counts.get(lbl, 0) for lbl in labels)
     if total_actual == 0:
         return None
 
     if expected_counts is None:
-        expected_counts = get_frozen_eval_label_counts(labels=labels)
+        expected_counts = load_drift_baseline(path=baseline_path, labels=labels)
+        if expected_counts is None:
+            logger.warning(
+                "Cannot compute PSI: baseline_missing (supportpilot/monitoring/drift_baseline.json not found). Never falling back silently."
+            )
+            return None
 
     total_expected = sum(expected_counts.get(lbl, 0) for lbl in labels)
     if total_expected == 0:
+        logger.warning("Cannot compute PSI: expected baseline total count is 0.")
         return None
 
     psi_total = 0.0
@@ -356,11 +402,52 @@ def compute_psi(
     return round(float(psi_total), 4)
 
 
+def get_drift_status(
+    actual_counts: Mapping[str, int] | None = None,
+    expected_counts: Mapping[str, int] | None = None,
+    min_predictions: int = 50,
+    max_psi: float = 0.20,
+    baseline_path: Path | str | None = None,
+    labels: Sequence[str] = LABELS,
+) -> tuple[str, float | None]:
+    """Evaluate drift status and PSI value against baseline.
+
+    Returns:
+        (status, psi):
+            status: "baseline_missing" | "insufficient_data" | "drift_detected" | "stable"
+            psi: float | None
+    """
+    if expected_counts is None:
+        expected_counts = load_drift_baseline(path=baseline_path, labels=labels)
+        if expected_counts is None:
+            return "baseline_missing", None
+
+    if actual_counts is None:
+        return "insufficient_data", None
+
+    total_actual = sum(actual_counts.get(lbl, 0) for lbl in labels)
+    if total_actual < min_predictions:
+        return "insufficient_data", None
+
+    psi = compute_psi(
+        actual_counts=actual_counts,
+        expected_counts=expected_counts,
+        labels=labels,
+    )
+    if psi is None:
+        return "baseline_missing", None
+
+    if psi > max_psi:
+        return "drift_detected", psi
+    return "stable", psi
+
+
 def compute_quality_metrics(
     pairs: Sequence[Mapping[str, str] | tuple[str, str]],
     recent_predictions_counts: Mapping[str, int] | None = None,
     expected_eval_counts: Mapping[str, int] | None = None,
     labels: Sequence[str] = LABELS,
+    baseline_path: Path | str | None = None,
 ) -> dict[str, Any]:
     """Compute all quality metrics: confusion matrix, accuracy, precision, recall, and PSI."""
     matrix = compute_confusion_matrix(pairs, labels=labels)
@@ -369,15 +456,37 @@ def compute_quality_metrics(
     precision, recall = compute_precision_recall(matrix, labels=labels)
     label_metrics = compute_label_metrics(matrix, labels=labels)
 
+    drift_status = "baseline_missing"
     psi = None
     if recent_predictions_counts is not None:
-        psi = compute_psi(
+        drift_status, psi = get_drift_status(
             actual_counts=recent_predictions_counts,
             expected_counts=expected_eval_counts,
+            baseline_path=baseline_path,
             labels=labels,
         )
 
     most_confused = find_most_confused_pair(matrix, labels=labels)
+
+    return {
+        "sample_size": total_feedback,
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "per_label": label_metrics,
+        "confusion_matrix": matrix,
+        "most_confused_pair": (
+            {
+                "predicted": most_confused[0],
+                "actual": most_confused[1],
+                "count": most_confused[2],
+            }
+            if most_confused
+            else None
+        ),
+        "psi": psi,
+        "drift_status": drift_status,
+    }
 
     return {
         "sample_size": total_feedback,
