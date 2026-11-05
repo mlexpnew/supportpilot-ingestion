@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -362,13 +362,14 @@ def evaluate_alerts(
                     )
 
     # 6. Low Live Accuracy Alert (SP-120 Part C)
-    # Fires when accuracy is under 0.75 and there are at least 30 feedback rows.
+    # Fires when accuracy is under 0.75 and there are at least 30 feedback rows in the last 7 days.
     fb_total: int | None = feedback_rows
     acc_candidate: float | None = live_accuracy
 
     if fb_total is None and acc_candidate is None and feedback_store is not None:
         try:
-            pairs = feedback_store.get_prediction_feedback_pairs()
+            cutoff = (curr_now - timedelta(days=7)).isoformat()
+            pairs = feedback_store.get_prediction_feedback_pairs(start=cutoff)
             fb_total = len(pairs)
             if fb_total >= thresholds.min_quality_feedback:
                 acc_candidate = compute_accuracy(pairs)
@@ -399,13 +400,23 @@ def evaluate_alerts(
     # 7. Label Drift Alert (SP-120 Part B)
     # Compares last 7 days' predicted label mix with baseline mix via PSI.
     # Fires when PSI is over 0.2 and there are at least 50 predictions.
+    # When baseline is missing, shows a visible warning on /alerts.
     psi_val: float | None = psi
     n_preds: int | None = total_predictions
 
     baseline_mix = load_drift_baseline()
     if baseline_mix is None and psi_val is None:
         logger.warning(
-            "label_drift: baseline_missing (supportpilot/monitoring/drift_baseline.json not found). Alert will not fire."
+            "label_drift: baseline_missing (supportpilot/monitoring/drift_baseline.json not found)."
+        )
+        alerts.append(
+            Alert(
+                name=ALERT_NAME_LABEL_DRIFT,
+                value=0.0,
+                threshold=thresholds.max_psi,
+                severity=SEVERITY_WARNING,
+                message="baseline_missing: drift_baseline.json not found",
+            )
         )
 
     if (

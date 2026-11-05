@@ -914,10 +914,14 @@ def test_no_baseline_means_no_alert(
             thresholds,
             recent_predictions_counts={"billing": 60},
         )
-        assert not any(a.name == ALERT_NAME_LABEL_DRIFT for a in alerts)
+        # Visible warning alert is shown on /alerts when baseline is missing
+        drift_alerts = [a for a in alerts if a.name == ALERT_NAME_LABEL_DRIFT]
+        assert len(drift_alerts) == 1
+        assert "baseline_missing" in drift_alerts[0].message
+        assert drift_alerts[0].severity == "warning"
         assert "baseline_missing" in caplog.text
 
-    # 4. Live GET /alerts endpoint: does not fire label_drift
+    # 4. Live GET /alerts endpoint: displays visible baseline_missing warning alert
     now = datetime.now(UTC).isoformat()
     with TestClient(app) as client:
         feedback_store: FeedbackStore = client.app.state.feedback_store
@@ -932,8 +936,10 @@ def test_no_baseline_means_no_alert(
 
         res = client.get("/alerts", headers={"X-API-Key": "test-key-1"})
         assert res.status_code == 200
-        active_names = [a["name"] for a in res.json()["alerts"]]
-        assert ALERT_NAME_LABEL_DRIFT not in active_names
+        active_alerts = res.json()["alerts"]
+        drift_alerts = [a for a in active_alerts if a["name"] == ALERT_NAME_LABEL_DRIFT]
+        assert len(drift_alerts) == 1
+        assert "baseline_missing" in drift_alerts[0]["message"]
 
 
 def test_baseline_present_gives_correct_psi(
@@ -1116,3 +1122,96 @@ def test_snapshot_baseline_over_500_predictions_saves_valid_baseline(
         assert cli_out_file.exists()
     finally:
         store.close()
+
+
+def test_metrics_quality_days_upper_limit_90() -> None:
+    """Verify GET /metrics/quality rejects days > 90 with 422 to prevent full table scans."""
+    from fastapi.testclient import TestClient
+    from supportpilot.api.main import app
+
+    with TestClient(app) as client:
+        # days=91 exceeds le=90 -> 422
+        res_exceeded = client.get(
+            "/metrics/quality?days=91", headers={"X-API-Key": "test-admin-key-1"}
+        )
+        assert res_exceeded.status_code == 422
+
+        # days=90 is allowed -> 200
+        res_valid = client.get(
+            "/metrics/quality?days=90", headers={"X-API-Key": "test-admin-key-1"}
+        )
+        assert res_valid.status_code == 200
+
+
+def test_metrics_quality_uses_min_quality_feedback_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify /metrics/quality reads ALERT_MIN_QUALITY_FEEDBACK setting rather than hardcoding 30."""
+    from fastapi.testclient import TestClient
+    from supportpilot.api.main import app
+
+    # Configure min_quality_feedback to 45
+    monkeypatch.setenv("ALERT_MIN_QUALITY_FEEDBACK", "45")
+
+    with TestClient(app) as client:
+        res = client.get("/metrics/quality", headers={"X-API-Key": "test-admin-key-1"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "insufficient_data"
+        assert "45 feedback rows required" in data["message"]
+
+
+def test_low_live_accuracy_alert_uses_7_day_window() -> None:
+    """Verify low_live_accuracy evaluates only feedback from the last 7 days, ignoring older data."""
+    from datetime import UTC, datetime, timedelta
+    from fastapi.testclient import TestClient
+    from supportpilot.api.alerts import ALERT_NAME_LOW_LIVE_ACCURACY
+    from supportpilot.api.main import app
+
+    now = datetime.now(UTC)
+    old_time = (now - timedelta(days=10)).isoformat()
+    recent_time = now.isoformat()
+
+    with TestClient(app) as client:
+        store: FeedbackStore = client.app.state.feedback_store
+
+        # 35 feedback rows that are 10 days old (all wrong, 0% accuracy)
+        for i in range(35):
+            tid = f"T-OLD-ACC-{i}"
+            store.save_prediction(
+                ticket_id=tid,
+                predicted_label="billing",
+                confidence=0.9,
+                model_version="v1",
+                created_at=old_time,
+            )
+            store.save_feedback(
+                ticket_id=tid,
+                correct_label="refund",
+                agent_id="agent-1",
+                created_at=old_time,
+            )
+
+        # 5 recent feedback rows (within 7 days) with 100% accuracy
+        for i in range(5):
+            tid = f"T-RECENT-ACC-{i}"
+            store.save_prediction(
+                ticket_id=tid,
+                predicted_label="billing",
+                confidence=0.9,
+                model_version="v1",
+                created_at=recent_time,
+            )
+            store.save_feedback(
+                ticket_id=tid,
+                correct_label="billing",
+                agent_id="agent-1",
+                created_at=recent_time,
+            )
+
+        # In a 7-day window, there are only 5 feedback rows (< 30 min required),
+        # so low_live_accuracy must NOT fire despite the 35 old 0%-accuracy rows.
+        res = client.get("/alerts", headers={"X-API-Key": "test-key-1"})
+        assert res.status_code == 200
+        alert_names = [a["name"] for a in res.json()["alerts"]]
+        assert ALERT_NAME_LOW_LIVE_ACCURACY not in alert_names

@@ -487,22 +487,3 @@ def compute_quality_metrics(
         "psi": psi,
         "drift_status": drift_status,
     }
-
-    return {
-        "sample_size": total_feedback,
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
-        "per_label": label_metrics,
-        "confusion_matrix": matrix,
-        "most_confused_pair": (
-            {
-                "predicted": most_confused[0],
-                "actual": most_confused[1],
-                "count": most_confused[2],
-            }
-            if most_confused
-            else None
-        ),
-        "psi": psi,
-    }

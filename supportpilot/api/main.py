@@ -870,11 +870,11 @@ def get_label_metrics(req: Request) -> dict[str, Any]:
 )
 def get_metrics_quality(
     req: Request,
-    days: int = Query(default=7, ge=1),
+    days: int = Query(default=7, ge=1, le=90),
 ) -> QualityResponse:
     """Return live model quality metrics (accuracy, precision, recall, confusion matrix) (SP-120 Part A).
 
-    Admin only. When there are fewer than 30 feedback rows in the selected window,
+    Admin only. When there are fewer than min_quality_feedback rows in the selected window,
     returns status: 'insufficient_data' instead of misleading numbers.
     """
     feedback_store: FeedbackStore | None = getattr(
@@ -885,6 +885,15 @@ def get_metrics_quality(
             "Feedback store is not initialized. Service startup invariant violated."
         )
 
+    thresholds: AlertThresholds | None = getattr(
+        req.app.state, "alert_thresholds", None
+    )
+    min_feedback = (
+        thresholds.min_quality_feedback
+        if thresholds is not None
+        else get_alert_thresholds().min_quality_feedback
+    )
+
     cutoff = (
         (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         if days > 0
@@ -893,10 +902,10 @@ def get_metrics_quality(
     pairs = feedback_store.get_prediction_feedback_pairs(start=cutoff)
     total_samples = len(pairs)
 
-    if total_samples < 30:
+    if total_samples < min_feedback:
         return QualityResponse(
             status="insufficient_data",
-            message="not enough data: 30 feedback rows required",
+            message=f"not enough data: {min_feedback} feedback rows required",
             days=days,
             sample_size=total_samples,
             samples=total_samples,
