@@ -40,10 +40,7 @@ DEFAULT_MIN_TRIAGE: int = 20
 DEFAULT_MIN_REQUESTS: int = 50
 DEFAULT_MAX_P95_LATENCY_MS: float = 500.0
 DEFAULT_MIN_LATENCY_SAMPLES: int = 20
-# Raised to 0.50 for initial launch / week 1 because initial baseline (eval set)
-# is balanced while real traffic is skewed. Once 500+ real predictions accumulate,
-# operators run snapshot_baseline.py to replace with real baseline, and tighten ALERT_MAX_PSI to 0.20.
-DEFAULT_MAX_PSI: float = 0.50
+DEFAULT_MAX_PSI: float = 0.20
 DEFAULT_MIN_DRIFT_PREDICTIONS: int = 50
 DEFAULT_MIN_LIVE_ACCURACY: float = 0.75
 DEFAULT_MIN_QUALITY_FEEDBACK: int = 30
@@ -404,50 +401,46 @@ def evaluate_alerts(
     # 7. Label Drift Alert (SP-120 Part B)
     # Compares last 7 days' predicted label mix with baseline mix via PSI.
     # Fires when PSI is over 0.2 and there are at least 50 predictions.
-    # When baseline is missing, shows a visible warning on /alerts.
+    # When baseline is missing, shows a visible warning on /alerts instead of firing label_drift.
     psi_val: float | None = psi
     n_preds: int | None = total_predictions
+    pred_counts: dict[str, int] | None = recent_predictions_counts
 
-    baseline_mix = load_drift_baseline()
-    if baseline_mix is None and psi_val is None:
-        logger.warning(
-            "label_drift: baseline_missing (supportpilot/monitoring/drift_baseline.json not found)."
-        )
-        alerts.append(
-            Alert(
-                name=ALERT_NAME_DRIFT_BASELINE_MISSING,
-                value=0.0,
-                threshold=thresholds.max_psi,
-                severity=SEVERITY_WARNING,
-                message="baseline_missing: drift_baseline.json not found; run snapshot script to enable drift monitoring",
-            )
-        )
-
-    if (
-        psi_val is None
-        and recent_predictions_counts is not None
-        and baseline_mix is not None
-    ):
-        n_preds = sum(recent_predictions_counts.values())
-        if n_preds >= thresholds.min_drift_predictions:
-            psi_val = compute_psi(
-                recent_predictions_counts, expected_counts=baseline_mix
-            )
-    elif psi_val is None and feedback_store is not None and baseline_mix is not None:
+    if pred_counts is None and feedback_store is not None:
         try:
-            counts = feedback_store.get_predicted_label_counts_last_7_days(now=curr_now)
-            n_preds = sum(counts.values())
-            if n_preds >= thresholds.min_drift_predictions:
-                psi_val = compute_psi(counts, expected_counts=baseline_mix)
+            pred_counts = feedback_store.get_predicted_label_counts_last_7_days(
+                now=curr_now
+            )
         except Exception as exc:
-            logger.warning("Failed computing PSI for label drift alert: %s", exc)
+            logger.warning(
+                "Failed retrieving prediction counts for label drift alert: %s", exc
+            )
 
-    if (
-        n_preds is not None
-        and n_preds >= thresholds.min_drift_predictions
-        and psi_val is not None
-    ):
-        if psi_val > thresholds.max_psi:
+    if n_preds is None and pred_counts is not None:
+        n_preds = sum(pred_counts.values())
+
+    if n_preds is not None and n_preds >= thresholds.min_drift_predictions:
+        baseline_mix = load_drift_baseline()
+        if baseline_mix is None and psi_val is None:
+            logger.warning(
+                "label_drift: baseline_missing (supportpilot/monitoring/drift_baseline.json not found)."
+            )
+            alerts.append(
+                Alert(
+                    name=ALERT_NAME_DRIFT_BASELINE_MISSING,
+                    value=0.0,
+                    threshold=thresholds.max_psi,
+                    severity=SEVERITY_WARNING,
+                    message="baseline_missing: drift_baseline.json not found; run snapshot script to enable drift monitoring",
+                )
+            )
+        elif psi_val is None and pred_counts is not None and baseline_mix is not None:
+            try:
+                psi_val = compute_psi(pred_counts, expected_counts=baseline_mix)
+            except Exception as exc:
+                logger.warning("Failed computing PSI for label drift alert: %s", exc)
+
+        if psi_val is not None and psi_val > thresholds.max_psi:
             critical_boundary = thresholds.max_psi * 2.0
             severity = (
                 SEVERITY_CRITICAL if psi_val >= critical_boundary else SEVERITY_WARNING

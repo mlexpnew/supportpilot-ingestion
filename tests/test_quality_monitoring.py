@@ -950,6 +950,77 @@ def test_no_baseline_means_no_alert(
         assert ALERT_NAME_LABEL_DRIFT not in [a["name"] for a in active_alerts]
 
 
+def test_no_baseline_file_shows_drift_baseline_missing_instead_of_label_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that with no baseline file on disk (default repo state), label_drift doesn't fire and drift_baseline_missing shows instead."""
+    from datetime import UTC, datetime
+    from fastapi.testclient import TestClient
+    from supportpilot.api.alerts import (
+        ALERT_NAME_DRIFT_BASELINE_MISSING,
+        ALERT_NAME_LABEL_DRIFT,
+        AlertThresholds,
+        evaluate_alerts,
+    )
+    from supportpilot.api.main import app
+    from supportpilot.api.models import MetricsResponse
+    from supportpilot.monitoring.quality import DEFAULT_DRIFT_BASELINE_PATH
+
+    # Invariant: the baseline file does not exist on disk
+    monkeypatch.delenv("DRIFT_BASELINE_PATH", raising=False)
+    assert not DEFAULT_DRIFT_BASELINE_PATH.exists()
+
+    # 1. Direct evaluate_alerts: 60 predictions (>= min 50) completely skewed into billing
+    thresholds = AlertThresholds(max_psi=0.20, min_drift_predictions=50)
+    dummy_metrics = MetricsResponse(
+        requests_total=0,
+        triage_total=0,
+        errors_total=0,
+        avg_latency_ms=0.0,
+        needs_review_rate=0.0,
+        rate_limited_total=0,
+    )
+    alerts = evaluate_alerts(
+        dummy_metrics,
+        thresholds,
+        recent_predictions_counts={"billing": 60},
+    )
+
+    # label_drift doesn't fire
+    assert not any(a.name == ALERT_NAME_LABEL_DRIFT for a in alerts)
+    # drift_baseline_missing shows instead
+    missing_alerts = [a for a in alerts if a.name == ALERT_NAME_DRIFT_BASELINE_MISSING]
+    assert len(missing_alerts) == 1
+    assert missing_alerts[0].severity == "warning"
+    assert "baseline_missing" in missing_alerts[0].message
+
+    # 2. Live GET /alerts endpoint: label_drift doesn't fire and drift_baseline_missing shows instead
+    now = datetime.now(UTC).isoformat()
+    with TestClient(app) as client:
+        feedback_store: FeedbackStore = client.app.state.feedback_store
+        for i in range(60):
+            feedback_store.save_prediction(
+                ticket_id=f"T-MISSING-BASELINE-{i}",
+                predicted_label="billing",
+                confidence=0.9,
+                model_version="triage-v1.0.0-20261103",
+                created_at=now,
+            )
+
+        res = client.get("/alerts", headers={"X-API-Key": "test-key-1"})
+        assert res.status_code == 200
+        active_alerts = res.json()["alerts"]
+
+        # label_drift doesn't fire
+        assert not any(a["name"] == ALERT_NAME_LABEL_DRIFT for a in active_alerts)
+        # drift_baseline_missing shows instead
+        active_missing = [
+            a for a in active_alerts if a["name"] == ALERT_NAME_DRIFT_BASELINE_MISSING
+        ]
+        assert len(active_missing) == 1
+        assert "baseline_missing" in active_missing[0]["message"]
+
+
 def test_baseline_present_gives_correct_psi(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
