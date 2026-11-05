@@ -26,6 +26,7 @@ ALERT_NAME_NO_CLIENT_TRAFFIC: str = "no_client_traffic"
 ALERT_NAME_NEVER_SEEN: str = "client_never_seen"
 ALERT_NAME_LATENCY_SLO_BREACH: str = "latency_slo_breach"
 ALERT_NAME_LABEL_DRIFT: str = "label_drift"
+ALERT_NAME_DRIFT_BASELINE_MISSING: str = "drift_baseline_missing"
 ALERT_NAME_LOW_LIVE_ACCURACY: str = "low_live_accuracy"
 
 SEVERITY_WARNING: str = "warning"
@@ -39,7 +40,10 @@ DEFAULT_MIN_TRIAGE: int = 20
 DEFAULT_MIN_REQUESTS: int = 50
 DEFAULT_MAX_P95_LATENCY_MS: float = 500.0
 DEFAULT_MIN_LATENCY_SAMPLES: int = 20
-DEFAULT_MAX_PSI: float = 0.20
+# Raised to 0.50 for initial launch / week 1 because initial baseline (eval set)
+# is balanced while real traffic is skewed. Once 500+ real predictions accumulate,
+# operators run snapshot_baseline.py to replace with real baseline, and tighten ALERT_MAX_PSI to 0.20.
+DEFAULT_MAX_PSI: float = 0.50
 DEFAULT_MIN_DRIFT_PREDICTIONS: int = 50
 DEFAULT_MIN_LIVE_ACCURACY: float = 0.75
 DEFAULT_MIN_QUALITY_FEEDBACK: int = 30
@@ -411,11 +415,11 @@ def evaluate_alerts(
         )
         alerts.append(
             Alert(
-                name=ALERT_NAME_LABEL_DRIFT,
+                name=ALERT_NAME_DRIFT_BASELINE_MISSING,
                 value=0.0,
                 threshold=thresholds.max_psi,
                 severity=SEVERITY_WARNING,
-                message="baseline_missing: drift_baseline.json not found",
+                message="baseline_missing: drift_baseline.json not found; run snapshot script to enable drift monitoring",
             )
         )
 

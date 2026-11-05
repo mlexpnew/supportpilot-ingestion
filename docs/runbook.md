@@ -432,8 +432,8 @@ curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.c
 ## Incident 9: Model Quality Drop / Drift Alert
 
 ### Symptoms
-- Active alert `low_live_accuracy` (accuracy < 0.75 across $\ge 30$ feedback rows) or `label_drift` (PSI > 0.20 across $\ge 50$ predictions) appears on `GET /alerts`.
-- Automated GitHub Actions monitor opens an issue titled `🔴 Alert: low_live_accuracy` or `🔴 Alert: label_drift`.
+- Active alert `low_live_accuracy` (accuracy < 0.75 across $\ge 30$ feedback rows), `label_drift` (PSI breach), or `drift_baseline_missing` appears on `GET /alerts`.
+- Automated GitHub Actions monitor opens an issue titled `🔴 Alert: low_live_accuracy`, `🔴 Alert: label_drift`, or `🔴 Alert: drift_baseline_missing`.
 - Support agents flag recurring misclassifications in Tier-1 triage queues.
 
 ### Check
@@ -477,6 +477,14 @@ python -m supportpilot.feedback export --out data/feedback_export.jsonl
        curl -s https://supportpilot-ingestion.onrender.com/version | jq .
        curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.com/metrics/quality | jq .
        ```
+4. **Snapshot Production Baseline Once $\ge 500$ Predictions Accumulate**:
+   - For launch week, `ALERT_MAX_PSI` is raised to `0.50` to account for natural category imbalance against the balanced initial baseline.
+   - Once $\ge 500$ real production predictions are collected:
+     ```bash
+     export DATABASE_URL="<render-postgres-external-url>"
+     python scripts/snapshot_drift_baseline.py
+     ```
+   - Commit the updated `supportpilot/monitoring/drift_baseline.json`, deploy, and reset `ALERT_MAX_PSI=0.20`.
 
 ### Notify
 - **Rohan** (ML & Evaluation Lead): Inspect confusion matrix, analyze per-label error modes, and supervise retraining.

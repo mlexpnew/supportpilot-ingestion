@@ -868,6 +868,7 @@ def test_no_baseline_means_no_alert(
     from datetime import UTC, datetime
     from fastapi.testclient import TestClient
     from supportpilot.api.alerts import (
+        ALERT_NAME_DRIFT_BASELINE_MISSING,
         ALERT_NAME_LABEL_DRIFT,
         AlertThresholds,
         evaluate_alerts,
@@ -914,14 +915,18 @@ def test_no_baseline_means_no_alert(
             thresholds,
             recent_predictions_counts={"billing": 60},
         )
-        # Visible warning alert is shown on /alerts when baseline is missing
-        drift_alerts = [a for a in alerts if a.name == ALERT_NAME_LABEL_DRIFT]
-        assert len(drift_alerts) == 1
-        assert "baseline_missing" in drift_alerts[0].message
-        assert drift_alerts[0].severity == "warning"
+        # Visible drift_baseline_missing warning alert is shown on /alerts when baseline is missing
+        missing_alerts = [
+            a for a in alerts if a.name == ALERT_NAME_DRIFT_BASELINE_MISSING
+        ]
+        assert len(missing_alerts) == 1
+        assert "baseline_missing" in missing_alerts[0].message
+        assert missing_alerts[0].severity == "warning"
+        # label_drift itself does not fire
+        assert not any(a.name == ALERT_NAME_LABEL_DRIFT for a in alerts)
         assert "baseline_missing" in caplog.text
 
-    # 4. Live GET /alerts endpoint: displays visible baseline_missing warning alert
+    # 4. Live GET /alerts endpoint: displays visible drift_baseline_missing warning alert
     now = datetime.now(UTC).isoformat()
     with TestClient(app) as client:
         feedback_store: FeedbackStore = client.app.state.feedback_store
@@ -937,9 +942,12 @@ def test_no_baseline_means_no_alert(
         res = client.get("/alerts", headers={"X-API-Key": "test-key-1"})
         assert res.status_code == 200
         active_alerts = res.json()["alerts"]
-        drift_alerts = [a for a in active_alerts if a["name"] == ALERT_NAME_LABEL_DRIFT]
-        assert len(drift_alerts) == 1
-        assert "baseline_missing" in drift_alerts[0]["message"]
+        missing_alerts = [
+            a for a in active_alerts if a["name"] == ALERT_NAME_DRIFT_BASELINE_MISSING
+        ]
+        assert len(missing_alerts) == 1
+        assert "baseline_missing" in missing_alerts[0]["message"]
+        assert ALERT_NAME_LABEL_DRIFT not in [a["name"] for a in active_alerts]
 
 
 def test_baseline_present_gives_correct_psi(
