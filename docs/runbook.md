@@ -478,13 +478,13 @@ python -m supportpilot.feedback export --out data/feedback_export.jsonl
        curl -s -H "X-API-Key: $ADMIN_API_KEY" https://supportpilot-ingestion.onrender.com/metrics/quality | jq .
        ```
 4. **Snapshot Production Baseline Once $\ge 500$ Predictions Accumulate**:
-   - For launch week, `ALERT_MAX_PSI` is raised to `0.50` to account for natural category imbalance against the balanced initial baseline.
+   - At launch, `supportpilot/monitoring/drift_baseline.json` is not committed. `drift_baseline_missing` appears on `GET /alerts` as an expected informational warning and `label_drift` does not fire.
    - Once $\ge 500$ real production predictions are collected:
      ```bash
      export DATABASE_URL="<render-postgres-external-url>"
      python scripts/snapshot_drift_baseline.py
      ```
-   - Commit the updated `supportpilot/monitoring/drift_baseline.json`, deploy, and reset `ALERT_MAX_PSI=0.20`.
+   - Commit the generated `supportpilot/monitoring/drift_baseline.json` and deploy. `drift_baseline_missing` clears and real `label_drift` monitoring activates with `ALERT_MAX_PSI=0.20`.
 
 ### Notify
 - **Rohan** (ML & Evaluation Lead): Inspect confusion matrix, analyze per-label error modes, and supervise retraining.
