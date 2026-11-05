@@ -48,6 +48,32 @@ class KeyUsageItem(BaseModel):
     auth_fail_count: int
 
 
+class QualityLabelStats(BaseModel):
+    """Per-label performance metrics and sample counts (SP-120)."""
+
+    precision: float | None = None
+    recall: float | None = None
+    predicted_count: int = 0
+    actual_count: int = 0
+    true_positives: int = 0
+
+
+class QualityResponse(BaseModel):
+    """Model quality metrics and confusion matrix response (SP-120)."""
+
+    status: str  # "ok" or "insufficient_data"
+    message: str | None = None
+    days: int = 7
+    sample_size: int = 0
+    samples: int = 0
+    accuracy: float | None = None
+    precision: dict[str, float | None] | None = None
+    recall: dict[str, float | None] | None = None
+    confusion_matrix: dict[str, dict[str, int]] | None = None
+    matrix: dict[str, dict[str, int]] | None = None
+    per_label: dict[str, QualityLabelStats] | None = None
+
+
 class CreateKeyRequest(BaseModel):
     """Request payload to create a new API key (SP-118)."""
 

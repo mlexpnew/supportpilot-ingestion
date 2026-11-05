@@ -589,3 +589,73 @@ def test_seeded_db_exact_counts_recall_version_list_and_no_pii(
         assert "AG-100" not in content
     finally:
         store.close()
+
+
+def test_render_markdown_model_quality_section_thin_data() -> None:
+    """Verify Model Quality section shows plain honest wording when data is thin."""
+    stats = DateRangeStats(
+        start="2026-10-26",
+        end="2026-11-01",
+        total_triaged=10,
+        predictions_by_label={lbl: 1 for lbl in LABELS},
+        needs_review_count=1,
+        needs_review_rate=0.10,
+        feedback_total=12,
+        feedback_agreed=10,
+        live_accuracy=0.8333,
+        per_label_recall={lbl: 1.0 for lbl in LABELS},
+        per_label_feedback={
+            lbl: {"total": 2, "agreed": 2, "recall": 1.0} for lbl in LABELS
+        },
+        model_versions=["triage-v1.0.0-20261103"],
+        most_confused_pair=None,
+        psi=None,
+    )
+
+    md = render_markdown(stats)
+
+    assert "## Model Quality" in md
+    assert (
+        "- **Accuracy**: Not enough data to judge (only 12 feedback corrections collected; minimum 30 required"
+        in md
+    )
+    assert "- **Most-Confused Label Pair**: Not enough data to identify patterns" in md
+    assert (
+        "- **Drift Status**: Not enough data to assess (only 10 tickets triaged; minimum 50 required"
+        in md
+    )
+    assert "Data Notice" in md
+
+
+def test_render_markdown_model_quality_section_sufficient_data() -> None:
+    """Verify Model Quality section displays accuracy, confused pair, and drift status with sufficient data."""
+    stats = DateRangeStats(
+        start="2026-10-26",
+        end="2026-11-01",
+        total_triaged=120,
+        predictions_by_label={lbl: 20 for lbl in LABELS},
+        needs_review_count=15,
+        needs_review_rate=0.125,
+        feedback_total=40,
+        feedback_agreed=34,
+        live_accuracy=0.85,
+        per_label_recall={lbl: 0.85 for lbl in LABELS},
+        per_label_feedback={
+            lbl: {"total": 7, "agreed": 6, "recall": 0.8571} for lbl in LABELS
+        },
+        model_versions=["triage-v1.0.0-20261103"],
+        most_confused_pair=("billing", "refund", 6),
+        psi=0.2341,
+    )
+
+    md = render_markdown(stats)
+
+    assert "## Model Quality" in md
+    assert (
+        "- **Accuracy**: **85.0%** (34 of 40 verified corrections matched model predictions)"
+        in md
+    )
+    assert "- **Most-Confused Label Pair**: `billing` → `refund`, 6 times" in md
+    assert (
+        "- **Drift Status**: **Noticeable drift detected** (PSI = 0.2341 > 0.20)" in md
+    )

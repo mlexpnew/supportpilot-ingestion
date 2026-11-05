@@ -850,6 +850,18 @@ class FeedbackStore:
                 else None
             )
 
+        # Quality monitoring metrics (SP-120)
+        from supportpilot.monitoring.quality import (
+            compute_confusion_matrix,
+            compute_psi,
+            find_most_confused_pair,
+        )
+
+        pairs = self.get_prediction_feedback_pairs(start=start_str, end=end_str)
+        cm = compute_confusion_matrix(pairs)
+        most_confused = find_most_confused_pair(cm)
+        psi_val = compute_psi(predictions_by_label) if total_triaged > 0 else None
+
         return DateRangeStats(
             start=str(start),
             end=str(end),
@@ -866,6 +878,9 @@ class FeedbackStore:
             daily_triage_counts=daily_triage_counts,
             needs_review_tracked=needs_review_tracked,
             first_tracked_date=first_tracked_date,
+            most_confused_pair=most_confused,
+            psi=psi_val,
+            confusion_matrix=dict(cm),
         )
 
     def record_key_usage(
@@ -1027,6 +1042,125 @@ class FeedbackStore:
         )
         with self.engine.begin() as conn:
             conn.execute(stmt)
+
+    def get_prediction_feedback_pairs(
+        self,
+        start: datetime | date_type | str | None = None,
+        end: datetime | date_type | str | None = None,
+        date_column: str = "feedback",
+    ) -> list[dict[str, str]]:
+        """Join predictions and feedback on ticket_id for a date range (SP-120).
+
+        Zero-PII guarantee: returns strictly predicted_label and correct_label.
+        Never returns ticket text, subject, body, or customer identifiers.
+        """
+        where_clauses = []
+        target_col = (
+            self.predictions.c.created_at
+            if date_column == "prediction"
+            else self.feedback.c.created_at
+        )
+
+        if start is not None:
+            if isinstance(start, (datetime, date_type)):
+                start_str = start.isoformat()
+            else:
+                start_str = str(start).strip()
+            where_clauses.append(target_col >= start_str)
+
+        if end is not None:
+            if isinstance(end, datetime):
+                end_str = end.isoformat()
+            elif isinstance(end, date_type):
+                end_str = (end + timedelta(days=1)).isoformat()
+            else:
+                end_clean = str(end).strip()
+                if len(end_clean) == 10:  # YYYY-MM-DD
+                    parsed_d = datetime.strptime(end_clean, "%Y-%m-%d").date()
+                    end_str = (parsed_d + timedelta(days=1)).isoformat()
+                else:
+                    end_str = end_clean
+            where_clauses.append(target_col < end_str)
+
+        stmt = (
+            select(
+                self.predictions.c.predicted_label,
+                self.feedback.c.correct_label,
+            )
+            .select_from(
+                self.feedback.join(
+                    self.predictions,
+                    self.feedback.c.ticket_id == self.predictions.c.ticket_id,
+                )
+            )
+            .order_by(self.feedback.c.created_at.asc())
+        )
+        if where_clauses:
+            stmt = stmt.where(*where_clauses)
+
+        with self.engine.connect() as conn:
+            return [
+                {
+                    "predicted_label": str(row["predicted_label"]),
+                    "correct_label": str(row["correct_label"]),
+                }
+                for row in conn.execute(stmt).mappings()
+            ]
+
+    # Convenient aliases
+    get_quality_data = get_prediction_feedback_pairs
+    get_predictions_and_feedback = get_prediction_feedback_pairs
+
+    def get_predicted_label_counts_last_7_days(
+        self,
+        now: datetime | None = None,
+        days: int = 7,
+    ) -> dict[str, int]:
+        """Count predicted labels from the last 7 days (SP-120).
+
+        Zero-PII guarantee: returns only label counts, no ticket text or customer identifiers.
+        """
+        ref_time = now or datetime.now(UTC)
+        cutoff = (ref_time - timedelta(days=days)).isoformat()
+
+        stmt = (
+            select(
+                self.predictions.c.predicted_label,
+                func.count(self.predictions.c.ticket_id).label("count"),
+            )
+            .where(self.predictions.c.created_at >= cutoff)
+            .group_by(self.predictions.c.predicted_label)
+        )
+
+        counts: dict[str, int] = {lbl: 0 for lbl in LABELS}
+        with self.engine.connect() as conn:
+            for row in conn.execute(stmt).mappings():
+                lbl = str(row["predicted_label"])
+                counts[lbl] = int(row["count"])
+        return counts
+
+    # Convenient aliases
+    get_recent_predicted_label_counts = get_predicted_label_counts_last_7_days
+    get_last_7_days_predicted_counts = get_predicted_label_counts_last_7_days
+    get_predicted_counts_last_7_days = get_predicted_label_counts_last_7_days
+
+    def get_all_predicted_label_counts(self) -> dict[str, int]:
+        """Count all historical predicted labels across all time (SP-120).
+
+        Zero-PII guarantee: returns only aggregated label counts.
+        """
+        stmt = select(
+            self.predictions.c.predicted_label,
+            func.count(self.predictions.c.ticket_id).label("count"),
+        ).group_by(self.predictions.c.predicted_label)
+
+        counts: dict[str, int] = {lbl: 0 for lbl in LABELS}
+        with self.engine.connect() as conn:
+            for row in conn.execute(stmt).mappings():
+                lbl = str(row["predicted_label"])
+                if lbl in counts:
+                    counts[lbl] = int(row["count"])
+        return counts
 
     def close(self) -> None:
         """Dispose of the SQLAlchemy engine and connection pool."""

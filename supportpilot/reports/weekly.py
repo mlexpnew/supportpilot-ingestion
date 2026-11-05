@@ -352,6 +352,83 @@ def render_markdown(
     )
     lines.append("")
 
+    # 5. Model Quality Section (SP-120 Part D)
+    lines.extend(
+        [
+            "---",
+            "",
+            "## Model Quality",
+            "",
+        ]
+    )
+
+    # Accuracy
+    if stats.feedback_total < 30:
+        lines.append(
+            f"- **Accuracy**: Not enough data to judge (only {stats.feedback_total} "
+            f"feedback correction{'s' if stats.feedback_total != 1 else ''} collected; "
+            f"minimum 30 required for statistical confidence)."
+        )
+    else:
+        acc_pct = (
+            f"{stats.live_accuracy:.1%}" if stats.live_accuracy is not None else "N/A"
+        )
+        lines.append(
+            f"- **Accuracy**: **{acc_pct}** ({stats.feedback_agreed} of {stats.feedback_total} verified corrections matched model predictions)."
+        )
+
+    # Most-confused label pair
+    if stats.feedback_total < 30:
+        lines.append(
+            "- **Most-Confused Label Pair**: Not enough data to identify patterns (minimum 30 feedback corrections required)."
+        )
+    elif stats.most_confused_pair:
+        p_lbl, a_lbl, cnt = stats.most_confused_pair
+        lines.append(
+            f"- **Most-Confused Label Pair**: `{p_lbl}` → `{a_lbl}`, {cnt} time{'s' if cnt != 1 else ''} (model predicted `{p_lbl}`, but customer ticket was actually `{a_lbl}`)."
+        )
+    else:
+        lines.append(
+            "- **Most-Confused Label Pair**: None observed (all verified feedback matched model predictions)."
+        )
+
+    # Drift status
+    if stats.total_triaged < 50:
+        lines.append(
+            f"- **Drift Status**: Not enough data to assess (only {stats.total_triaged} "
+            f"ticket{'s' if stats.total_triaged != 1 else ''} triaged; "
+            f"minimum 50 required for population stability analysis)."
+        )
+    else:
+        psi_str = f"{stats.psi:.4f}" if stats.psi is not None else "N/A"
+        if stats.psi is None:
+            lines.append(
+                "- **Drift Status**: baseline_missing (no baseline snapshot found; label drift alert will not fire)."
+            )
+        elif stats.psi > 0.20:
+            lines.append(
+                f"- **Drift Status**: **Noticeable drift detected** (PSI = {psi_str} > 0.20). "
+                "The mix of incoming customer tickets has shifted significantly compared to the baseline evaluation set. "
+                "Retraining is recommended."
+            )
+        else:
+            lines.append(
+                f"- **Drift Status**: **Stable** (PSI = {psi_str} <= 0.20). "
+                "The incoming ticket mix closely matches the expected baseline distribution."
+            )
+
+    if stats.feedback_total < 30 or stats.total_triaged < 50:
+        lines.extend(
+            [
+                "",
+                "> [!NOTE]",
+                "> **Data Notice**: Because ticket volume and feedback corrections are still accumulating in the pilot phase, "
+                "quality metrics and drift indicators should be interpreted as preliminary trends rather than steady-state performance.",
+            ]
+        )
+
+    lines.append("")
+
     return "\n".join(lines)
 
 

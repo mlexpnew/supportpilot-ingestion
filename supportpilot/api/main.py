@@ -12,11 +12,11 @@ from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy.exc import IntegrityError
@@ -39,6 +39,8 @@ from supportpilot.api.models import (
     KeyItemResponse,
     KeyUsageItem,
     MetricsResponse,
+    QualityLabelStats,
+    QualityResponse,
     RevokeKeyResponse,
     VersionResponse,
 )
@@ -51,6 +53,12 @@ from supportpilot.feedback import (
     normalize_ticket_id,
 )
 from supportpilot.logging_config import setup_logging
+from supportpilot.monitoring.quality import (
+    compute_accuracy,
+    compute_confusion_matrix,
+    compute_label_metrics,
+    compute_precision_recall,
+)
 from supportpilot.preprocessing.redact import redact_text
 from supportpilot.triage.model import (
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -75,6 +83,7 @@ EXCLUDED_METRIC_PATHS: set[str] = {
     "/alerts",
     "/metrics",
     "/metrics/labels",
+    "/metrics/quality",
     "/usage",
     "/admin/keys",
     "/docs",
@@ -855,6 +864,91 @@ def get_label_metrics(req: Request) -> dict[str, Any]:
 
 
 @app.get(
+    "/metrics/quality",
+    response_model=QualityResponse,
+    dependencies=[Depends(require_admin_key)],
+)
+def get_metrics_quality(
+    req: Request,
+    days: int = Query(default=7, ge=1, le=90),
+) -> QualityResponse:
+    """Return live model quality metrics (accuracy, precision, recall, confusion matrix) (SP-120 Part A).
+
+    Admin only. When there are fewer than min_quality_feedback rows in the selected window,
+    returns status: 'insufficient_data' instead of misleading numbers.
+    """
+    feedback_store: FeedbackStore | None = getattr(
+        req.app.state, "feedback_store", None
+    )
+    if feedback_store is None:
+        raise RuntimeError(
+            "Feedback store is not initialized. Service startup invariant violated."
+        )
+
+    thresholds: AlertThresholds | None = getattr(
+        req.app.state, "alert_thresholds", None
+    )
+    min_feedback = (
+        thresholds.min_quality_feedback
+        if thresholds is not None
+        else get_alert_thresholds().min_quality_feedback
+    )
+
+    cutoff = (
+        (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        if days > 0
+        else None
+    )
+    pairs = feedback_store.get_prediction_feedback_pairs(start=cutoff)
+    total_samples = len(pairs)
+
+    if total_samples < min_feedback:
+        return QualityResponse(
+            status="insufficient_data",
+            message=f"not enough data: {min_feedback} feedback rows required",
+            days=days,
+            sample_size=total_samples,
+            samples=total_samples,
+            accuracy=None,
+            precision=None,
+            recall=None,
+            confusion_matrix=None,
+            matrix=None,
+            per_label=None,
+        )
+
+    matrix = compute_confusion_matrix(pairs)
+    acc = compute_accuracy(matrix, total=total_samples)
+    precision, recall = compute_precision_recall(matrix)
+    label_stats = compute_label_metrics(matrix)
+
+    per_label_resp: dict[str, QualityLabelStats] = {
+        lbl: QualityLabelStats(
+            precision=stats["precision"],
+            recall=stats["recall"],
+            predicted_count=stats["predicted_count"],
+            actual_count=stats["actual_count"],
+            true_positives=stats["true_positives"],
+        )
+        for lbl, stats in label_stats.items()
+    }
+
+    return QualityResponse(
+        status="ok",
+        message=None,
+        days=days,
+        sample_size=total_samples,
+        samples=total_samples,
+        accuracy=acc,
+        precision=precision,
+        recall=recall,
+        confusion_matrix=dict(matrix),
+        matrix=dict(matrix),
+        per_label=per_label_resp,
+    )
+
+
+@app.get(
     "/alerts",
     response_model=AlertsResponse,
     dependencies=[Depends(get_api_key), Depends(rate_limit)],
@@ -881,6 +975,7 @@ def get_alerts(req: Request) -> AlertsResponse:
         key_usage=key_usage,
         client_key_hashes=client_key_hashes,
         started_at=started_at,
+        feedback_store=feedback_store,
     )
     # Support forcing a test alert via FORCE_TEST_ALERT env var only (requires server access)
     force_test = os.getenv("FORCE_TEST_ALERT", "").lower() in (

@@ -111,6 +111,9 @@ class DateRangeStats:
     daily_triage_counts: dict[str, int] = field(default_factory=dict)
     needs_review_tracked: int = 0
     first_tracked_date: str | None = None
+    most_confused_pair: tuple[str, str, int] | None = None
+    psi: float | None = None
+    confusion_matrix: dict[str, dict[str, int]] | None = None
 
     @property
     def tickets_triaged(self) -> int:
