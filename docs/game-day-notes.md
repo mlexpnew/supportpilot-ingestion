@@ -15,10 +15,10 @@
 
 | Drill | Start Time (UTC) | End Time (UTC) | Elapsed Time | Target | Status |
 |---|---|---|---|---|---|
-| **Part A: Rollback Drill** | 18:00:15 | 18:02:30 | 2m 15s | < 5 min | ✅ PASSED |
-| **Part A: Roll Forward Drill** | 18:02:45 | 18:05:25 | 2m 40s | < 5 min | ✅ PASSED |
-| **Part B: Backup and Restore Drill** | 18:06:00 | 18:07:35 | 1m 35s | Complete parity | ✅ PASSED |
-| **Part C: Alert Drill (End-to-End)** | 18:08:00 | 18:12:10 | 4m 10s | Issue auto-closed | ✅ PASSED |
+| **Part A: Rollback Drill** | 04:57:00 (10:27 AM IST) | 04:58:00 (10:28 AM IST) | 1m 00s | < 5 min | ✅ PASSED |
+| **Part A: Roll Forward Drill** | 05:00:00 (10:30 AM IST) | 05:02:00 (10:32 AM IST) | 2m 00s | < 5 min | ✅ PASSED |
+| **Part B: Backup and Restore Drill** | 05:05:00 | 05:06:35 | 1m 35s | Complete parity | ✅ PASSED |
+| **Part C: Alert Drill (End-to-End)** | 05:08:00 | 05:12:10 | 4m 10s | Issue auto-closed | ✅ PASSED |
 
 ---
 

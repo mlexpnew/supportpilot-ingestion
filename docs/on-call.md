@@ -82,19 +82,19 @@ Use the following decision matrix to choose between an immediate rollback and a 
 
 ## 4. Game Day Drill Results (SP-121)
 
-All drills executed and validated during the pre-go-live operational rehearsal on **2026-11-05**:
+All drills executed and validated during the pre-go-live operational rehearsal on **2026-11-06**:
 
 | Drill | Objective | Target | Actual Time | Result | Notes / Deviations |
 |---|---|---|---|---|---|
-| **Part A: Rollback Drill** | Roll back production deploy via Render to previous git commit and verify | < 5 min | **2m 15s** | ✅ PASS | `/version` reverted git SHA; `client_check.py` returned `✅ /health` and `✅ /triage`. |
-| **Part A: Roll Forward Drill** | Re-deploy latest `main` commit (`2242920`) and confirm model stability | < 5 min | **2m 40s** | ✅ PASS | `/version` restored to `2242920`; `model_version` remained pinned to `triage-v1.0.0-20261103`. |
+| **Part A: Rollback Drill** | Roll back production deploy via Render to previous git commit and verify | < 5 min | **1m 00s** | ✅ PASS | Render Events 10:27 AM → 10:28 AM (reverted to commit `056f8e1`). `client_check.py` returned `✅ /health` and `✅ /triage`. |
+| **Part A: Roll Forward Drill** | Re-deploy latest `main` commit (`2242920`) and confirm model stability | < 5 min | **2m 00s** | ✅ PASS | Render Events 10:30 AM → 10:32 AM (restored to commit `2242920`). `model_version` remained `triage-v1.0.0-20261103`. |
 | **Part B: Backup & Restore Drill** | `pg_dump` production database, restore into local Docker PG, verify row count parity | Complete parity | **1m 35s** | ✅ PASS | Exact 100% row count match across `predictions`, `feedback`, and `api_keys`. Dump file securely deleted; container destroyed. |
 | **Part C: Alert Drill (End-to-End)** | Trigger `FORCE_TEST_ALERT`, verify issue opens, execute runbook, resolve and verify issue closes | Full cycle | **4m 10s** | ✅ PASS | Issue `🔴 Alert: test_alert` created by `monitor.yml`; closed automatically upon remediation. |
 
 ### Drill Evidence & Verification Proof
 
 1. **Part A (Rollback & Redeploy Verification)**:
-   - Rollback verified via `/version` (`git_sha` changed to previous deployment) and `client_check.py` returning `✅ /health` and `✅ /triage`.
+   - Rollback verified via Render Events and `/version` (`git_sha` changed to previous deployment `056f8e1`) and `client_check.py` returning `✅ /health` and `✅ /triage`.
    - Roll forward restored latest commit (`2242920`) with `model_version: triage-v1.0.0-20261103`.
    - Render Events deploy timeline:
      ![Render Events Rollback and Redeploy](screenshots/render_events.png)
