@@ -86,10 +86,10 @@ All drills executed and validated during the pre-go-live operational rehearsal o
 
 | Drill | Objective | Target | Actual Time | Result | Notes / Deviations |
 |---|---|---|---|---|---|
-| **Part A: Rollback Drill** | Roll back production deploy via Render to previous git commit and verify | < 5 min | **1m 00s** | ✅ PASS | Render Events 10:27 AM → 10:28 AM (reverted to commit `056f8e1`). `client_check.py` returned `✅ /health` and `✅ /triage`. |
-| **Part A: Roll Forward Drill** | Re-deploy latest `main` commit (`2242920`) and confirm model stability | < 5 min | **2m 00s** | ✅ PASS | Render Events 10:30 AM → 10:32 AM (restored to commit `2242920`). `model_version` remained `triage-v1.0.0-20261103`. |
-| **Part B: Backup & Restore Drill** | `pg_dump` production database, restore into local Docker PG, verify row count parity | Complete parity | **1m 35s** | ✅ PASS | Exact 100% row count match across `predictions`, `feedback`, and `api_keys`. Dump file securely deleted; container destroyed. |
-| **Part C: Alert Drill (End-to-End)** | Trigger `FORCE_TEST_ALERT`, verify issue opens, execute runbook, resolve and verify issue closes | Full cycle | **4m 10s** | ✅ PASS | Issue `🔴 Alert: test_alert` created by `monitor.yml`; closed automatically upon remediation. |
+| **Part A: Rollback Drill** | Roll back production deploy via Render to previous git commit and verify | < 5 min | **1m 00s** | ✅ PASS | Render Events 10:27 → 10:28 (reverted to commit `056f8e1`). `client_check.py` returned `✅ /health` and `✅ /triage`. |
+| **Part A: Roll Forward Drill** | Re-deploy latest `main` commit (`2242920`) and confirm model stability | < 5 min | **2m 00s** | ✅ PASS | Render Events 10:30 → 10:32 (restored to commit `2242920`). `model_version` remained `triage-v1.0.0-20261103`. |
+| **Part B: Backup & Restore Drill** | `pg_dump` production database, restore into local Docker PG, verify row count parity | Complete parity | **~3 min** | ✅ PASS | 10:42 → 10:45. Exact 100% row count match (8 / 1 / 8) across `predictions`, `feedback`, and `api_keys`. Dump file securely deleted; container destroyed. |
+| **Part C: Alert Drill (End-to-End)** | Trigger `FORCE_TEST_ALERT`, verify issue opens, execute runbook, resolve and verify issue closes | Full cycle | **~9 min** | ✅ PASS | 10:52 → 11:01. Issue `🔴 Alert: test_alert` (#44) created by `monitor.yml`; closed automatically upon remediation. |
 
 ### Drill Evidence & Verification Proof
 
@@ -101,14 +101,14 @@ All drills executed and validated during the pre-go-live operational rehearsal o
 
 2. **Part B (Production vs. Restored Database Row Counts)**:
    - Production PostgreSQL and local restored container row count comparison:
-     - `predictions`: **7**
+     - `predictions`: **8**
      - `feedback`: **1**
-     - `api_keys`: **2**
-   - Exact parity confirmed (0 discrepancy). Dump file deleted immediately post-verification.
+     - `api_keys`: **8**
+   - Exact parity confirmed (8 / 1 / 8, 0 discrepancy). Dump file deleted immediately post-verification.
 
 3. **Part C (Alert Drill Issue Lifecycle)**:
    - Synthetic alert triggered via `FORCE_TEST_ALERT=true` and verified via automated monitor run.
-   - Issue Link: [#37: 🔴 Alert: test_alert](https://github.com/mlexpnew/supportpilot-ingestion/issues/37)
+   - Issue Link: [#44: 🔴 Alert: test_alert](https://github.com/mlexpnew/supportpilot-ingestion/issues/44)
    - Issue opened by monitor:
      ![Test Alert Open](screenshots/issue_37_open.png)
    - Issue automatically resolved and closed after clearing `FORCE_TEST_ALERT`:
@@ -119,22 +119,38 @@ All drills executed and validated during the pre-go-live operational rehearsal o
 ## 5. Lessons Learned & Operational Takeaways
 
 1. **PostgreSQL Tooling Major Version Alignment**:
-   - **Finding**: Local developer machine had PostgreSQL 14 client tools, while Render runs PostgreSQL 16. Running `pg_dump` from an older major version against a newer server causes version mismatch errors.
-   - **Standardization**: Always run `pg_dump` and `pg_restore` inside containerized `postgres:16-alpine` environments. This guarantees version parity across all developer environments.
+   - **Finding**: Local developer machine had older PostgreSQL client tools, while Render runs PostgreSQL 18. Running `pg_dump` from an older major version against a newer server causes version mismatch errors.
+   - **Standardization**: Always run `pg_dump` and `pg_restore` inside containerized `postgres:18-alpine` environments. This guarantees version parity across all developer environments.
 
-2. **Zero-Secret Handling via Pipeline Buffers**:
+2. **Use `--no-privileges` with `pg_restore`**:
+   - **Finding**: Managed PostgreSQL exports include role, ownership, and grant statements that fail when restoring into standard local environments without matching roles.
+   - **Standardization**: Pass `--no-privileges` (along with `--no-owner`) to `pg_restore` to prevent unnecessary privilege/permission errors during local restores.
+
+3. **Chain Backup and Restore with `&&`**:
+   - **Finding**: Running dump and restore steps as unchained commands risks executing restore against an incomplete or corrupt dump file.
+   - **Standardization**: Always chain dump, verification, and restore execution with `&&` so any failure in dump aborts the pipeline immediately.
+
+4. **Service Restart Hides `no_client_traffic` (Issue #41)**:
+   - **Finding**: The `no_client_traffic` alert evaluates uptime and key usage since startup. A container restart or redeploy resets startup timers and in-memory counters, which can temporarily mask an ongoing client traffic stall.
+   - **Standardization**: Verify client key activity directly in the persistent database via `/usage` rather than relying solely on restart-cleared alerts. (Note on #41: client not live until Mon 9 Nov; owner: Neha).
+
+5. **Check Auto-Deploy After a Rollback**:
+   - **Finding**: Performing a manual deploy rollback in Render can pause or disable automatic deployment on subsequent branch pushes.
+   - **Standardization**: Always check the **Auto-Deploy** setting in Render Dashboard -> Settings after performing a rollback or roll forward to ensure automatic deployments remain enabled for `main`.
+
+6. **Zero-Secret Handling via Pipeline Buffers**:
    - **Finding**: Copying database connection strings or credentials directly into terminal commands risks history or transcript leakage.
    - **Standardization**: Utilize environment variables or system clipboard reads (`pbpaste`) passed directly to execution subshells, with immediate memory unsetting. Never log connection strings.
 
-3. **In-Memory vs. Persistent State Verification**:
+7. **In-Memory vs. Persistent State Verification**:
    - **Finding**: Deploy rollbacks and service restarts reset in-memory operational metrics (`requests_total`, `triage_total`, `errors_total`) to zero.
    - **Standardization**: The minimum sample invariants (`ALERT_MIN_TRIAGE=20`, `ALERT_MIN_REQUESTS=50`) protect the system from immediate false alerts following restarts. Quality and accuracy metrics persist across deploys in PostgreSQL.
 
-4. **Automated Issue Resolution Verification**:
+8. **Automated Issue Resolution Verification**:
    - **Finding**: The GitHub Actions monitor workflow handles the complete issue lifecycle (opening on alert breach, commenting on recurrence, closing on resolution).
    - **Standardization**: On-call engineers do not need to manually close monitor-generated GitHub issues; remediating the underlying cause in production and waiting for the 15-minute cron (or manual dispatch) automatically closes the issue with full audit history.
 
-5. **Diagnostic Verification Post-Rollback**:
+9. **Diagnostic Verification Post-Rollback**:
    - **Finding**: Checking only HTTP 200 on `/health` is insufficient to confirm a rollback was successful; `/health` does not authenticate or run inference.
    - **Standardization**: Always execute `examples/client_check.py` post-rollback or post-deploy. It exercises both unauthenticated liveness and authenticated end-to-end `/triage` inference.
 
