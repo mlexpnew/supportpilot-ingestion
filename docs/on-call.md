@@ -7,20 +7,20 @@
 
 ## 1. Alert to Runbook Incident Map
 
-When the automated monitor opens an issue titled `🔴 Alert: <alert_name>` or an active alert appears on `GET /alerts`, consult the corresponding incident runbook in [`docs/runbook.md`](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md):
+When the automated monitor opens an issue titled `🔴 Alert: <alert_name>` or an active alert appears on `GET /alerts`, consult the corresponding incident runbook in [`runbook.md`](runbook.md):
 
 | Alert Name | Severity | Primary Incident | Quick Triage Action |
 |---|---|---|---|
-| `accuracy` | Warning / Critical | [Incident 3: Accuracy Drop](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md#incident-3-accuracy-drop) | Verify sample size $\ge 20$; check confusion matrix on `/metrics/quality` |
-| `review_rate` | Warning / Critical | [Incident 1: API Down / 5xx Spike](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md#incident-1-api-down--5xx-spike) | Check if model confidence dropped below threshold (0.80) or upstream payload corrupted |
-| `error_rate` | Warning / Critical | [Incident 1: API Down / 5xx Spike](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md#incident-1-api-down--5xx-spike) | Inspect Render logs for unhandled 5xx exceptions or DB disconnects |
-| `no_client_traffic` | Warning | [Incident 6: Client Sends No Traffic](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md#incident-6-client-sends-no-traffic) | Check `/usage` for client key activity; reach out to Neha/client team |
-| `client_never_seen` | Warning | [Incident 6: Client Sends No Traffic](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md#incident-6-client-sends-no-traffic) | Service up > 24 h with 0 requests for provisioned key; verify client onboarding |
-| `latency_slo_breach` | Warning / Critical | [Incident 8: Latency SLO Breach](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md#incident-8-latency-slo-breach-p95--500-ms) | Inspect per-endpoint p95 latencies via `/metrics` (`latencies` block); check DB pool |
-| `low_live_accuracy` | Warning / Critical | [Incident 9: Model Quality Drop / Drift](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md#incident-9-model-quality-drop--drift-alert) | Check `GET /metrics/quality`; identify top confused label pair; notify Rohan |
-| `label_drift` | Warning / Critical | [Incident 9: Model Quality Drop / Drift](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md#incident-9-model-quality-drop--drift-alert) | Check PSI score; compare recent label distribution against baseline; plan retrain |
-| `drift_baseline_missing`| Warning | [Incident 9: Model Quality Drop / Drift](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md#incident-9-model-quality-drop--drift-alert) | Informational: production baseline not yet snapshotted (requires $\ge 500$ predictions) |
-| `test_alert` | Warning | [Incident Drill (SP-121)](file:///Users/chandini/supportpilot-ingestion/docs/runbook.md) | Synthetic test alert triggered via `FORCE_TEST_ALERT=true` |
+| `accuracy` | Warning / Critical | [Incident 3: Accuracy Drop](runbook.md#incident-3-accuracy-drop) | Verify sample size $\ge 20$; check confusion matrix on `/metrics/quality` |
+| `review_rate` | Warning / Critical | [Incident 3: Accuracy Drop](runbook.md#incident-3-accuracy-drop) | Model confidence dropped (needs_review > 30%); inspect low-confidence clusters & plan retraining |
+| `error_rate` | Warning / Critical | [Incident 1: API Down / 5xx Spike](runbook.md#incident-1-api-down--5xx-spike) | Inspect Render logs for unhandled 5xx exceptions or DB disconnects |
+| `no_client_traffic` | Warning | [Incident 6: Client Sends No Traffic](runbook.md#incident-6-client-sends-no-traffic) | Check `/usage` for client key activity; reach out to Neha/client team |
+| `client_never_seen` | Warning | [Incident 6: Client Sends No Traffic](runbook.md#incident-6-client-sends-no-traffic) | Service up > 24 h with 0 requests for provisioned key; verify client onboarding |
+| `latency_slo_breach` | Warning / Critical | [Incident 8: Latency SLO Breach](runbook.md#incident-8-latency-slo-breach-p95--500-ms) | Inspect per-endpoint p95 latencies via `/metrics` (`latencies` block); check DB pool |
+| `low_live_accuracy` | Warning / Critical | [Incident 9: Model Quality Drop / Drift](runbook.md#incident-9-model-quality-drop--drift-alert) | Check `GET /metrics/quality`; identify top confused label pair; notify Rohan |
+| `label_drift` | Warning / Critical | [Incident 9: Model Quality Drop / Drift](runbook.md#incident-9-model-quality-drop--drift-alert) | Check PSI score; compare recent label distribution against baseline; plan retrain |
+| `drift_baseline_missing`| Warning | [Incident 9: Model Quality Drop / Drift](runbook.md#incident-9-model-quality-drop--drift-alert) | Informational: production baseline not yet snapshotted (requires $\ge 500$ predictions) |
+| `test_alert` | Warning | [Incident Drill (SP-121)](runbook.md) | Synthetic test alert triggered via `FORCE_TEST_ALERT=true` |
 
 ---
 
@@ -90,6 +90,29 @@ All drills executed and validated during the pre-go-live operational rehearsal o
 | **Part A: Roll Forward Drill** | Re-deploy latest `main` commit (`2242920`) and confirm model stability | < 5 min | **2m 40s** | ✅ PASS | `/version` restored to `2242920`; `model_version` remained pinned to `triage-v1.0.0-20261103`. |
 | **Part B: Backup & Restore Drill** | `pg_dump` production database, restore into local Docker PG, verify row count parity | Complete parity | **1m 35s** | ✅ PASS | Exact 100% row count match across `predictions`, `feedback`, and `api_keys`. Dump file securely deleted; container destroyed. |
 | **Part C: Alert Drill (End-to-End)** | Trigger `FORCE_TEST_ALERT`, verify issue opens, execute runbook, resolve and verify issue closes | Full cycle | **4m 10s** | ✅ PASS | Issue `🔴 Alert: test_alert` created by `monitor.yml`; closed automatically upon remediation. |
+
+### Drill Evidence & Verification Proof
+
+1. **Part A (Rollback & Redeploy Verification)**:
+   - Rollback verified via `/version` (`git_sha` changed to previous deployment) and `client_check.py` returning `✅ /health` and `✅ /triage`.
+   - Roll forward restored latest commit (`2242920`) with `model_version: triage-v1.0.0-20261103`.
+   - Render Events deploy timeline:
+     ![Render Events Rollback and Redeploy](screenshots/render_events.png)
+
+2. **Part B (Production vs. Restored Database Row Counts)**:
+   - Production PostgreSQL and local restored container row count comparison:
+     - `predictions`: **7**
+     - `feedback`: **1**
+     - `api_keys`: **2**
+   - Exact parity confirmed (0 discrepancy). Dump file deleted immediately post-verification.
+
+3. **Part C (Alert Drill Issue Lifecycle)**:
+   - Synthetic alert triggered via `FORCE_TEST_ALERT=true` and verified via automated monitor run.
+   - Issue Link: [#37: 🔴 Alert: test_alert](https://github.com/mlexpnew/supportpilot-ingestion/issues/37)
+   - Issue opened by monitor:
+     ![Test Alert Open](screenshots/issue_37_open.png)
+   - Issue automatically resolved and closed after clearing `FORCE_TEST_ALERT`:
+     ![Test Alert Closed](screenshots/issue_37_closed.png)
 
 ---
 

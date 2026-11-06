@@ -29,3 +29,18 @@
 - Created branch `docs/SP-121-game-day`.
 - Notified team: "Game day drill starting, production may restart."
 
+### Drill Verification Evidence
+1. **Part A (Rollback & Redeploy)**:
+   - Rollback verified: `/version` reverted to previous commit; `client_check.py` returned `✅`.
+   - Roll forward verified: `/version` restored to `2242920`, `model_version: triage-v1.0.0-20261103`.
+   - Screenshot: `docs/screenshots/render_events.png`.
+2. **Part B (Backup & Restore Row Counts)**:
+   - `predictions`: 7
+   - `feedback`: 1
+   - `api_keys`: 2
+   - 100% match between production and local restored database. Dump file deleted.
+3. **Part C (Alert Drill)**:
+   - Triggered `FORCE_TEST_ALERT=true` -> Issue [#37](https://github.com/mlexpnew/supportpilot-ingestion/issues/37) created.
+   - Cleared `FORCE_TEST_ALERT` -> Issue [#37](https://github.com/mlexpnew/supportpilot-ingestion/issues/37) auto-closed by monitor.
+
+
