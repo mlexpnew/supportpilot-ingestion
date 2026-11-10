@@ -100,7 +100,8 @@ def to_vector_literal(vector: np.ndarray | Sequence[float]) -> str:
     return "[" + ",".join(f"{float(x):.7f}" for x in vector) + "]"
 
 
-_INSERT_SQL = text("""
+_INSERT_SQL = text(
+    """
     INSERT INTO kb_chunks
         (article_id, title, category, chunk_index, text,
          content_hash, model_name, embedding)
@@ -108,21 +109,24 @@ _INSERT_SQL = text("""
         (:article_id, :title, :category, :chunk_index, :text,
          :content_hash, :model_name, CAST(:embedding AS vector))
     ON CONFLICT (content_hash) DO NOTHING
-    """)
+    """
+)
 
 _DELETE_STALE_SQL = text(
     "DELETE FROM kb_chunks "
     "WHERE model_name <> :model_name OR content_hash NOT IN :keep"
 ).bindparams(bindparam("keep", expanding=True))
 
-_SEARCH_SQL = text("""
+_SEARCH_SQL = text(
+    """
     SELECT article_id, title, category, chunk_index, text,
            1 - (embedding <=> CAST(:query AS vector)) AS score
     FROM kb_chunks
     WHERE model_name = :model_name
     ORDER BY embedding <=> CAST(:query AS vector)
     LIMIT :k
-    """)
+    """
+)
 
 
 class KBStore:

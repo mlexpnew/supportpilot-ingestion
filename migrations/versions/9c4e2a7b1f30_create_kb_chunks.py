@@ -29,7 +29,9 @@ def upgrade() -> None:
 
     op.execute(sa.text("SET lock_timeout = '30s'"))
     op.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
-    op.execute(sa.text("""
+    op.execute(
+        sa.text(
+            """
             CREATE TABLE kb_chunks (
                 id BIGSERIAL PRIMARY KEY,
                 article_id VARCHAR(128) NOT NULL,
@@ -43,7 +45,9 @@ def upgrade() -> None:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 CONSTRAINT uq_kb_chunks_content_hash UNIQUE (content_hash)
             )
-            """))
+            """
+        )
+    )
     op.execute(
         sa.text(
             "CREATE INDEX idx_kb_chunks_embedding ON kb_chunks "
