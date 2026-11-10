@@ -1,4 +1,5 @@
 -r requirements.txt
+-r requirements-rag.txt
 pytest==8.4.2
 ruff==0.14.0
 black==25.9.0
