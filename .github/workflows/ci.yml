@@ -34,6 +34,7 @@ jobs:
           # CPU-only PyTorch for sentence-transformers (much smaller than the CUDA build)
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements-dev.txt
+          pip install -r requirements-rag.txt
 
       - name: Run tests
         run: python -m pytest -q
@@ -76,6 +77,7 @@ jobs:
           # CPU-only PyTorch for sentence-transformers (much smaller than the CUDA build)
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements-dev.txt
+          pip install -r requirements-rag.txt
 
       - name: Run Alembic migrations on Postgres
         env:
