@@ -31,6 +31,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # CPU-only PyTorch for sentence-transformers (much smaller than the CUDA build)
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements-dev.txt
 
       - name: Run tests
@@ -46,7 +48,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: testuser
           POSTGRES_PASSWORD: testpassword
@@ -71,6 +73,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # CPU-only PyTorch for sentence-transformers (much smaller than the CUDA build)
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements-dev.txt
 
       - name: Run Alembic migrations on Postgres
@@ -81,7 +85,7 @@ jobs:
       - name: Run feedback tests against Postgres
         env:
           DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/feedback_test
-        run: python -m pytest tests/test_feedback.py tests/test_stats.py tests/test_usage.py tests/test_batch_triage.py tests/test_key_management.py tests/test_api_keys_store.py tests/test_latency_slo.py tests/test_quality_monitoring.py -q
+        run: python -m pytest tests/test_feedback.py tests/test_stats.py tests/test_usage.py tests/test_batch_triage.py tests/test_key_management.py tests/test_api_keys_store.py tests/test_latency_slo.py tests/test_quality_monitoring.py tests/test_rag_store.py -q
 
   docker:
     runs-on: ubuntu-24.04
