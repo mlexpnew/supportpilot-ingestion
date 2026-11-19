@@ -129,6 +129,24 @@ _SEARCH_SQL = text(
 )
 
 
+GROUP_OVERFETCH: int = 5
+
+
+def best_chunk_per_article(
+    chunks: Sequence[SearchResult], k: int
+) -> list[SearchResult]:
+    """Keep the highest-scoring chunk of each article, then the top k articles.
+
+    ``chunks`` may arrive in any order; the result is sorted best first.
+    """
+    best: dict[str, SearchResult] = {}
+    for chunk in chunks:
+        current = best.get(chunk.article_id)
+        if current is None or chunk.score > current.score:
+            best[chunk.article_id] = chunk
+    return sorted(best.values(), key=lambda r: r.score, reverse=True)[:k]
+
+
 class KBStore:
     """Read/write access to the kb_chunks table."""
 
@@ -185,6 +203,15 @@ class KBStore:
 
         return SyncResult(added=added, unchanged=int(total) - added, removed=removed)
 
+    def article_ids(self, model_name: str) -> set[str]:
+        """Distinct article ids indexed for this model."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT DISTINCT article_id FROM kb_chunks WHERE model_name = :m"),
+                {"m": model_name},
+            )
+            return {str(a) for a in rows.scalars()}
+
     def count(self) -> int:
         with self.engine.connect() as conn:
             return int(
@@ -192,11 +219,32 @@ class KBStore:
             )
 
     def search(
-        self, query_vector: np.ndarray, model_name: str, k: int = 5
+        self,
+        query_vector: np.ndarray,
+        model_name: str,
+        k: int = 5,
+        group_by_article: bool = True,
     ) -> list[SearchResult]:
-        """Top-k chunks by cosine similarity (score 1.0 = identical meaning)."""
+        """Top-k results by cosine similarity (score 1.0 = identical meaning).
+
+        With ``group_by_article`` (the default, SP-123) we over-fetch
+        ``k * GROUP_OVERFETCH`` chunks and keep only the best-scoring chunk per
+        article, so one long article cannot fill every slot and push a second
+        relevant article out of the top k. With it off, the raw top-k chunks
+        are returned (the pre-SP-123 behaviour).
+        """
         if k < 1:
             raise ValueError("k must be at least 1")
+        fetch_k = k * GROUP_OVERFETCH if group_by_article else k
+        chunks = self._search_chunks(query_vector, model_name, fetch_k)
+        if not group_by_article:
+            return chunks
+        return best_chunk_per_article(chunks, k)
+
+    def _search_chunks(
+        self, query_vector: np.ndarray, model_name: str, k: int
+    ) -> list[SearchResult]:
+        """Raw top-k chunks, best first."""
         with self.engine.connect() as conn:
             rows = conn.execute(
                 _SEARCH_SQL,

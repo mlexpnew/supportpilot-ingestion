@@ -89,6 +89,12 @@ jobs:
           DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/feedback_test
         run: python -m pytest tests/test_feedback.py tests/test_stats.py tests/test_usage.py tests/test_batch_triage.py tests/test_key_management.py tests/test_api_keys_store.py tests/test_latency_slo.py tests/test_quality_monitoring.py tests/test_rag_store.py -q
 
+      - name: Retrieval regression gate (real model + golden set, SP-123)
+        env:
+          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/feedback_test
+          REQUIRE_RETRIEVAL_GATE: "1"
+        run: python -m pytest tests/test_rag_eval.py -v -rs
+
   docker:
     runs-on: ubuntu-24.04
 

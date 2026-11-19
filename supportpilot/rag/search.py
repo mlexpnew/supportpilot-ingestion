@@ -13,21 +13,41 @@ from .store import KBStore, SearchResult, get_kb_engine
 
 
 def search(
-    query: str, store: KBStore, embedder: Embedder, k: int = 5
+    query: str,
+    store: KBStore,
+    embedder: Embedder,
+    k: int = 5,
+    group_by_article: bool = True,
 ) -> list[SearchResult]:
     """Embed the query the same way as the chunks, then rank by cosine."""
     if not query.strip():
         raise ValueError("query must not be empty")
-    return store.search(embedder.embed_query(query), embedder.model_name, k=k)
+    return store.search(
+        embedder.embed_query(query),
+        embedder.model_name,
+        k=k,
+        group_by_article=group_by_article,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Search the knowledge base")
     parser.add_argument("query")
     parser.add_argument("-k", type=int, default=5)
+    parser.add_argument(
+        "--no-group",
+        action="store_true",
+        help="return raw chunks instead of the best chunk per article",
+    )
     args = parser.parse_args(argv)
 
-    results = search(args.query, KBStore(get_kb_engine()), get_embedder(), k=args.k)
+    results = search(
+        args.query,
+        KBStore(get_kb_engine()),
+        get_embedder(),
+        k=args.k,
+        group_by_article=not args.no_group,
+    )
     if not results:
         print("No results. Did you run: python -m supportpilot.rag.ingest ?")
         return 1
