@@ -1,40 +1,25 @@
 {"question": "my package still hasnt shown up and its been a whole week", "expected_article_ids": ["kb-late-delivery"], "category": "delivery", "style": "paraphrase"}
-{"question": "where is my stuff", "expected_article_ids": ["kb-track-order", "kb-late-delivery"], "category": "delivery", "style": "vague"}
 {"question": "mera order kahan tak pahuncha", "expected_article_ids": ["kb-track-order"], "category": "delivery", "style": "hinglish"}
-{"question": "can it go to my office instead of my home", "expected_article_ids": ["kb-change-address"], "category": "delivery", "style": "paraphrase"}
 {"question": "trackng link not wrking", "expected_article_ids": ["kb-track-order"], "category": "delivery", "style": "typo"}
 {"question": "late??", "expected_article_ids": ["kb-late-delivery"], "category": "delivery", "style": "short"}
 {"question": "ghar ka pata galat daal diya, badal sakte ho", "expected_article_ids": ["kb-change-address"], "category": "delivery", "style": "hinglish"}
-{"question": "money back??", "expected_article_ids": ["kb-refund-request", "kb-refund-timeline"], "category": "refund", "style": "short"}
 {"question": "i sent back one shirt out of three, why did i get so little money", "expected_article_ids": ["kb-partial-refund"], "category": "refund", "style": "paraphrase"}
-{"question": "paisa wapas kab aayega mere account mein", "expected_article_ids": ["kb-refund-timeline"], "category": "refund", "style": "hinglish"}
 {"question": "i dont like what i got", "expected_article_ids": ["kb-refund-request"], "category": "refund", "style": "vague"}
 {"question": "refnd not recieved yet after aproval", "expected_article_ids": ["kb-refund-timeline"], "category": "refund", "style": "typo"}
 {"question": "the amount you gave back looks off", "expected_article_ids": ["kb-partial-refund"], "category": "refund", "style": "vague"}
-{"question": "return", "expected_article_ids": ["kb-refund-request"], "category": "refund", "style": "short"}
 {"question": "my bank shows the same payment taken two times", "expected_article_ids": ["kb-double-charge"], "category": "billing", "style": "paraphrase"}
 {"question": "GST bill", "expected_article_ids": ["kb-invoice-download"], "category": "billing", "style": "short"}
-{"question": "card change karna hai", "expected_article_ids": ["kb-update-payment"], "category": "billing", "style": "hinglish"}
 {"question": "invoce pdf were to get", "expected_article_ids": ["kb-invoice-download"], "category": "billing", "style": "typo"}
-{"question": "something weird on my statement", "expected_article_ids": ["kb-double-charge"], "category": "billing", "style": "vague"}
 {"question": "debited 2x", "expected_article_ids": ["kb-double-charge"], "category": "billing", "style": "short"}
 {"question": "my old card expird, how do i add a new 1", "expected_article_ids": ["kb-update-payment"], "category": "billing", "style": "typo"}
-{"question": "i ordered by mistake, stop it before it leaves", "expected_article_ids": ["kb-cancel-order"], "category": "cancellation", "style": "paraphrase"}
 {"question": "subscription band karna hai", "expected_article_ids": ["kb-cancel-subscription"], "category": "cancellation", "style": "hinglish"}
 {"question": "will it cost me anything if i back out", "expected_article_ids": ["kb-cancel-fees"], "category": "cancellation", "style": "paraphrase"}
-{"question": "cancle my membrship plz", "expected_article_ids": ["kb-cancel-subscription"], "category": "cancellation", "style": "typo"}
 {"question": "dont want it anymore", "expected_article_ids": ["kb-cancel-order", "kb-refund-request"], "category": "cancellation", "style": "vague"}
 {"question": "cancel fee?", "expected_article_ids": ["kb-cancel-fees"], "category": "cancellation", "style": "short"}
 {"question": "order cancel ka button nahi dikh raha", "expected_article_ids": ["kb-cancel-order"], "category": "cancellation", "style": "hinglish"}
 {"question": "wipe all my info and close my profile for good", "expected_article_ids": ["kb-delete-account"], "category": "account", "style": "paraphrase"}
-{"question": "cant log in, forgt my pasword", "expected_article_ids": ["kb-reset-password"], "category": "account", "style": "typo"}
-{"question": "login email badalna hai", "expected_article_ids": ["kb-update-email"], "category": "account", "style": "hinglish"}
 {"question": "account problem", "expected_article_ids": ["kb-reset-password", "kb-update-email"], "category": "account", "style": "vague"}
 {"question": "delete acc", "expected_article_ids": ["kb-delete-account"], "category": "account", "style": "short"}
-{"question": "wanna sign in wth my new gmail id", "expected_article_ids": ["kb-update-email"], "category": "account", "style": "typo"}
-{"question": "is your team around on sundays and till what time", "expected_article_ids": ["kb-business-hours"], "category": "other", "style": "paraphrase"}
 {"question": "kya aap log phone pe baat karte ho", "expected_article_ids": ["kb-contact-support", "kb-business-hours"], "category": "other", "style": "hinglish"}
-{"question": "talk to a human", "expected_article_ids": ["kb-contact-support"], "category": "other", "style": "short"}
 {"question": "what do you do with my info", "expected_article_ids": ["kb-privacy-policy"], "category": "other", "style": "vague"}
 {"question": "custmer care numbr", "expected_article_ids": ["kb-contact-support", "kb-business-hours"], "category": "other", "style": "typo"}
-{"question": "need some help", "expected_article_ids": ["kb-contact-support"], "category": "other", "style": "vague"}

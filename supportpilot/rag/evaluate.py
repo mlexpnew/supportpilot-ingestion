@@ -3,8 +3,12 @@
 Runs every question in the golden set through search and scores where the
 first correct article lands.
 
+Two sets (SP-124): ``retrieval_dev.jsonl`` (25) is for tuning and is the
+default; ``retrieval_test.jsonl`` (15) is held out and only scored by the CI
+gate. Do not look at held-out misses while tuning.
+
 Usage:
-    python -m supportpilot.rag.evaluate                      # grouping on
+    python -m supportpilot.rag.evaluate                      # dev set, grouped
     python -m supportpilot.rag.evaluate --no-group           # raw chunks
     python -m supportpilot.rag.evaluate --json reports/after.json
     python -m supportpilot.rag.evaluate --compare before.json after.json
@@ -27,7 +31,8 @@ from typing import Any
 
 from .chunker import load_articles
 
-DEFAULT_GOLDEN = Path("data/eval/retrieval_golden.jsonl")
+DEFAULT_GOLDEN = Path("data/eval/retrieval_dev.jsonl")  # tune on dev only
+HELDOUT_GOLDEN = Path("data/eval/retrieval_test.jsonl")  # CI gate only
 DEFAULT_FOLDER = Path("data/help_center")
 DEFAULT_DEPTH: int = 10  # how deep we look for MRR (ranks 4-10 still score)
 REQUIRED_FIELDS: tuple[str, ...] = (

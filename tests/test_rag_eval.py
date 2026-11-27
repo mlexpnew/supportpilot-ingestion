@@ -27,9 +27,12 @@ from supportpilot.rag.evaluate import (
 
 ROOT = Path(__file__).resolve().parents[1]
 HELP_CENTER = ROOT / "data" / "help_center"
-GOLDEN = ROOT / "data" / "eval" / "retrieval_golden.jsonl"
-AFTER_BASELINE = ROOT / "data" / "eval" / "retrieval_after.json"
+DEV = ROOT / "data" / "eval" / "retrieval_dev.jsonl"
+HELDOUT = ROOT / "data" / "eval" / "retrieval_test.jsonl"
+HELDOUT_BASELINE = ROOT / "data" / "eval" / "retrieval_test_baseline.json"
 GATE_MARGIN = 0.05
+CATEGORIES = {"delivery", "refund", "billing", "cancellation", "account", "other"}
+STYLES = {"paraphrase", "typo", "hinglish", "vague", "short"}
 
 
 def _kb_ids() -> set[str]:
@@ -102,31 +105,30 @@ def test_best_chunk_per_article_keeps_highest_score() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_golden_set_is_valid_and_balanced() -> None:
-    questions = load_golden(GOLDEN, _kb_ids())
-    assert len(questions) == 40
+def test_dev_and_heldout_split_is_clean() -> None:
+    dev = load_golden(DEV, _kb_ids())
+    test = load_golden(HELDOUT, _kb_ids())
+    assert (len(dev), len(test)) == (25, 15)
 
-    by_category = Counter(q.category for q in questions)
-    assert set(by_category) == {
-        "delivery",
-        "refund",
-        "billing",
-        "cancellation",
-        "account",
-        "other",
-    }
-    assert min(by_category.values()) >= 5, by_category
+    dev_q = {q.question.lower() for q in dev}
+    test_q = {q.question.lower() for q in test}
+    assert len(dev_q) == 25 and len(test_q) == 15, "duplicate question"
+    assert not dev_q & test_q, "held-out question leaked into dev"
 
-    styles = Counter(q.style for q in questions)
-    assert set(styles) == {"paraphrase", "typo", "hinglish", "vague", "short"}
-    assert len({q.question.lower() for q in questions}) == 40, "duplicate question"
+    for name, qs in (("dev", dev), ("held-out", test)):
+        assert {q.category for q in qs} == CATEGORIES, name
+        assert {q.style for q in qs} == STYLES, name
+    assert min(Counter(q.category for q in test).values()) >= 2
+    assert set(Counter(q.style for q in test).values()) == {3}
+    assert min(Counter(q.category for q in [*dev, *test]).values()) >= 5
 
 
 def test_golden_category_matches_an_expected_article() -> None:
     category_of = {a.article_id: a.category for a in load_articles(HELP_CENTER)}
-    for q in load_golden(GOLDEN, category_of):
-        cats = {category_of[a] for a in q.expected_article_ids}
-        assert q.category in cats, (q.question, q.category, cats)
+    for path in (DEV, HELDOUT):
+        for q in load_golden(path, category_of):
+            cats = {category_of[a] for a in q.expected_article_ids}
+            assert q.category in cats, (q.question, q.category, cats)
 
 
 def test_golden_set_fails_loudly_on_unknown_id(tmp_path: Path) -> None:
@@ -158,7 +160,12 @@ _GATE_REQUIRED = os.getenv("REQUIRE_RETRIEVAL_GATE") == "1"
     not (_HAS_POSTGRES or _GATE_REQUIRED),
     reason="needs a PostgreSQL DATABASE_URL with pgvector",
 )
-def test_retrieval_recall_at_3_does_not_regress() -> None:
+def test_heldout_retrieval_does_not_regress() -> None:
+    """CI gate: held-out set only, recall@3 AND MRR within 0.05 of baseline.
+
+    With 15 questions one extra miss costs 0.067 recall@3, so in practice the
+    gate allows no new held-out misses.
+    """
     from sqlalchemy import text
 
     from supportpilot.rag.embedder import Embedder
@@ -166,12 +173,14 @@ def test_retrieval_recall_at_3_does_not_regress() -> None:
     from supportpilot.rag.ingest import ingest_folder
     from supportpilot.rag.store import KBStore, create_kb_schema, get_kb_engine
 
-    assert AFTER_BASELINE.exists(), (
-        f"{AFTER_BASELINE} missing: run "
-        "`python -m supportpilot.rag.evaluate --json data/eval/retrieval_after.json`"
+    assert HELDOUT_BASELINE.exists(), (
+        f"{HELDOUT_BASELINE} missing: run `python -m supportpilot.rag.evaluate "
+        "--golden data/eval/retrieval_test.jsonl "
+        "--json data/eval/retrieval_test_baseline.json`"
     )
-    baseline: dict[str, Any] = json.loads(AFTER_BASELINE.read_text())
-    floor = round(baseline["recall_at_3"] - GATE_MARGIN, 4)
+    baseline: dict[str, Any] = json.loads(HELDOUT_BASELINE.read_text())
+    recall_floor = round(baseline["recall_at_3"] - GATE_MARGIN, 4)
+    mrr_floor = round(baseline["mrr"] - GATE_MARGIN, 4)
 
     engine = get_kb_engine()
     with engine.begin() as conn:
@@ -183,13 +192,16 @@ def test_retrieval_recall_at_3_does_not_regress() -> None:
 
     try:
         ingest_folder(HELP_CENTER, store, embedder)
-        report = run_evaluation(GOLDEN, HELP_CENTER, store=store, embedder=embedder)
+        report = run_evaluation(HELDOUT, HELP_CENTER, store=store, embedder=embedder)
     finally:
         with engine.begin() as conn:
             conn.execute(text("TRUNCATE kb_chunks"))
 
-    assert report.recall_at_3 >= floor, (
-        f"recall@3 {report.recall_at_3:.3f} fell below floor {floor:.3f} "
-        f"(baseline {baseline['recall_at_3']:.3f} - {GATE_MARGIN})\n"
-        + format_report(report)
+    details = format_report(report)
+    assert report.recall_at_3 >= recall_floor, (
+        f"held-out recall@3 {report.recall_at_3:.3f} < floor {recall_floor:.3f}\n"
+        + details
+    )
+    assert report.mrr >= mrr_floor, (
+        f"held-out MRR {report.mrr:.3f} < floor {mrr_floor:.3f}\n" + details
     )

@@ -1,0 +1,15 @@
+{"question": "card change karna hai", "expected_article_ids": ["kb-update-payment"], "category": "billing", "style": "hinglish"}
+{"question": "paisa wapas kab aayega mere account mein", "expected_article_ids": ["kb-refund-timeline"], "category": "refund", "style": "hinglish"}
+{"question": "login email badalna hai", "expected_article_ids": ["kb-update-email"], "category": "account", "style": "hinglish"}
+{"question": "is your team around on sundays and till what time", "expected_article_ids": ["kb-business-hours"], "category": "other", "style": "paraphrase"}
+{"question": "i ordered by mistake, stop it before it leaves", "expected_article_ids": ["kb-cancel-order"], "category": "cancellation", "style": "paraphrase"}
+{"question": "can it go to my office instead of my home", "expected_article_ids": ["kb-change-address"], "category": "delivery", "style": "paraphrase"}
+{"question": "money back??", "expected_article_ids": ["kb-refund-request", "kb-refund-timeline"], "category": "refund", "style": "short"}
+{"question": "return", "expected_article_ids": ["kb-refund-request"], "category": "refund", "style": "short"}
+{"question": "talk to a human", "expected_article_ids": ["kb-contact-support"], "category": "other", "style": "short"}
+{"question": "cancle my membrship plz", "expected_article_ids": ["kb-cancel-subscription"], "category": "cancellation", "style": "typo"}
+{"question": "cant log in, forgt my pasword", "expected_article_ids": ["kb-reset-password"], "category": "account", "style": "typo"}
+{"question": "wanna sign in wth my new gmail id", "expected_article_ids": ["kb-update-email"], "category": "account", "style": "typo"}
+{"question": "where is my stuff", "expected_article_ids": ["kb-track-order", "kb-late-delivery"], "category": "delivery", "style": "vague"}
+{"question": "something weird on my statement", "expected_article_ids": ["kb-double-charge"], "category": "billing", "style": "vague"}
+{"question": "need some help", "expected_article_ids": ["kb-contact-support"], "category": "other", "style": "vague"}

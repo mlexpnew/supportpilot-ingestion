@@ -1,0 +1,10 @@
+{"title": "Refund approved but not received", "ticket": "Hi, my refund was approved last Monday but it still hasn't shown up on my HDFC credit card. How long does it usually take?", "expected": ["kb-refund-timeline"]}
+{"title": "Charged twice", "ticket": "I see two debits of Rs 1,499 on my card for the order I placed yesterday. I only ordered once. Please fix this.", "expected": ["kb-double-charge"]}
+{"title": "Parcel late, tracking stuck", "ticket": "My parcel was supposed to arrive 4 days ago and the tracking hasn't changed since Friday. What's going on?", "expected": ["kb-late-delivery", "kb-track-order"]}
+{"title": "Password reset email missing", "ticket": "I forgot my password. I clicked reset three times but the email never comes. Can you help?", "expected": ["kb-reset-password"]}
+{"title": "Change address before shipping", "ticket": "I moved house last week and my order is still showing Processing. Can I send it to my new address?", "expected": ["kb-change-address"]}
+{"title": "Cancel annual plan after 3 weeks", "ticket": "I bought the annual plan 3 weeks ago and want to cancel now. Will I be charged anything for cancelling?", "expected": ["kb-cancel-fees", "kb-cancel-subscription"]}
+{"title": "GST invoice for company", "ticket": "need a GST invoice with my company name for my last order, how do i get it", "expected": ["kb-invoice-download"]}
+{"title": "Hinglish refund question", "ticket": "paisa wapas kab aayega? return pickup ho gaya 5 din pehle, abhi tak kuch nahi aaya", "expected": ["kb-refund-timeline", "kb-refund-request"]}
+{"title": "Partial refund looks too small", "ticket": "I returned 1 of the 3 items from my order and the refund is much less than what I paid for it. Why?", "expected": ["kb-partial-refund"]}
+{"title": "Out of scope: international + gift wrap", "ticket": "Do you deliver to Dubai? Also can you gift wrap the order and add a note?", "expected": []}

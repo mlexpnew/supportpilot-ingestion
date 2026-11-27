@@ -1,0 +1,373 @@
+{
+  "group_by_article": true,
+  "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+  "depth": 10,
+  "n_questions": 15,
+  "recall_at_1": 0.6667,
+  "recall_at_3": 0.8667,
+  "mrr": 0.7907,
+  "recall_at_3_by_category": {
+    "account": 1.0,
+    "billing": 1.0,
+    "cancellation": 0.5,
+    "delivery": 1.0,
+    "other": 1.0,
+    "refund": 0.6667
+  },
+  "recall_at_3_by_style": {
+    "hinglish": 0.6667,
+    "paraphrase": 1.0,
+    "short": 1.0,
+    "typo": 0.6667,
+    "vague": 1.0
+  },
+  "misses": [
+    {
+      "question": "paisa wapas kab aayega mere account mein",
+      "expected": [
+        "kb-refund-timeline"
+      ],
+      "got_top3": [
+        "kb-privacy-policy",
+        "kb-delete-account",
+        "kb-contact-support"
+      ],
+      "rank": 9,
+      "category": "refund",
+      "style": "hinglish"
+    },
+    {
+      "question": "cancle my membrship plz",
+      "expected": [
+        "kb-cancel-subscription"
+      ],
+      "got_top3": [
+        "kb-delete-account",
+        "kb-contact-support",
+        "kb-privacy-policy"
+      ],
+      "rank": 4,
+      "category": "cancellation",
+      "style": "typo"
+    }
+  ],
+  "results": [
+    {
+      "question": "card change karna hai",
+      "expected": [
+        "kb-update-payment"
+      ],
+      "category": "billing",
+      "style": "hinglish",
+      "rank": 1,
+      "returned": [
+        "kb-update-payment",
+        "kb-contact-support",
+        "kb-privacy-policy",
+        "kb-change-address",
+        "kb-business-hours",
+        "kb-track-order",
+        "kb-update-email",
+        "kb-late-delivery",
+        "kb-refund-request",
+        "kb-refund-timeline"
+      ]
+    },
+    {
+      "question": "paisa wapas kab aayega mere account mein",
+      "expected": [
+        "kb-refund-timeline"
+      ],
+      "category": "refund",
+      "style": "hinglish",
+      "rank": 9,
+      "returned": [
+        "kb-privacy-policy",
+        "kb-delete-account",
+        "kb-contact-support",
+        "kb-cancel-subscription",
+        "kb-update-payment",
+        "kb-update-email",
+        "kb-double-charge",
+        "kb-reset-password",
+        "kb-refund-timeline",
+        "kb-invoice-download"
+      ]
+    },
+    {
+      "question": "login email badalna hai",
+      "expected": [
+        "kb-update-email"
+      ],
+      "category": "account",
+      "style": "hinglish",
+      "rank": 2,
+      "returned": [
+        "kb-reset-password",
+        "kb-update-email",
+        "kb-contact-support",
+        "kb-delete-account",
+        "kb-privacy-policy",
+        "kb-update-payment",
+        "kb-cancel-subscription",
+        "kb-business-hours",
+        "kb-cancel-order",
+        "kb-cancel-fees"
+      ]
+    },
+    {
+      "question": "is your team around on sundays and till what time",
+      "expected": [
+        "kb-business-hours"
+      ],
+      "category": "other",
+      "style": "paraphrase",
+      "rank": 1,
+      "returned": [
+        "kb-business-hours",
+        "kb-cancel-subscription",
+        "kb-late-delivery",
+        "kb-track-order",
+        "kb-contact-support",
+        "kb-update-payment",
+        "kb-double-charge",
+        "kb-refund-timeline",
+        "kb-change-address",
+        "kb-privacy-policy"
+      ]
+    },
+    {
+      "question": "i ordered by mistake, stop it before it leaves",
+      "expected": [
+        "kb-cancel-order"
+      ],
+      "category": "cancellation",
+      "style": "paraphrase",
+      "rank": 1,
+      "returned": [
+        "kb-cancel-order",
+        "kb-track-order",
+        "kb-double-charge",
+        "kb-cancel-fees",
+        "kb-cancel-subscription",
+        "kb-late-delivery",
+        "kb-contact-support",
+        "kb-change-address",
+        "kb-delete-account",
+        "kb-refund-request"
+      ]
+    },
+    {
+      "question": "can it go to my office instead of my home",
+      "expected": [
+        "kb-change-address"
+      ],
+      "category": "delivery",
+      "style": "paraphrase",
+      "rank": 1,
+      "returned": [
+        "kb-change-address",
+        "kb-privacy-policy",
+        "kb-late-delivery",
+        "kb-business-hours",
+        "kb-cancel-subscription",
+        "kb-track-order",
+        "kb-cancel-order",
+        "kb-update-email",
+        "kb-invoice-download",
+        "kb-refund-request"
+      ]
+    },
+    {
+      "question": "money back??",
+      "expected": [
+        "kb-refund-request",
+        "kb-refund-timeline"
+      ],
+      "category": "refund",
+      "style": "short",
+      "rank": 2,
+      "returned": [
+        "kb-partial-refund",
+        "kb-refund-timeline",
+        "kb-refund-request",
+        "kb-cancel-fees",
+        "kb-double-charge",
+        "kb-late-delivery",
+        "kb-cancel-subscription",
+        "kb-cancel-order",
+        "kb-update-payment",
+        "kb-contact-support"
+      ]
+    },
+    {
+      "question": "return",
+      "expected": [
+        "kb-refund-request"
+      ],
+      "category": "refund",
+      "style": "short",
+      "rank": 1,
+      "returned": [
+        "kb-refund-request",
+        "kb-partial-refund",
+        "kb-refund-timeline",
+        "kb-cancel-order",
+        "kb-late-delivery",
+        "kb-contact-support",
+        "kb-double-charge",
+        "kb-reset-password",
+        "kb-business-hours",
+        "kb-cancel-subscription"
+      ]
+    },
+    {
+      "question": "talk to a human",
+      "expected": [
+        "kb-contact-support"
+      ],
+      "category": "other",
+      "style": "short",
+      "rank": 1,
+      "returned": [
+        "kb-contact-support",
+        "kb-business-hours",
+        "kb-cancel-order",
+        "kb-privacy-policy",
+        "kb-update-payment",
+        "kb-cancel-subscription",
+        "kb-late-delivery",
+        "kb-refund-request",
+        "kb-invoice-download",
+        "kb-track-order"
+      ]
+    },
+    {
+      "question": "cancle my membrship plz",
+      "expected": [
+        "kb-cancel-subscription"
+      ],
+      "category": "cancellation",
+      "style": "typo",
+      "rank": 4,
+      "returned": [
+        "kb-delete-account",
+        "kb-contact-support",
+        "kb-privacy-policy",
+        "kb-cancel-subscription",
+        "kb-cancel-order",
+        "kb-reset-password",
+        "kb-update-payment",
+        "kb-cancel-fees",
+        "kb-update-email",
+        "kb-refund-request"
+      ]
+    },
+    {
+      "question": "cant log in, forgt my pasword",
+      "expected": [
+        "kb-reset-password"
+      ],
+      "category": "account",
+      "style": "typo",
+      "rank": 1,
+      "returned": [
+        "kb-reset-password",
+        "kb-update-email",
+        "kb-contact-support",
+        "kb-delete-account",
+        "kb-update-payment",
+        "kb-business-hours",
+        "kb-cancel-subscription",
+        "kb-privacy-policy",
+        "kb-track-order",
+        "kb-refund-timeline"
+      ]
+    },
+    {
+      "question": "wanna sign in wth my new gmail id",
+      "expected": [
+        "kb-update-email"
+      ],
+      "category": "account",
+      "style": "typo",
+      "rank": 1,
+      "returned": [
+        "kb-update-email",
+        "kb-reset-password",
+        "kb-delete-account",
+        "kb-privacy-policy",
+        "kb-contact-support",
+        "kb-cancel-subscription",
+        "kb-change-address",
+        "kb-update-payment",
+        "kb-business-hours",
+        "kb-track-order"
+      ]
+    },
+    {
+      "question": "where is my stuff",
+      "expected": [
+        "kb-track-order",
+        "kb-late-delivery"
+      ],
+      "category": "delivery",
+      "style": "vague",
+      "rank": 2,
+      "returned": [
+        "kb-privacy-policy",
+        "kb-track-order",
+        "kb-refund-request",
+        "kb-contact-support",
+        "kb-late-delivery",
+        "kb-delete-account",
+        "kb-partial-refund",
+        "kb-business-hours",
+        "kb-change-address",
+        "kb-update-email"
+      ]
+    },
+    {
+      "question": "something weird on my statement",
+      "expected": [
+        "kb-double-charge"
+      ],
+      "category": "billing",
+      "style": "vague",
+      "rank": 1,
+      "returned": [
+        "kb-double-charge",
+        "kb-partial-refund",
+        "kb-delete-account",
+        "kb-reset-password",
+        "kb-privacy-policy",
+        "kb-cancel-fees",
+        "kb-contact-support",
+        "kb-update-email",
+        "kb-update-payment",
+        "kb-cancel-subscription"
+      ]
+    },
+    {
+      "question": "need some help",
+      "expected": [
+        "kb-contact-support"
+      ],
+      "category": "other",
+      "style": "vague",
+      "rank": 1,
+      "returned": [
+        "kb-contact-support",
+        "kb-privacy-policy",
+        "kb-business-hours",
+        "kb-update-payment",
+        "kb-cancel-subscription",
+        "kb-reset-password",
+        "kb-cancel-order",
+        "kb-update-email",
+        "kb-invoice-download",
+        "kb-late-delivery"
+      ]
+    }
+  ]
+}
