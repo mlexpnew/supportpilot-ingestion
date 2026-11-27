@@ -8,11 +8,11 @@ numbers for grouping results by article, the misses, and what to try next.
 
 | Item | Value |
 |---|---|
-| Golden set | `data/eval/retrieval_golden.jsonl`: 40 questions, 6 categories (5 to 7 each), 5 styles (8 each: paraphrase, typo, Hinglish, vague, short) |
+| Golden set | 40 questions, 6 categories (5 to 7 each), 5 styles (8 each: paraphrase, typo, Hinglish, vague, short). Split in SP-124 into `data/eval/retrieval_dev.jsonl` (25) and held-out `data/eval/retrieval_test.jsonl` (15) |
 | Knowledge base | 18 articles in `data/help_center/` |
 | Model | `sentence-transformers/all-MiniLM-L6-v2` (same for before and after) |
 | Store | pgvector, cosine distance |
-| Script | `python -m supportpilot.rag.evaluate` (see `scripts/run_retrieval_eval.sh`) |
+| Script | `python -m supportpilot.rag.evaluate` |
 
 Questions were written in customer language, not copied from the articles.
 Ambiguous questions list every fair answer (for example "where is my stuff"
@@ -80,14 +80,34 @@ Misses after grouping (6):
    terms like "invoice" or "GST" are not lost, and fall back to
    `kb-contact-support` when the top score is low.
 
+## Dev / held-out split (SP-124)
+
+The 40 questions are split so tuning cannot leak into the gate:
+
+| Set | File | Questions | Use |
+|---|---|---|---|
+| Dev | `retrieval_dev.jsonl` | 25 | Tuning. Default for `python -m supportpilot.rag.evaluate`. Look at these misses freely. |
+| Held-out | `retrieval_test.jsonl` | 15 | CI gate only. Never inspect its misses while tuning. |
+
+The held-out set has 3 questions per style and at least 2 per category, and
+keeps the same miss rate as the full set (2 of 15 vs 6 of 40).
+
+Held-out baseline (`retrieval_test_baseline.json`, grouped retrieval,
+all-MiniLM-L6-v2): recall@1 0.667, recall@3 0.867, MRR 0.791.
+
 ## Regression gate
 
-`tests/test_rag_eval.py::test_retrieval_recall_at_3_does_not_regress` runs in
-the `test-postgres` CI job with the real model. It ingests the help centre,
-runs this evaluation and fails if recall@3 drops below
-`retrieval_after.json` recall@3 minus 0.05. The job sets
-`REQUIRE_RETRIEVAL_GATE=1`, so the gate can never be silently skipped.
+`tests/test_rag_eval.py::test_heldout_retrieval_does_not_regress` runs in the
+`test-postgres` CI job with the real model. It ingests the help centre, scores
+the **held-out set only** and fails if recall@3 or MRR drops more than 0.05
+below `retrieval_test_baseline.json`. With 15 questions one extra miss costs
+0.067 recall@3, so in practice the gate allows no new held-out misses. The job
+sets `REQUIRE_RETRIEVAL_GATE=1`, so the gate can never be silently skipped.
 
-To change the model or the golden set intentionally, re-run
-`scripts/run_retrieval_eval.sh` and commit the new
-`data/eval/retrieval_after.json` in the same PR.
+To change the model or the question sets intentionally, regenerate the
+baseline in the same PR:
+
+```bash
+python -m supportpilot.rag.evaluate --golden data/eval/retrieval_test.jsonl \
+  --json data/eval/retrieval_test_baseline.json
+```
